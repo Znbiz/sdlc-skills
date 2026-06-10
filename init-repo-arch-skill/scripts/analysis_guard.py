@@ -16,6 +16,7 @@ import datetime as dt
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 
 STEP_DEFINITIONS = [
@@ -88,9 +89,9 @@ REPOSITORY_CHECKLIST_DEFINITIONS = [
     ("entrypoints_and_interfaces", "Найти точки входа и внешние интерфейсы"),
     ("business_flow_orchestration", "Разобрать orchestration и бизнес-потоки"),
     ("configs_and_runtime", "Собрать конфиги и runtime-зависимости"),
-    ("contracts_and_schemas", "Собрать контракты, DTO и схемы"),
-    ("data_and_storage", "Разобрать storage, модели, миграции, topics и cache"),
-    ("integrations_and_dependencies", "Собрать интеграции и архитектурно значимые зависимости"),
+    ("contracts_and_schemas", "Собрать контракты, DTO и схемы → создать contracts/<service>-sync.yml (HTTP/REST/gRPC) и contracts/<service>-async.yml (Kafka/AMQP/gRPC-stream); если нет — явно написать 'нет' в notes"),
+    ("data_and_storage", "Разобрать storage, модели, миграции, topics и cache → создать architecture/storage/<service>.yml"),
+    ("integrations_and_dependencies", "Собрать интеграции и зависимости → создать architecture/integrations/<service>.md"),
     ("tests_and_behavior_evidence", "Собрать сильные подтверждения из integration/e2e/tests"),
     ("glossary_updates", "Обновить glossary по новым и неоднозначным терминам"),
     (
@@ -103,7 +104,7 @@ REPOSITORY_CHECKLIST_DEFINITIONS = [
     ("deployment_and_operability", "Проверить deploy, observability и operability сигналы"),
     (
         "architecture_artifact_updates",
-        "Обновить текущие architecture-артефакты по новой информации из репозитория",
+        "Обновить landscape, tech-stack, features; проверить наличие storage/<svc>.yml, integrations/<svc>.md, contracts/<svc>-sync.yml и contracts/<svc>-async.yml (или явную пометку 'нет' в notes)",
     ),
 ]
 
@@ -853,6 +854,155 @@ def repo_command(args: argparse.Namespace) -> int:
     return update_repo_checklist_command(checklist_args)
 
 
+def _load_yaml_file(path: Path) -> tuple[dict[str, Any] | None, str | None]:
+    """Return (parsed_data, error_message). Uses yaml if available, falls back to json."""
+    text = path.read_text(encoding="utf-8")
+    try:
+        import yaml  # type: ignore[import-untyped]  # noqa: PLC0415
+        data: Any = yaml.safe_load(text)
+    except ImportError:
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as exc:
+            return None, f"not valid YAML/JSON: {exc}"
+    except Exception as exc:  # noqa: BLE001
+        return None, f"YAML parse error: {exc}"
+    if not isinstance(data, dict):
+        return None, "top-level value is not a mapping"
+    return data, None
+
+
+def _validate_openapi_structure(data: dict[str, Any], path: Path) -> list[str]:
+    errors: list[str] = []
+    has_openapi3 = "openapi" in data and str(data["openapi"]).startswith("3")
+    has_swagger2 = "swagger" in data and str(data["swagger"]).startswith("2")
+    if not has_openapi3 and not has_swagger2:
+        errors.append(
+            f"{path.name}: missing 'openapi' (3.x) or 'swagger' (2.x) version field"
+        )
+    info = data.get("info")
+    if not isinstance(info, dict):
+        errors.append(f"{path.name}: 'info' section is missing or not a mapping")
+    else:
+        for field in ("title", "version"):
+            if not info.get(field):
+                errors.append(f"{path.name}: info.{field} is missing or empty")
+    if "paths" not in data and not errors:
+        errors.append(f"{path.name}: 'paths' section is missing (required by OpenAPI)")
+    return errors
+
+
+def _validate_asyncapi_structure(data: dict[str, Any], path: Path) -> list[str]:
+    errors: list[str] = []
+    version_str = str(data.get("asyncapi", ""))
+    if not version_str:
+        errors.append(f"{path.name}: missing 'asyncapi' version field")
+    info = data.get("info")
+    if not isinstance(info, dict):
+        errors.append(f"{path.name}: 'info' section is missing or not a mapping")
+    else:
+        for field in ("title", "version"):
+            if not info.get(field):
+                errors.append(f"{path.name}: info.{field} is missing or empty")
+    major = int(version_str.split(".")[0]) if version_str and version_str[0].isdigit() else 2
+    if major >= 3:
+        has_channels = "channels" in data or "operations" in data
+    else:
+        has_channels = "channels" in data
+    if not has_channels and not errors:
+        errors.append(
+            f"{path.name}: 'channels' section is missing (required by AsyncAPI {version_str})"
+        )
+    return errors
+
+
+def _try_openapi_spec_validator(path: Path) -> list[str]:
+    try:
+        from openapi_spec_validator import validate  # noqa: PLC0415
+        from openapi_spec_validator.readers import read_from_filename  # noqa: PLC0415
+        spec, base_uri = read_from_filename(str(path))
+        validate(spec, spec_url=base_uri)
+        return []
+    except ImportError:
+        return []
+    except Exception as exc:  # noqa: BLE001
+        return [f"{path.name}: openapi-spec-validator: {exc}"]
+
+
+def _try_asyncapi_cli(path: Path) -> list[str]:
+    import subprocess  # noqa: PLC0415
+    try:
+        result = subprocess.run(
+            ["asyncapi", "validate", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip()
+            return [f"{path.name}: asyncapi CLI: {detail}"]
+        return []
+    except FileNotFoundError:
+        return []
+    except Exception as exc:  # noqa: BLE001
+        return [f"{path.name}: asyncapi CLI error: {exc}"]
+
+
+def validate_contracts_dir(contracts_dir: Path) -> list[str]:
+    """Validate all *-sync.yml and *-async.yml files in contracts_dir."""
+    if not contracts_dir.exists():
+        return [f"contracts directory not found: {contracts_dir}"]
+
+    errors: list[str] = []
+    sync_files = sorted(contracts_dir.glob("*-sync.yml"))
+    async_files = sorted(contracts_dir.glob("*-async.yml"))
+
+    if not sync_files and not async_files:
+        errors.append(
+            f"no contract files found in {contracts_dir} "
+            "(expected *-sync.yml and/or *-async.yml)"
+        )
+        return errors
+
+    for file_path in sync_files:
+        data, parse_error = _load_yaml_file(file_path)
+        if parse_error:
+            errors.append(f"{file_path.name}: {parse_error}")
+            continue
+        assert data is not None
+        errors.extend(_validate_openapi_structure(data, file_path))
+        errors.extend(_try_openapi_spec_validator(file_path))
+
+    for file_path in async_files:
+        data, parse_error = _load_yaml_file(file_path)
+        if parse_error:
+            errors.append(f"{file_path.name}: {parse_error}")
+            continue
+        assert data is not None
+        errors.extend(_validate_asyncapi_structure(data, file_path))
+        errors.extend(_try_asyncapi_cli(file_path))
+
+    return errors
+
+
+def validate_contracts_command(args: argparse.Namespace) -> int:
+    contracts_dir = Path(args.contracts_dir)
+    errors = validate_contracts_dir(contracts_dir)
+
+    sync_count = len(list(contracts_dir.glob("*-sync.yml"))) if contracts_dir.exists() else 0
+    async_count = len(list(contracts_dir.glob("*-async.yml"))) if contracts_dir.exists() else 0
+    print(f"Contracts directory: {contracts_dir}")
+    print(f"Files found: {sync_count} sync (OpenAPI), {async_count} async (AsyncAPI)")
+
+    if errors:
+        for error in errors:
+            print(f"ERROR: {error}")
+        return 1
+
+    print(f"OK: all {sync_count + async_count} contract file(s) are valid.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -965,6 +1115,20 @@ def build_parser() -> argparse.ArgumentParser:
     advance_parser.add_argument("--resume-hint")
     advance_parser.add_argument("--allow-dirty", action="store_true")
     advance_parser.set_defaults(func=advance_command)
+
+    contracts_parser = subparsers.add_parser(
+        "validate-contracts",
+        help=(
+            "Validate OpenAPI (*-sync.yml) and AsyncAPI (*-async.yml) contract files "
+            "in a contracts directory"
+        ),
+    )
+    contracts_parser.add_argument(
+        "--contracts-dir",
+        required=True,
+        help="Path to directory containing *-sync.yml and *-async.yml files",
+    )
+    contracts_parser.set_defaults(func=validate_contracts_command)
 
     return parser
 

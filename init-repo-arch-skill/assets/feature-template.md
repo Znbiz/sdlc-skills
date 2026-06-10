@@ -88,7 +88,7 @@ sequenceDiagram
 
 | Ключ | Описание | Значение по умолчанию | Где задаётся |
 | --- | --- | --- | --- |
-| `<ENV_VAR>` | `<описание>` | `<default>` | `<.env / helm / vault / db>` |
+| `<ENV_VAR>` | `<описание>` | `<default>` | `<service-name: .env / helm / vault / db>` |
 
 ### Feature flags
 
