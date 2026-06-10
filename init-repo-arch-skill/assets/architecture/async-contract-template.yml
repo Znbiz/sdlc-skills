@@ -1,0 +1,43 @@
+asyncapi: 2.6.0
+info:
+  title: События домена <название-домена-событий>
+  version: 1.0.0
+  description: <восстановленное или подтвержденное описание асинхронного контракта>
+
+defaultContentType: application/json
+
+servers:
+  production:
+    url: kafka.example.com:9092
+    protocol: kafka
+    description: Основной брокер событий
+
+channels:
+  <topic-name>:
+    description: <описание канала>
+    publish:
+      summary: <краткое описание поведения отправителя>
+      operationId: <publishOperationId>
+      message:
+        $ref: "#/components/messages/<PublishedMessage>"
+
+components:
+  messages:
+    <PublishedMessage>:
+      name: <название-публикуемого-сообщения>
+      payload:
+        $ref: "#/components/schemas/<PublishedPayload>"
+
+  schemas:
+    <PublishedPayload>:
+      type: object
+      properties:
+        id:
+          type: string
+
+x-confidence-notes:
+  status: draft
+  evidence:
+    - <файл или артефакт>
+  gaps:
+    - <неизвестная область>

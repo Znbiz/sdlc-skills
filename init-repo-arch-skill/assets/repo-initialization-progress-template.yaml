@@ -1,0 +1,216 @@
+analysis_progress:
+  skill_name: init-repo-arch-skill
+  status: <not_started|in_progress|blocked|completed>
+  product: <название-продукта>
+  analysis_scope: <что входит в анализ>
+  started_at: <дата-время-старта>
+  updated_at: <дата-время-последнего-обновления>
+  analyst: <агент-или-исполнитель>
+
+  workflow:
+    enforcement_mode: strict
+    current_step_id: <define_scope|request_repository_list|prepare_temp_workspace|clone_repositories|refresh_main_branches|check_test_repositories|plan_repository_order|analyze_repositories|sync_architecture_artifacts|validate_intermediate|collect_open_questions|interview_user|refine_features|validate_final|finalize_progress>
+    steps:
+      - id: define_scope
+        title: Определить продукт, контур и границы анализа
+        status: <not_started|in_progress|completed|blocked>
+        completed_at: <дата-время-или-null>
+        notes: <заметка-или-пусто>
+      - id: request_repository_list
+        title: Запросить у пользователя полный список репозиториев
+        status: <not_started|in_progress|completed|blocked>
+        completed_at: <дата-время-или-null>
+        notes: <заметка-или-пусто>
+      - id: prepare_temp_workspace
+        title: Подготовить .temp и добавить его в .gitignore
+        status: <not_started|in_progress|completed|blocked>
+        completed_at: <дата-время-или-null>
+        notes: <заметка-или-пусто>
+      - id: clone_repositories
+        title: Клонировать в .temp все репозитории из пользовательского списка
+        status: <not_started|in_progress|completed|blocked>
+        completed_at: <дата-время-или-null>
+        notes: <заметка-или-пусто>
+      - id: refresh_main_branches
+        title: Для каждого репозитория зафиксировать main branch и commit SHA
+        status: <not_started|in_progress|completed|blocked>
+        completed_at: <дата-время-или-null>
+        notes: <заметка-или-пусто>
+      - id: check_test_repositories
+        title: Проверить отдельные e2e и integration репозитории
+        status: <not_started|in_progress|completed|blocked>
+        completed_at: <дата-время-или-null>
+        notes: <заметка-или-пусто>
+      - id: plan_repository_order
+        title: Определить порядок обхода репозиториев
+        status: <not_started|in_progress|completed|blocked>
+        completed_at: <дата-время-или-null>
+        notes: <заметка-или-пусто>
+      - id: analyze_repositories
+        title: Проанализировать репозитории и собрать технические факты
+        status: <not_started|in_progress|completed|blocked>
+        completed_at: <дата-время-или-null>
+        notes: <заметка-или-пусто>
+      - id: sync_architecture_artifacts
+        title: Синхронизировать architecture-артефакты
+        status: <not_started|in_progress|completed|blocked>
+        completed_at: <дата-время-или-null>
+        notes: <заметка-или-пусто>
+      - id: validate_intermediate
+        title: Провести промежуточную валидацию общей картины
+        status: <not_started|in_progress|completed|blocked>
+        completed_at: <дата-время-или-null>
+        notes: <заметка-или-пусто>
+      - id: collect_open_questions
+        title: Собрать открытые вопросы и пробелы
+        status: <not_started|in_progress|completed|blocked>
+        completed_at: <дата-время-или-null>
+        notes: <заметка-или-пусто>
+      - id: interview_user
+        title: Задать пользователю вопросы только по пробелам
+        status: <not_started|in_progress|completed|blocked>
+        completed_at: <дата-время-или-null>
+        notes: <заметка-или-пусто>
+      - id: refine_features
+        title: Уточнить features и связанные артефакты
+        status: <not_started|in_progress|completed|blocked>
+        completed_at: <дата-время-или-null>
+        notes: <заметка-или-пусто>
+      - id: validate_final
+        title: Провести финальную валидацию артефактов
+        status: <not_started|in_progress|completed|blocked>
+        completed_at: <дата-время-или-null>
+        notes: <заметка-или-пусто>
+      - id: finalize_progress
+        title: Зафиксировать итоговый статус анализа
+        status: <not_started|in_progress|completed|blocked>
+        completed_at: <дата-время-или-null>
+        notes: <заметка-или-пусто>
+
+  current_position:
+    current_step: <текущий-шаг-workflow>
+    current_repository: <текущий-репозиторий-или-пусто>
+    last_completed_step: <последний-завершенный-шаг>
+
+  repository_execution:
+    ordered_repository_names:
+      - <repo-1>
+      - <repo-2>
+    current_repository: <текущий-репозиторий-или-пусто>
+    completed_repository_names:
+      - <already-completed-repo>
+
+  repositories:
+    - name: <название-репозитория>
+      role: <роль-в-системе>
+      repository_url: <url-репозитория>
+      in_scope: true
+      requested_from_user: true
+      source_type: <temp_clone|user_confirmed_local_copy|unavailable>
+      local_path: <локальный-путь-если-есть, обычно .temp/...>
+      main_branch: <основная-ветка>
+      analyzed_commit: <commit-sha>
+      remote_head_commit: <commit-sha-удаленной-ветки>
+      remote_status: <актуален|отстает|локальные-изменения|не удалось проверить>
+      analysis_status: <not_started|in_progress|completed|blocked>
+      notes: <краткая-заметка>
+      analysis_checklist:
+        repository_characterization:
+          status: <not_started|in_progress|completed|blocked>
+          notes: <что это за repo: сервис, библиотека, job, test-repo, infra>
+        entrypoints_and_interfaces:
+          status: <not_started|in_progress|completed|blocked>
+          notes: <HTTP/gRPC/consumers/producers/CLI/cron/admin UI>
+        business_flow_orchestration:
+          status: <not_started|in_progress|completed|blocked>
+          notes: <use cases, application services, orchestration, state transitions>
+        configs_and_runtime:
+          status: <not_started|in_progress|completed|blocked>
+          notes: <env, config, compose, docker, helm, runtime requirements>
+        contracts_and_schemas:
+          status: <not_started|in_progress|completed|blocked>
+          notes: <OpenAPI/protobuf/AsyncAPI/DTO/schema payloads>
+        data_and_storage:
+          status: <not_started|in_progress|completed|blocked>
+          notes: <DB models, migrations, caches, topics, files>
+        integrations_and_dependencies:
+          status: <not_started|in_progress|completed|blocked>
+          notes: <external APIs, brokers, SDKs, internal service calls>
+        tests_and_behavior_evidence:
+          status: <not_started|in_progress|completed|blocked>
+          notes: <integration/e2e tests and strong evidence>
+        glossary_updates:
+          status: <not_started|in_progress|completed|blocked>
+          notes: <какие термины добавлены или уточнены в glossary>
+        open_questions_review_and_updates:
+          status: <not_started|in_progress|completed|blocked>
+          notes: <какие открытые вопросы пересмотрены, какие закрыты, какие добавлены>
+        feature_discovery_and_updates:
+          status: <not_started|in_progress|completed|blocked>
+          notes: <какие capability и сценарии выявлены, какие текущие features созданы или уточнены>
+        features_index_updates:
+          status: <not_started|in_progress|completed|blocked>
+          notes: <какие записи добавлены или обновлены в корневом реестре фич>
+        roles_and_permissions_updates:
+          status: <not_started|in_progress|completed|blocked>
+          notes: <какие роли и матрица функционала добавлены или уточнены>
+        deployment_and_operability:
+          status: <not_started|in_progress|completed|blocked>
+          notes: <CI/CD, manifests, healthchecks, observability, scaling clues>
+        architecture_artifact_updates:
+          status: <not_started|in_progress|completed|blocked>
+          notes: <что обновлено в landscape/HLD/tech-stack/integrations/contracts/storage/requirements/constraints с учетом нового repo>
+
+  artifacts:
+    hld:
+      status: <not_started|in_progress|completed>
+      path: <путь-к-файлу>
+    landscape:
+      status: <not_started|in_progress|completed>
+      path: <путь-к-файлу>
+    integrations:
+      status: <not_started|in_progress|completed>
+      path: <путь-к-каталогу>
+    contracts:
+      status: <not_started|in_progress|completed>
+      path: <путь-к-каталогу>
+    storage:
+      status: <not_started|in_progress|completed>
+      path: <путь-к-каталогу>
+    features:
+      status: <not_started|in_progress|completed>
+      path: <путь-к-каталогу>
+    features_index:
+      status: <not_started|in_progress|completed>
+      path: <путь-к-файлу-в-корне-арх-репозитория>
+    glossary:
+      status: <not_started|in_progress|completed>
+      path: <путь-к-файлу-в-корне-арх-репозитория>
+    open_questions_file:
+      status: <not_started|in_progress|completed>
+      path: <путь-к-файлу-open-questions.md-в-корне-арх-репозитория>
+    roles_and_permissions:
+      status: <not_started|in_progress|completed>
+      path: <путь-к-файлу-architecture/roles-and-permissions.md>
+
+  validation:
+    intermediate_status: <not_started|in_progress|completed>
+    final_status: <not_started|in_progress|completed>
+    last_validated_at: <дата-время>
+    issues:
+      - <расхождение-или-проблема>
+
+  # open_questions хранятся в open-questions.md — источнике истины.
+  # Здесь только краткие ссылки для отслеживания статуса в ходе workflow.
+  open_questions_refs:
+    - id: <question-id>
+      status: <open|resolved|deferred>
+      asked_to_user: <true|false>
+
+  assumptions:
+    - <допущение>
+
+  next_actions:
+    - <следующее-действие>
+
+  resume_hint: <с-какого-шага-и-репозитория-проще-всего-продолжить>

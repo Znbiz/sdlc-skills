@@ -1,0 +1,87 @@
+asyncapi: 2.6.0
+info:
+  title: События домена <название-домена-событий>
+  version: 1.0.0
+  description: <описание контракта асинхронного взаимодействия>
+
+defaultContentType: application/json
+
+servers:
+  production:
+    url: kafka.example.com:9092
+    protocol: kafka
+    description: Основной брокер событий
+
+channels:
+  <topic-name>:
+    description: <описание канала>
+    subscribe:
+      summary: <краткое описание поведения получателя>
+      operationId: <consumeOperationId>
+      message:
+        $ref: "#/components/messages/<ConsumedMessage>"
+    publish:
+      summary: <краткое описание поведения отправителя>
+      operationId: <publishOperationId>
+      message:
+        $ref: "#/components/messages/<PublishedMessage>"
+
+components:
+  messages:
+    <PublishedMessage>:
+      name: <название-публикуемого-сообщения>
+      title: <заголовок публикуемого сообщения>
+      summary: <краткое описание публикуемого сообщения>
+      contentType: application/json
+      headers:
+        type: object
+        required:
+          - eventId
+          - eventType
+          - eventVersion
+          - producedAt
+        properties:
+          eventId:
+            type: string
+            format: uuid
+          eventType:
+            type: string
+          eventVersion:
+            type: string
+          producedAt:
+            type: string
+            format: date-time
+          correlationId:
+            type: string
+      payload:
+        $ref: "#/components/schemas/<PublishedPayload>"
+
+    <ConsumedMessage>:
+      name: <название-получаемого-сообщения>
+      title: <заголовок получаемого сообщения>
+      summary: <краткое описание получаемого сообщения>
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/<ConsumedPayload>"
+
+  schemas:
+    <PublishedPayload>:
+      type: object
+      required:
+        - <requiredField>
+      properties:
+        <requiredField>:
+          type: string
+          description: <описание поля>
+        <optionalField>:
+          type: string
+          nullable: true
+          description: <описание поля>
+
+    <ConsumedPayload>:
+      type: object
+      properties:
+        id:
+          type: string
+        status:
+          type: string

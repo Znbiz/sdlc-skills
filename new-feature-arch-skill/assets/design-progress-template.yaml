@@ -1,0 +1,86 @@
+design_progress:
+  skill_name: new-feature-arch-skill
+  status: <not_started|in_progress|blocked|completed>
+  product: <название-продукта>
+  change_scope: <что именно меняется>
+  started_at: <дата-время-старта>
+  updated_at: <дата-время-последнего-обновления>
+  analyst: <агент-или-исполнитель>
+
+  current_position:
+    current_step: <текущий-шаг-workflow>
+    current_mode: <feature_analysis|solution_design|validation>
+    current_component: <текущий-сервис-модуль-или-пусто>
+    last_completed_step: <последний-завершенный-шаг>
+
+  as_is_basis:
+    status: <not_checked|partially_confirmed|confirmed|insufficient>
+    source: <init-repo-arch-skill|existing_docs|code_review|user_confirmation>
+    notes: <что подтверждено и чего не хватает>
+
+  impacted_areas:
+    product_flows:
+      - <сценарий-или-capability>
+    components:
+      - <сервис-модуль-джоба>
+    integrations:
+      - <интеграция>
+    contracts:
+      - <api-или-событие>
+    storages:
+      - <хранилище-или-схема>
+
+  artifacts:
+    feature_doc:
+      status: <not_started|in_progress|completed>
+      path: <путь-к-файлу>
+    requirements:
+      status: <not_started|in_progress|completed>
+      path: <путь-к-файлу>
+    constraints:
+      status: <not_started|in_progress|completed>
+      path: <путь-к-файлу>
+    hld:
+      status: <not_started|in_progress|completed>
+      path: <путь-к-файлу>
+    landscape:
+      status: <not_started|in_progress|completed>
+      path: <путь-к-файлу>
+    tech_stack:
+      status: <not_started|in_progress|completed>
+      path: <путь-к-файлу>
+    integrations:
+      status: <not_started|in_progress|completed>
+      path: <путь-к-каталогу>
+    contracts:
+      status: <not_started|in_progress|completed>
+      path: <путь-к-каталогу>
+    storage:
+      status: <not_started|in_progress|completed>
+      path: <путь-к-каталогу>
+
+  decisions:
+    - id: <decision-id>
+      status: <proposed|accepted|rejected|deferred>
+      summary: <краткое-решение>
+      rationale: <почему-выбрано>
+      alternatives_considered:
+        - <альтернатива>
+
+  open_questions:
+    - id: <question-id>
+      status: <open|resolved|deferred>
+      question: <текст-вопроса>
+      owner: <кто-должен-ответить>
+      resolution: <ответ-или-способ-закрытия>
+
+  assumptions:
+    - <допущение>
+
+  risks:
+    - <архитектурный-или-rollout-риск>
+
+  next_actions:
+    - <следующее-действие>
+
+  resume_hint: <с-какого-шага-и-артефакта-проще-всего-продолжить>

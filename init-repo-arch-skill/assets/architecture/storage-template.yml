@@ -1,0 +1,20 @@
+storage:
+  id: <идентификатор-хранилища>
+  name: <название-хранилища>
+  type: <postgresql|mongodb|redis|kafka-topic|...>
+  owner: <владелец, если известен>
+  description: <описание>
+  confidence: <подтверждено|выведено>
+
+schemas:
+  - name: <название-схемы>
+    tables:
+      - name: <название-таблицы>
+        description: <описание>
+        columns:
+          - name: <название-колонки>
+            type: <тип-колонки>
+            nullable: false
+            description: <описание>
+        evidence:
+          - <миграция, модель или другой артефакт>

@@ -1,0 +1,128 @@
+openapi: 3.0.3
+info:
+  title: API сервиса <название-сервиса>
+  version: 1.0.0
+  description: <описание контракта сервиса>
+
+servers:
+  - url: https://api.example.com
+    description: Основной контур
+
+tags:
+  - name: <доменный-тег>
+    description: <описание тега>
+
+paths:
+  /<resource-path>:
+    get:
+      tags:
+        - <доменный-тег>
+      summary: <краткое описание операции>
+      operationId: <operationId>
+      parameters:
+        - in: query
+          name: <queryParam>
+          required: false
+          schema:
+            type: string
+          description: <описание query-параметра>
+      responses:
+        "200":
+          description: <описание ответа>
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/<ResponseSchema>"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    post:
+      tags:
+        - <доменный-тег>
+      summary: <краткое описание операции создания>
+      operationId: <createOperationId>
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/<RequestSchema>"
+      responses:
+        "201":
+          description: <описание созданного объекта>
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/<ResponseSchema>"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+components:
+  schemas:
+    <RequestSchema>:
+      type: object
+      required:
+        - <requiredField>
+      properties:
+        <requiredField>:
+          type: string
+          description: <описание поля>
+        <optionalField>:
+          type: string
+          nullable: true
+          description: <описание поля>
+
+    <ResponseSchema>:
+      type: object
+      required:
+        - id
+        - status
+      properties:
+        id:
+          type: string
+          description: Идентификатор ресурса
+        status:
+          type: string
+          description: Текущий бизнес-статус
+        message:
+          type: string
+          nullable: true
+          description: Дополнительные детали
+
+    ErrorResponse:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          type: array
+          items:
+            type: string
+
+  responses:
+    BadRequest:
+      description: Ошибка валидации запроса
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Conflict:
+      description: Конфликт состояния ресурса
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    InternalServerError:
+      description: Непредвиденная техническая ошибка
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"

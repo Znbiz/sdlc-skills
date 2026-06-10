@@ -1,0 +1,31 @@
+system:
+  name: <название-системы>
+  product: <название-продукта>
+  owner: <владелец>
+  repository: <url-репозитория>
+
+entities:
+  services:
+    - id: <идентификатор-сервиса>
+      name: <название-сервиса>
+      repository: <url-репозитория>
+      description: <описание>
+      technology: <технология>
+
+  storages:
+    - id: <идентификатор-хранилища>
+      name: <название-хранилища>
+      type: <postgresql|mongodb|kafka|redis|...>
+      description: <описание>
+
+  external_systems:
+    - id: <идентификатор-внешней-системы>
+      name: <название-внешней-системы>
+      type: <тип>
+      description: <описание>
+
+relationships:
+  - from: <идентификатор-источника>
+    to: <идентификатор-цели>
+    kind: <sync-http|async-event|sql|grpc|...>
+    description: <описание>
