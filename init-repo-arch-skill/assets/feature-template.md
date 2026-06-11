@@ -3,6 +3,7 @@
 ## Метаданные
 
 - Идентификатор фичи: `FEAT-XXXX`
+- Тип: `user-facing | machine-to-machine | operational`
 - Статус: `текущее-состояние`
 - Статус реализации: `implemented | partial | not-implemented | unknown`
 - Владелец: `<владелец продукта или системы>`
