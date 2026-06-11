@@ -119,6 +119,10 @@ REPOSITORY_CHECKLIST_DEFINITIONS = [
         "architecture_artifact_updates",
         "Обновить landscape, tech-stack, features; проверить наличие storage/<svc>.yml, integrations/<svc>.md, contracts/<svc>-sync.yml, contracts/<svc>-async.yml, обновлённого architecture/security.md и architecture/risks.md (или явную пометку в notes)",
     ),
+    (
+        "repository_consistency_review",
+        "Финальная проверка согласованности артефактов репозитория перед закрытием: entrypoints ↔ contracts, contracts ↔ integrations, storage ↔ HLD, features ↔ entrypoints, domain-entities ↔ contracts+storage; исправить расхождения, зафиксировать итог в notes",
+    ),
 ]
 
 CHECKLIST_INDEX = {item_id: idx for idx, (item_id, _) in enumerate(REPOSITORY_CHECKLIST_DEFINITIONS)}

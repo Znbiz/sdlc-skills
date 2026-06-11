@@ -168,7 +168,7 @@ analysis_progress:
           notes: <что обновлено в landscape/HLD/tech-stack/integrations/contracts/storage/requirements/constraints с учетом нового repo>
         repository_consistency_review:
           status: <not_started|in_progress|completed|blocked>
-          notes: <результат финальной проверки согласованности артефактов репозитория перед закрытием>
+          notes: <результат финальной проверки согласованности — entrypoints↔contracts, contracts↔integrations, storage↔HLD, features↔entrypoints, domain-entities↔contracts+storage>
 
   artifacts:
     hld:
