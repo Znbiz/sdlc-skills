@@ -89,8 +89,13 @@ REPOSITORY_CHECKLIST_DEFINITIONS = [
     ("entrypoints_and_interfaces", "Найти точки входа и внешние интерфейсы"),
     ("business_flow_orchestration", "Разобрать orchestration и бизнес-потоки"),
     ("configs_and_runtime", "Собрать конфиги и runtime-зависимости"),
+    ("tech_stack_collection", "Собрать технологический стек → зафиксировать ЯП, runtime, framework, ORM, transport, broker clients, observability, security и архитектурно значимые SDK в architecture/tech-stack.md"),
     ("contracts_and_schemas", "Собрать контракты, DTO и схемы → создать contracts/<service>-sync.yml (HTTP/REST/gRPC) и contracts/<service>-async.yml (Kafka/AMQP/gRPC-stream); если нет — явно написать 'нет' в notes"),
     ("data_and_storage", "Разобрать storage, модели, миграции, topics и cache → создать architecture/storage/<service>.yml"),
+    (
+        "domain_entities",
+        "Выделить ключевые бизнес-сущности, видимые пользователю/внешней системе: собрать поля с фронтенда и бэкенда, пометить backend_only поля → обновить architecture/domain-entities.md",
+    ),
     ("integrations_and_dependencies", "Собрать интеграции и зависимости → создать architecture/integrations/<service>.md"),
     ("tests_and_behavior_evidence", "Собрать сильные подтверждения из integration/e2e/tests"),
     ("glossary_updates", "Обновить glossary по новым и неоднозначным терминам"),

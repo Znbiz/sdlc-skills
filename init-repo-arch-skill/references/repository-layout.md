@@ -21,6 +21,7 @@ repo/
 │   ├── roles-and-permissions.md     # Роли и матрица функционала
 │   ├── security.md                  # Модель аутентификации, границы доверия, чувствительные данные
 │   ├── risks.md                     # Известные риски и технический долг
+│   ├── domain-entities.md           # Ключевые бизнес-сущности: поля видимые пользователю и backend_only
 │   ├── tech-stack.md                # Ключевые технологии и архитектурно значимые зависимости
 │   ├── integrations-overview.md     # Обзор всех интеграций
 │   ├── integrations/                # Детализация интеграций по сервисам
@@ -32,7 +33,32 @@ repo/
 │       └── <storage>.yml            # Один файл на одно хранилище или логическую схему
 ```
 
-Шаблоны не нужно хранить в продуктовой документации. Их надо брать из самого skill и использовать только для генерации или заполнения целевых файлов.
+## Шаблоны и соответствующие артефакты
+
+Шаблоны хранятся в `assets/` skill и используются только для генерации целевых файлов. В продуктовый репозиторий попадают только заполненные артефакты, сами шаблоны туда не копируются.
+
+| Артефакт в репозитории | Шаблон | Когда создавать |
+| --- | --- | --- |
+| `AGENTS.md` | `assets/AGENTS-template.md` | После завершения анализа — заполни название системы и раздел «Текущие сервисы» |
+| `CLAUDE.md` | `assets/CLAUDE-template.md` | Один раз при инициализации — содержит только `@AGENTS.md`, редактировать не нужно |
+| `features-index.md` | `assets/features-index-template.md` | При выделении первой фичи, затем обновляется при каждом новом репозитории |
+| `open-questions.md` | `assets/open-questions-template.md` | При первом же пробеле, который нельзя закрыть из кода |
+| `features/<name>.md` | `assets/feature-template.md` | Один файл на каждую выделенную capability |
+| `architecture/hld.md` | `assets/architecture/hld-template.md` | При первом репозитории, затем дополняется |
+| `architecture/landscape.yaml` | `assets/architecture/landscape-template.yaml` | При первом репозитории — сервис, technology, зависимости |
+| `architecture/tech-stack.md` | `assets/architecture/tech-stack-template.md` | После сбора стека каждого сервиса |
+| `architecture/constraints.md` | `assets/architecture/constraints-template.md` | Когда обнаружены технические или организационные ограничения |
+| `architecture/requirements.md` | `assets/architecture/requirements-template.md` | Когда подтверждены ФТ или НФТ из кода, конфигурации или тестов |
+| `architecture/glossary.md` | `assets/architecture/glossary-template.md` | При первом специфичном или переопределённом термине |
+| `architecture/roles-and-permissions.md` | `assets/architecture/roles-and-permissions-template.md` | Когда обнаружены роли, RBAC/ABAC или auth middleware |
+| `architecture/security.md` | `assets/architecture/security-template.md` | Когда определены auth-механизмы или границы доверия |
+| `architecture/domain-entities.md` | `assets/architecture/domain-entities-template.md` | После прохода по всем репозиториям — ключевые бизнес-сущности с разметкой видимости полей |
+| `architecture/risks.md` | `assets/architecture/risks-template.md` | Когда найден технический долг, уязвимость или архитектурный риск |
+| `architecture/integrations-overview.md` | `assets/architecture/integrations-overview-template.md` | После первой интеграции, затем обновляется |
+| `architecture/integrations/<service>.md` | `assets/architecture/integration-template.md` | Один файл на сервис со всеми входящими и исходящими интеграциями |
+| `architecture/contracts/<service>-sync.yml` | `assets/architecture/contract-template.yml` | Когда восстановлен синхронный (HTTP/gRPC) контракт |
+| `architecture/contracts/<service>-async.yml` | `assets/architecture/async-contract-template.yml` | Когда восстановлены события или Kafka-топики |
+| `architecture/storage/<service>.yml` | `assets/architecture/storage-template.yml` | Когда найдены БД, кэши, файловые хранилища |
 
 ## Как ссылаться на исходный код
 

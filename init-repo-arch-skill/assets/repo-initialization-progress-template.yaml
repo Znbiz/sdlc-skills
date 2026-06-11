@@ -127,12 +127,18 @@ analysis_progress:
         configs_and_runtime:
           status: <not_started|in_progress|completed|blocked>
           notes: <env, config, compose, docker, helm, runtime requirements>
+        tech_stack_collection:
+          status: <not_started|in_progress|completed|blocked>
+          notes: <ЯП, runtime, framework, ORM, transport, broker clients, observability, security SDK — с версиями и источником подтверждения>
         contracts_and_schemas:
           status: <not_started|in_progress|completed|blocked>
           notes: <OpenAPI/protobuf/AsyncAPI/DTO/schema payloads>
         data_and_storage:
           status: <not_started|in_progress|completed|blocked>
           notes: <DB models, migrations, caches, topics, files>
+        domain_entities:
+          status: <not_started|in_progress|completed|blocked>
+          notes: <ключевые бизнес-сущности видимые пользователю/внешней системе; backend_only поля помечены>
         integrations_and_dependencies:
           status: <not_started|in_progress|completed|blocked>
           notes: <external APIs, brokers, SDKs, internal service calls>
@@ -160,6 +166,9 @@ analysis_progress:
         architecture_artifact_updates:
           status: <not_started|in_progress|completed|blocked>
           notes: <что обновлено в landscape/HLD/tech-stack/integrations/contracts/storage/requirements/constraints с учетом нового repo>
+        repository_consistency_review:
+          status: <not_started|in_progress|completed|blocked>
+          notes: <результат финальной проверки согласованности артефактов репозитория перед закрытием>
 
   artifacts:
     hld:
@@ -192,6 +201,9 @@ analysis_progress:
     roles_and_permissions:
       status: <not_started|in_progress|completed>
       path: <путь-к-файлу-architecture/roles-and-permissions.md>
+    domain_entities:
+      status: <not_started|in_progress|completed>
+      path: <путь-к-файлу-architecture/domain-entities.md>
 
   validation:
     intermediate_status: <not_started|in_progress|completed>
