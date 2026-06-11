@@ -45,7 +45,7 @@ metadata:
 - `assets/architecture/glossary-template.md`, когда фиксируешь термины, непонятные, специфичные для системы или переопределенные по сравнению с общим смыслом
 - `assets/open-questions-template.md`, когда создаёшь или обновляешь `open-questions.md` — самостоятельный первоклассный артефакт в корне репозитория, где каждая строка таблицы является отдельной сущностью с полями ID, вопрос, контекст, репозиторий, статус, ask_user, что известно, как закрыт; служебные пояснения о назначении этого файла и порядке его ведения должны оставаться в тексте skill, а не попадать в сам продуктовый артефакт
 - `assets/architecture/roles-and-permissions-template.md`, когда собираешь роли и матрицу функционала по доступам
-- `assets/architecture/integrations-overview-template.md`, когда собираешь обзор всех интеграций в `architecture/integrations/overview.md`
+- `assets/architecture/integrations-overview-template.md`, когда собираешь обзор всех интеграций в `architecture/integrations-overview.md`
 - `assets/architecture/integration-template.md`, когда описываешь один сервис и все входящие и исходящие интеграции этого сервиса в `architecture/integrations/<service>.md`
 - `assets/architecture/contract-template.yml`, когда восстанавливаешь синхронный контракт
 - `assets/architecture/async-contract-template.yml`, когда восстанавливаешь события
@@ -115,7 +115,7 @@ metadata:
 12. `features_index_updates`: обновить корневой файл-реестр фич с кратким описанием и ссылками на feature-файлы
 13. `roles_and_permissions_updates`: обновить `architecture/roles-and-permissions.md` по ролям и матрице функционала, если репозиторий дал новую информацию о доступах
 14. `deployment_and_operability`: проверить CI/CD, manifests, health checks, observability, jobs, scaling и startup dependencies
-15. `architecture_artifact_updates`: обновить уже существующие агрегирующие артефакты по новой информации из текущего репозитория. Обязательная проверка перед закрытием пункта: (a) `landscape.yaml` содержит запись для сервиса с `head_commit`; (b) `tech-stack.md` содержит строки для сервиса; (c) файл `architecture/integrations/<service>.md` существует (создан в пункте 7); (d) файл `architecture/storage/<service>.yml` существует или явно помечен как "нет хранилища" (создан в пункте 6); (e) файл `architecture/contracts/<service>-sync.yml` существует или явно помечен как "нет sync контракта" в notes пункта 5; (f) файл `architecture/contracts/<service>-async.yml` существует или явно помечен как "нет async контракта" в notes пункта 5; (g) затронутые `features/` обновлены с трассировкой реализации.
+15. `architecture_artifact_updates`: обновить уже существующие агрегирующие артефакты по новой информации из текущего репозитория. Обязательная проверка перед закрытием пункта: (a) `landscape.yaml` содержит запись для сервиса с `head_commit`; (b) `tech-stack.md` содержит строки для сервиса; (c) `hld.md` обновлён — раздел "Границы анализа" включает репозиторий, раздел "Обзор архитектуры" отражает роль сервиса, секция компонента описывает реализацию (а не black-box), раздел "Основные потоки" содержит новые потоки, которые стали известны из репозитория; (d) файл `architecture/integrations/<service>.md` существует (создан в пункте 7); (e) файл `architecture/storage/<service>.yml` существует или явно помечен как "нет хранилища" (создан в пункте 6); (f) файл `architecture/contracts/<service>-sync.yml` существует или явно помечен как "нет sync контракта" в notes пункта 5; (g) файл `architecture/contracts/<service>-async.yml` существует или явно помечен как "нет async контракта" в notes пункта 5; (h) затронутые `features/` обновлены с трассировкой реализации.
 
 ## Основной workflow
 
@@ -141,7 +141,7 @@ metadata:
     - `architecture/landscape.yaml`, `tech-stack.md`, `hld.md`, интеграции, контракты, storage, requirements/constraints и файл прогресса
     - Проверяй, как новый репозиторий меняет уже собранную картину: кто кого вызывает, какие данные передаются, какие open-questions теперь можно закрыть
 18. Разделяй каждое утверждение на одно из трех состояний: наблюдаемый факт, обоснованный вывод, предположение.
-19. Отдельно вытащи все внешние интеграции продукта и сохрани их в `architecture/integrations/`: обзор в `overview.md` и детализацию по одному файлу на сервис, где перечислены все его входящие и исходящие интеграции.
+19. Отдельно вытащи все внешние интеграции продукта: обзор сохрани в `architecture/integrations-overview.md`, детализацию по каждому сервису — в `architecture/integrations/<service>.md`.
 20. Для каждого сервиса фиксируй в `landscape.yaml` краткое поле `technology` в формате `<runtime> / <framework>`, а в `architecture/tech-stack.md` поддерживай таблицу по ключевым зависимостям и версиям с указанием сервиса и источника подтверждения.
 21. Если какой-то репозиторий недоступен, явно помечай это как ограничение анализа и не замещай пробел догадкой.
 22. После первичного прохода по всем доступным репозиториям проверь согласованность артефактов: не противоречат ли друг другу `hld`, `landscape`, `tech-stack`, интеграции, контракты, хранилища, `features/`, корневой реестр фич, glossary, open-questions, роли и список репозиториев-источников фактов.
