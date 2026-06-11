@@ -101,10 +101,18 @@ REPOSITORY_CHECKLIST_DEFINITIONS = [
     ("feature_discovery_and_updates", "Выделить и обновить текущие features по новой информации"),
     ("features_index_updates", "Обновить корневой реестр фич"),
     ("roles_and_permissions_updates", "Обновить роли и матрицу функционала"),
+    (
+        "security_and_auth_updates",
+        "Зафиксировать модель аутентификации и границы доверия → обновить architecture/security.md: механизмы аутентификации пользователей и сервисов, межсервисное доверие, чувствительные данные и шифрование; если данных нет — явно написать 'не удалось восстановить' в notes",
+    ),
     ("deployment_and_operability", "Проверить deploy, observability и operability сигналы"),
     (
+        "risks_and_tech_debt_updates",
+        "Зафиксировать известные риски и технический долг → обновить architecture/risks.md: хрупкие места, EOL-зависимости, отсутствующие retry/circuit breakers, незащищённые эндпоинты, известные инциденты; если рисков не выявлено — явно написать 'рисков не выявлено' в notes",
+    ),
+    (
         "architecture_artifact_updates",
-        "Обновить landscape, tech-stack, features; проверить наличие storage/<svc>.yml, integrations/<svc>.md, contracts/<svc>-sync.yml и contracts/<svc>-async.yml (или явную пометку 'нет' в notes)",
+        "Обновить landscape, tech-stack, features; проверить наличие storage/<svc>.yml, integrations/<svc>.md, contracts/<svc>-sync.yml, contracts/<svc>-async.yml, обновлённого architecture/security.md и architecture/risks.md (или явную пометку в notes)",
     ),
 ]
 
