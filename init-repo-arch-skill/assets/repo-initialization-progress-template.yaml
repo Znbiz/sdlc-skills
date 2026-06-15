@@ -9,7 +9,7 @@ analysis_progress:
 
   workflow:
     enforcement_mode: strict
-    current_step_id: <define_scope|request_repository_list|prepare_temp_workspace|clone_repositories|refresh_main_branches|check_test_repositories|plan_repository_order|analyze_repositories|sync_architecture_artifacts|validate_intermediate|collect_open_questions|interview_user|refine_features|validate_final|finalize_progress>
+    current_step_id: <define_scope|request_repository_list|prepare_temp_workspace|clone_repositories|refresh_main_branches|plan_repository_order|analyze_repositories|interview_user|validate_final|finalize_progress>
     steps:
       - id: define_scope
         title: Определить продукт, контур и границы анализа
@@ -36,11 +36,6 @@ analysis_progress:
         status: <not_started|in_progress|completed|blocked>
         completed_at: <дата-время-или-null>
         notes: <заметка-или-пусто>
-      - id: check_test_repositories
-        title: Проверить отдельные e2e и integration репозитории
-        status: <not_started|in_progress|completed|blocked>
-        completed_at: <дата-время-или-null>
-        notes: <заметка-или-пусто>
       - id: plan_repository_order
         title: Определить порядок обхода репозиториев
         status: <not_started|in_progress|completed|blocked>
@@ -51,28 +46,8 @@ analysis_progress:
         status: <not_started|in_progress|completed|blocked>
         completed_at: <дата-время-или-null>
         notes: <заметка-или-пусто>
-      - id: sync_architecture_artifacts
-        title: Синхронизировать architecture-артефакты
-        status: <not_started|in_progress|completed|blocked>
-        completed_at: <дата-время-или-null>
-        notes: <заметка-или-пусто>
-      - id: validate_intermediate
-        title: Провести промежуточную валидацию общей картины
-        status: <not_started|in_progress|completed|blocked>
-        completed_at: <дата-время-или-null>
-        notes: <заметка-или-пусто>
-      - id: collect_open_questions
-        title: Собрать открытые вопросы и пробелы
-        status: <not_started|in_progress|completed|blocked>
-        completed_at: <дата-время-или-null>
-        notes: <заметка-или-пусто>
       - id: interview_user
         title: Задать пользователю вопросы только по пробелам
-        status: <not_started|in_progress|completed|blocked>
-        completed_at: <дата-время-или-null>
-        notes: <заметка-или-пусто>
-      - id: refine_features
-        title: Уточнить features и связанные артефакты
         status: <not_started|in_progress|completed|blocked>
         completed_at: <дата-время-или-null>
         notes: <заметка-или-пусто>
@@ -90,6 +65,7 @@ analysis_progress:
   current_position:
     current_step: <текущий-шаг-workflow>
     current_repository: <текущий-репозиторий-или-пусто>
+    current_domain: <текущий-домен-или-пусто>
     last_completed_step: <последний-завершенный-шаг>
 
   repository_execution:
@@ -114,10 +90,41 @@ analysis_progress:
       remote_status: <актуален|отстает|локальные-изменения|не удалось проверить>
       analysis_status: <not_started|in_progress|completed|blocked>
       notes: <краткая-заметка>
+      domain_map:
+        assessed_at: <дата-время-или-null>
+        strategy: <per_module|per_domain>
+        volume_class: <small|medium|large|xlarge>
+        total_files_estimate: 0
+        domains:
+          - id: <domain-slug>
+            name: <Название домена>
+            description: <краткое описание>
+            subdomains:
+              - id: <subdomain-slug>
+                name: <Название поддомена>
+            paths:
+              - <apps/billing/>
+            source_signals:
+              - <сигнал обнаружения домена>
+            analysis_status: <not_started|in_progress|completed>
+            analysis_notes: <заметка-или-пусто>
+        domain_execution:
+          ordered_domain_ids:
+            - <domain-id-1>
+            - <domain-id-2>
+          current_domain_id: <текущий-домен-или-пусто>
+          completed_domain_ids:
+            - <уже-завершённый-домен>
       analysis_checklist:
+        scope_and_domain_assessment:
+          status: <not_started|in_progress|completed|blocked>
+          notes: <объём репозитория, стратегия per_repository или per_domain; если per_domain — список доменов с путями>
         repository_characterization:
           status: <not_started|in_progress|completed|blocked>
           notes: <что это за repo: сервис, библиотека, job, test-repo, infra>
+        test_repository_classification:
+          status: <not_started|in_progress|completed|blocked>
+          notes: <является ли репозиторий отдельным e2e или integration test-репозиторием; если да — какие сервисы покрывает>
         entrypoints_and_interfaces:
           status: <not_started|in_progress|completed|blocked>
           notes: <HTTP/gRPC/consumers/producers/CLI/cron/admin UI>

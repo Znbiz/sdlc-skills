@@ -43,10 +43,11 @@ metadata:
 4. После завершения этапа переводи workflow дальше через `... advance`.
 5. Если скрипт показывает ошибку консистентности или нарушение обязательных предусловий, сначала исправь progress-файл или артефакты, и только потом продолжай анализ.
 
-Рекомендуемый CLI минимален. По умолчанию агент должен использовать только 4 команды:
+Рекомендуемый CLI минимален. По умолчанию агент должен использовать только 5 команд:
 
 - `python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py init --output <path> --product <name> --scope <scope>`
 - `python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py status --progress <path>`
+- `python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py domain ...`
 - `python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py repo ...`
 - `python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py advance --progress <path> --note "<что завершено>"`
 
@@ -67,18 +68,45 @@ metadata:
 status → загрузить reference → выполнить один шаг → advance → повторить
 ```
 
-**Для шага `analyze_repositories`** — вложенная петля по `analysis_checklist`:
+**Для шага `assess_scope_and_domains`** — выполняется по каждому репозиторию в отдельности, в порядке `ordered_repository_names`. Результат хранится в `repo.domain_map`, не глобально:
 ```
-status → получить текущий checklist-пункт → загрузить reference для пункта → выполнить → checklist-item completed → повторить
+status → загрузить reference checklist-scope-and-domain-assessment.md
+       → для каждого репозитория:
+           оценить объём (find + wc по .temp/<repo>)
+           domain --repo <repo> --assess --volume-class <class> --total-files <N> --strategy <per_module|per_domain>
+           (если per_domain) domain --repo <repo> --register ... для каждого домена
+       → advance --note "repo1: per_domain 2 домена; repo2: per_module"
 ```
 
-Для каждого репозитория строгий порядок:
+**Для шага `analyze_repositories`** — вложенная петля, форма зависит от стратегии:
+
+*Стратегия `per_repository` (малые продукты или нет явных доменных границ):*
+```
+status → получить текущий checklist-пункт → загрузить reference → выполнить
+       → checklist-item completed → повторить
+```
+
+*Стратегия `per_domain` (явные бизнес-домены выявлены на предыдущем шаге):*
+```
+domain --start --domain-id <id>
+  → для каждого репозитория домена: полный checklist (см. ниже)
+  → зафиксировать находки с тегом домена в features и артефактах
+domain --complete --domain-id <id> --notes "<итог домена>"
+→ следующий домен
+```
+
+Для каждого репозитория строгий порядок (независимо от стратегии):
 1. Добавить в очередь через `repo --register`
 2. Начать через `repo --start`
 3. По одному пункту checklist: загрузить reference → выполнить → `repo --checklist-item ... --checklist-status completed --notes "<findings>"`
 4. Зафиксировать `main_branch`, `analyzed_commit`, `remote_head_commit`
 5. Закрыть через `repo --complete`
-6. Только потом — следующий репозиторий
+6. **Остановиться.** Вывести пользователю итог по репозиторию и явно попросить открыть новый чат для продолжения со следующим репозиторием. Не переходить к следующему репозиторию в текущем контексте. Пример сообщения:
+
+   > Репозиторий `<repo>` проанализирован и зафиксирован в progress-файле.
+   > Чтобы продолжить анализ следующего репозитория (`<next-repo>`), откройте новый чат и запустите этот skill снова, указав путь к уже существующему progress-файлу: `/init-repo-arch-skill <path-to-progress-file>`.
+
+7. Следующий репозиторий начинается только в новом чате.
 
 Короткая памятка по `repo`:
 - `repo --register --name <repo> --role <role> --repository-url <url>`
@@ -86,8 +114,22 @@ status → получить текущий checklist-пункт → загруз
 - `repo --checklist-item <item> --checklist-status completed --name <repo> --notes "<findings>"`
 - `repo --complete --name <repo>`
 
+Короткая памятка по `domain` (все команды требуют `--repo <имя-репозитория>`):
+- `domain --repo <repo> --assess --volume-class <class> --total-files <N> --strategy <per_module|per_domain>`
+- `domain --repo <repo> --register --domain-id <id> --name <name> --paths "<path1,path2>" [--signal "<сигнал>"]`
+- `domain --repo <repo> --add-subdomain --domain-id <id> --subdomain-id <sid> --subdomain-name <name>`
+- `domain --repo <repo> --start --domain-id <id>`
+- `domain --repo <repo> --complete --domain-id <id> [--notes "<итог>"]`
+
 Нельзя завершать шаг `analyze_repositories`, пока хотя бы один `in_scope` репозиторий не имеет `analysis_status=completed`.
 Нельзя завершать отдельный репозиторий, пока хотя бы один пункт его `analysis_checklist` не имеет `status=completed`.
+Если `domain_map.strategy=per_domain`, нельзя завершать `analyze_repositories`, пока хотя бы один зарегистрированный домен не имеет `analysis_status=completed`.
+
+### Маппинг: шаг workflow → reference
+
+| Шаг `workflow` | Reference-файл |
+|---|---|
+| `assess_scope_and_domains` | [checklist-scope-and-domain-assessment.md](references/checklist-scope-and-domain-assessment.md) |
 
 ### Маппинг: пункт analysis_checklist → reference
 
