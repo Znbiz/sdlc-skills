@@ -50,10 +50,9 @@ REPOSITORY_CHECKLIST_DEFINITIONS = [
         "scope_and_domain_assessment",
         "Оценить объём репозитория и выявить бизнес-домены и поддомены; определить стратегию per_repository или per_domain",
     ),
-    ("repository_characterization", "Определить тип и роль репозитория в системе"),
     (
-        "test_repository_classification",
-        "Определить, является ли репозиторий отдельным e2e или integration test-репозиторием; если да — зафиксировать, какие сервисы покрывает",
+        "repository_classification",
+        "Определить тип репозитория, его роль и категорию product/support (service/job/monorepo vs library/test-repo/infra)",
     ),
     ("entrypoints_and_interfaces", "Найти точки входа и внешние интерфейсы"),
     ("business_flow_orchestration", "Разобрать orchestration и бизнес-потоки"),

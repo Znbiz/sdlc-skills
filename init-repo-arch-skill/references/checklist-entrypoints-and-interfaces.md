@@ -34,5 +34,5 @@
 
 - Если найдены точки входа, которых нет в `architecture/hld.md` — добавить компонент или обновить существующий раздел.
 - Если сервис имеет публичный HTTP/gRPC API — проверить, что в `landscape.yaml` у него задано поле `technology` (runtime / framework).
-- Если тип репозитория в предыдущем пункте `library` или `infra`, а здесь нашлись HTTP-handlers — пересмотреть тип и обновить `notes` пункта `repository_characterization`.
+- Если тип репозитория в предыдущем пункте `library` или `infra`, а здесь нашлись HTTP-handlers — пересмотреть тип и категорию (`support` → `product`) и обновить `notes` пункта `repository_classification`.
 - Если найдены consumer/producer — проверить, упомянут ли broker в HLD. Если нет — добавить.

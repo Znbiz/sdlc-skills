@@ -23,6 +23,7 @@ repo/
 │   ├── risks.md                     # Известные риски и технический долг
 │   ├── domain-entities.md           # Ключевые бизнес-сущности: поля видимые пользователю и backend_only
 │   ├── tech-stack.md                # Ключевые технологии и архитектурно значимые зависимости
+│   ├── support-repositories.md      # Реестр library/test-repo/infra репозиториев, отдельно от продуктовых
 │   ├── integrations-overview.md     # Обзор всех интеграций
 │   ├── integrations/                # Детализация интеграций по сервисам
 │   │   └── <service>.md             # Один файл на сервис со всеми входящими и исходящими интеграциями
@@ -47,6 +48,7 @@ repo/
 | `architecture/hld.md` | `assets/architecture/hld-template.md` | При первом репозитории, затем дополняется |
 | `architecture/landscape.yaml` | `assets/architecture/landscape-template.yaml` | При первом репозитории — сервис, technology, зависимости |
 | `architecture/tech-stack.md` | `assets/architecture/tech-stack-template.md` | После сбора стека каждого сервиса |
+| `architecture/support-repositories.md` | `assets/architecture/support-repositories-template.md` | Когда классифицирован первый репозиторий категории `support` (`library`/`test-repo`/`infra`) |
 | `architecture/constraints.md` | `assets/architecture/constraints-template.md` | Когда обнаружены технические или организационные ограничения |
 | `architecture/requirements.md` | `assets/architecture/requirements-template.md` | Когда подтверждены ФТ или НФТ из кода, конфигурации или тестов |
 | `architecture/glossary.md` | `assets/architecture/glossary-template.md` | При первом специфичном или переопределённом термине |

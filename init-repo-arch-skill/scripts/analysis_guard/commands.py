@@ -123,8 +123,8 @@ def advance_command(args: argparse.Namespace) -> int:
         workflow["current_step_id"] = next_id
         root["current_position"]["current_step"] = next_id
     else:
-        workflow["current_step_id"] = current_id
-        root["current_position"]["current_step"] = current_id
+        workflow["current_step_id"] = ""
+        root["current_position"]["current_step"] = ""
         root["status"] = "completed"
 
     if args.repository is not None:

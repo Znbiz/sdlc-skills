@@ -9,7 +9,7 @@ analysis_progress:
 
   workflow:
     enforcement_mode: strict
-    current_step_id: <define_scope|request_repository_list|prepare_temp_workspace|clone_repositories|refresh_main_branches|plan_repository_order|analyze_repositories|interview_user|validate_final|finalize_progress>
+    current_step_id: <define_scope|request_repository_list|prepare_temp_workspace|clone_repositories|refresh_main_branches|plan_repository_order|analyze_repositories|interview_user|refine_features|validate_final|finalize_progress>
     steps:
       - id: define_scope
         title: Определить продукт, контур и границы анализа
@@ -48,6 +48,11 @@ analysis_progress:
         notes: <заметка-или-пусто>
       - id: interview_user
         title: Задать пользователю вопросы только по пробелам
+        status: <not_started|in_progress|completed|blocked>
+        completed_at: <дата-время-или-null>
+        notes: <заметка-или-пусто>
+      - id: refine_features
+        title: Уточнить features и связанные артефакты
         status: <not_started|in_progress|completed|blocked>
         completed_at: <дата-время-или-null>
         notes: <заметка-или-пусто>
@@ -119,12 +124,9 @@ analysis_progress:
         scope_and_domain_assessment:
           status: <not_started|in_progress|completed|blocked>
           notes: <объём репозитория, стратегия per_repository или per_domain; если per_domain — список доменов с путями>
-        repository_characterization:
+        repository_classification:
           status: <not_started|in_progress|completed|blocked>
-          notes: <что это за repo: сервис, библиотека, job, test-repo, infra>
-        test_repository_classification:
-          status: <not_started|in_progress|completed|blocked>
-          notes: <является ли репозиторий отдельным e2e или integration test-репозиторием; если да — какие сервисы покрывает>
+          notes: <тип репозитория (service|job|monorepo|library|test-repo|infra), категория product|support, роль; если test-repo — какие сервисы покрывает>
         entrypoints_and_interfaces:
           status: <not_started|in_progress|completed|blocked>
           notes: <HTTP/gRPC/consumers/producers/CLI/cron/admin UI>
@@ -211,6 +213,9 @@ analysis_progress:
     domain_entities:
       status: <not_started|in_progress|completed>
       path: <путь-к-файлу-architecture/domain-entities.md>
+    support_repositories:
+      status: <not_started|in_progress|completed>
+      path: <путь-к-файлу-architecture/support-repositories.md>
 
   validation:
     intermediate_status: <not_started|in_progress|completed>

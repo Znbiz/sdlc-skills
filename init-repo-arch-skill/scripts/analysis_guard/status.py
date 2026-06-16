@@ -23,10 +23,13 @@ def print_status(progress: dict) -> None:
         for question in (root.get("open_questions") or [])
         if question.get("status") == "open" and question.get("ask_user") is True
     ]
+    current_step = workflow.get("current_step_id", "")
+    if root.get("status") == "completed":
+        current_step = "<completed>"
     lines = [
         f"product: {root.get('product', '')}",
         f"status: {root.get('status', '')}",
-        f"current_step: {workflow.get('current_step_id', '')}",
+        f"current_step: {current_step}",
         f"current_repository: {repo_execution.get('current_repository', '')}",
         "",
         "workflow:",
