@@ -4,6 +4,13 @@ info:
   version: 1.0.0
   description: <восстановленное или подтвержденное описание асинхронного контракта>
 
+x-traceability:
+  assertion_type: <наблюдаемый факт|выведено косвенно|требует подтверждения>
+  sources:
+    - <repo-name/path/to/topic-config-or-producer>
+  gaps:
+    - <неизвестная область>
+
 defaultContentType: application/json
 
 servers:
@@ -15,6 +22,10 @@ servers:
 channels:
   <topic-name>:
     description: <описание канала>
+    x-traceability:
+      assertion_type: <наблюдаемый факт|выведено косвенно|требует подтверждения>
+      sources:
+        - <repo-name/path/to/channel-source>
     publish:
       summary: <краткое описание поведения отправителя>
       operationId: <publishOperationId>
@@ -34,10 +45,7 @@ components:
       properties:
         id:
           type: string
-
-x-confidence-notes:
-  status: draft
-  evidence:
-    - <файл или артефакт>
-  gaps:
-    - <неизвестная область>
+      x-traceability:
+        assertion_type: <наблюдаемый факт|выведено косвенно|требует подтверждения>
+        sources:
+          - <repo-name/path/to/payload-source>

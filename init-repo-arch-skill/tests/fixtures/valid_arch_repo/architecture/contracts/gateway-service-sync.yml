@@ -1,0 +1,7 @@
+service: gateway-service
+assertion_type: наблюдаемый факт
+sources:
+  - gateway-service/openapi/auth.yaml
+paths:
+  /auth/token:
+    method: POST

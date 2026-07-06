@@ -4,6 +4,8 @@
 
 Результат хранится **внутри каждого репозитория** в `domain_map`, а не глобально.
 
+Так как исторический режим для `init-repo-arch-skill` обязателен, порядок репозиториев к этому шагу уже должен быть отсортирован по `created_at`, а `historical_analysis.current_snapshot_at` должен быть одинаковым для всех in-scope репозиториев.
+
 ## Цель
 
 Для каждого репозитория ответить на два вопроса:
@@ -110,6 +112,7 @@ python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py \
 ## Обязательные выходы этого шага
 
 - Для каждого `in_scope` репозитория заполнены `domain_map.assessed_at`, `strategy`, `volume_class`
+- У репозитория должны быть заполнены `created_at` и `analysis_target_date`
 - Если `strategy=per_domain`: зарегистрировано минимум 2 домена, каждый с непустым `paths`
 - Шаг завершён через `advance --note "<краткий итог: repo1: per_domain 3 домена; repo2: per_module>"`
 

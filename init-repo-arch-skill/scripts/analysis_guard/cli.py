@@ -6,11 +6,17 @@ import argparse
 
 from .commands import (
     advance_command,
+    bootstrap_command,
+    compile_command,
     domain_command,
     init_command,
+    index_command,
+    lint_command,
     repo_command,
     status_command,
+    timeline_command,
     validate_command,
+    validate_commits_command,
     validate_contracts_command,
 )
 from .definitions import CHECKLIST_INDEX
@@ -61,6 +67,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     init_parser.set_defaults(func=init_command)
 
+    bootstrap_parser = subparsers.add_parser(
+        "bootstrap",
+        help="Создать базовые wiki-артефакты и каталоги navigation layer",
+    )
+    bootstrap_parser.add_argument(
+        "--progress",
+        required=True,
+        help="Путь к progress-файлу (JSON)",
+    )
+    bootstrap_parser.add_argument(
+        "--arch-repo-path",
+        required=True,
+        help="Путь к архитектурному репозиторию, где нужно создать wiki-структуру",
+    )
+    bootstrap_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Перезаписать уже существующие bootstrap-файлы",
+    )
+    bootstrap_parser.set_defaults(func=bootstrap_command)
+
     # ------------------------------------------------------------------
     # validate — проверить целостность progress-файла
     # ------------------------------------------------------------------
@@ -74,6 +101,85 @@ def build_parser() -> argparse.ArgumentParser:
         help="Путь к progress-файлу (JSON)",
     )
     validate_parser.set_defaults(func=validate_command)
+
+    index_parser = subparsers.add_parser(
+        "index",
+        help="Собрать или обновить navigation layer: wiki/index.md и wiki/log.md",
+    )
+    index_parser.add_argument(
+        "--progress",
+        required=True,
+        help="Путь к progress-файлу (JSON)",
+    )
+    index_parser.add_argument(
+        "--arch-repo-path",
+        required=True,
+        help="Путь к архитектурному репозиторию, где нужно обновить wiki/index.md",
+    )
+    index_parser.set_defaults(func=index_command)
+
+    lint_parser = subparsers.add_parser(
+        "lint",
+        help="Запустить базовый knowledge lint по архитектурному репозиторию",
+    )
+    lint_parser.add_argument(
+        "--progress",
+        required=True,
+        help="Путь к progress-файлу (JSON)",
+    )
+    lint_parser.add_argument(
+        "--arch-repo-path",
+        required=True,
+        help="Путь к архитектурному репозиторию, который нужно проверить",
+    )
+    lint_parser.set_defaults(func=lint_command)
+
+    compile_parser = subparsers.add_parser(
+        "compile",
+        help="Собрать wiki-oriented navigation layer и compile-report по metadata и связям",
+    )
+    compile_parser.add_argument(
+        "--progress",
+        required=True,
+        help="Путь к progress-файлу (JSON)",
+    )
+    compile_parser.add_argument(
+        "--arch-repo-path",
+        required=True,
+        help="Путь к архитектурному репозиторию, который нужно скомпилировать",
+    )
+    compile_parser.set_defaults(func=compile_command)
+
+    timeline_parser = subparsers.add_parser(
+        "timeline",
+        help="Спланировать исторический срез анализа или сдвинуть окно на следующие 3 месяца",
+    )
+    timeline_parser.add_argument(
+        "--progress",
+        required=True,
+        help="Путь к progress-файлу (JSON)",
+    )
+    timeline_parser.add_argument(
+        "--plan",
+        action="store_true",
+        help="Найти самый старый репозиторий, вычислить snapshot date и упорядочить репозитории",
+    )
+    timeline_parser.add_argument(
+        "--advance-window",
+        action="store_true",
+        help="Перенести historical snapshot на следующее окно той же длины",
+    )
+    timeline_parser.add_argument(
+        "--resolve-local",
+        action="store_true",
+        help="Для локальных git-клонов найти commit не позже snapshot date",
+    )
+    timeline_parser.add_argument(
+        "--checkout",
+        action="store_true",
+        help="Вместе с --resolve-local выполнить git checkout на найденный commit",
+    )
+    timeline_parser.set_defaults(func=timeline_command)
 
     # ------------------------------------------------------------------
     # status — вывести компактный статус workflow
@@ -144,6 +250,11 @@ def build_parser() -> argparse.ArgumentParser:
     repo_parser.add_argument(
         "--role",
         help="Роль репозитория в системе (например: backend-api, frontend, infra)",
+    )
+    repo_parser.add_argument(
+        "--created-at",
+        default="",
+        help="Дата создания репозитория в YYYY-MM-DD; обязательна, так как исторический режим включён всегда",
     )
     repo_parser.add_argument(
         "--repository-url",
@@ -352,6 +463,23 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     contracts_parser.set_defaults(func=validate_contracts_command)
+
+    # ------------------------------------------------------------------
+    # validate-commits — сверить commit в landscape.yaml и structure/<repo>.yml
+    # ------------------------------------------------------------------
+    commits_parser = subparsers.add_parser(
+        "validate-commits",
+        help=(
+            "Проверить, что landscape.yaml repository_state.head_commit совпадает с "
+            "architecture/structure/<repo>.yml analyzed_commit для каждого сервиса"
+        ),
+    )
+    commits_parser.add_argument(
+        "--arch-repo-path",
+        required=True,
+        help="Путь к корню архитектурного репозитория (содержит architecture/landscape.yaml)",
+    )
+    commits_parser.set_defaults(func=validate_commits_command)
 
     return parser
 

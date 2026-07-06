@@ -1,0 +1,115 @@
+update_progress:
+  skill_name: update-repo-arch-skill
+  status: <not_started|in_progress|blocked|completed>
+  arch_repo_path: <путь-к-существующему-архитектурному-репозиторию>
+  started_at: <дата-время-старта>
+  updated_at: <дата-время-последнего-обновления>
+  analyst: <агент-или-исполнитель>
+
+  workflow:
+    enforcement_mode: strict
+    current_step_id: <load_baseline|refresh_repositories|triage_repositories|signal_mapping|targeted_deep_analysis|cascade_check|consistency_validation|finalize_update>
+    steps:
+      - id: load_baseline
+        title: Восстановить предыдущий baseline по каждому репозиторию
+        status: <not_started|in_progress|completed|blocked>
+        completed_at: <дата-время-или-null>
+        notes: <заметка-или-пусто>
+      - id: refresh_repositories
+        title: Обновить репозитории до актуального коммита основной ветки
+        status: <not_started|in_progress|completed|blocked>
+        completed_at: <дата-время-или-null>
+        notes: <заметка-или-пусто>
+      - id: triage_repositories
+        title: Классифицировать дельту по каждому репозиторию (none/minor/significant)
+        status: <not_started|in_progress|completed|blocked>
+        completed_at: <дата-время-или-null>
+        notes: <заметка-или-пусто>
+      - id: signal_mapping
+        title: Сопоставить изменившиеся пути с категориями артефактов
+        status: <not_started|in_progress|completed|blocked>
+        completed_at: <дата-время-или-null>
+        notes: <заметка-или-пусто>
+      - id: targeted_deep_analysis
+        title: Точечно обновить артефакты по сработавшим категориям
+        status: <not_started|in_progress|completed|blocked>
+        completed_at: <дата-время-или-null>
+        notes: <заметка-или-пусто>
+      - id: cascade_check
+        title: Проверить каскадные эффекты на другие репозитории и артефакты
+        status: <not_started|in_progress|completed|blocked>
+        completed_at: <дата-время-или-null>
+        notes: <заметка-или-пусто>
+      - id: consistency_validation
+        title: Провести финальную проверку согласованности затронутых артефактов
+        status: <not_started|in_progress|completed|blocked>
+        completed_at: <дата-время-или-null>
+        notes: <заметка-или-пусто>
+      - id: finalize_update
+        title: Зафиксировать новый baseline и отчёт о прогоне
+        status: <not_started|in_progress|completed|blocked>
+        completed_at: <дата-время-или-null>
+        notes: <заметка-или-пусто>
+
+  current_position:
+    current_step: <текущий-шаг-workflow>
+    current_repository: <текущий-репозиторий-или-пусто>
+    last_completed_step: <последний-завершенный-шаг>
+
+  repository_execution:
+    ordered_repository_names:
+      - <repo-1>
+      - <repo-2>
+    current_repository: <текущий-репозиторий-или-пусто>
+    completed_repository_names:
+      - <already-completed-repo>
+
+  repositories:
+    - name: <название-репозитория>
+      repository_url: <url-репозитория>
+      local_path: <локальный-путь-если-есть, обычно .temp/...>
+      main_branch: <основная-ветка>
+      previous_baseline_commit: <commit-sha-из-прошлого-анализа>
+      new_baseline_commit: <commit-sha-после-обновления-до-HEAD>
+      baseline_valid: <true|false>            # false, если previous_baseline_commit не найден в истории (force-push/rebase)
+      diff_classification: <none|minor|significant>
+      diff_stat_summary: <краткое summary git diff --stat>
+      commit_log_summary: <краткое summary git log --oneline, при наличии breaking-сигналов отметить явно>
+      repo_status: <not_started|in_progress|completed|skipped_no_changes|blocked>
+      signal_categories:
+        - category: <repository_classification|entrypoints_and_interfaces|business_flow_orchestration|configs_and_runtime|tech_stack_collection|contracts_and_schemas|data_and_storage|domain_entities|integrations_and_dependencies|tests_and_behavior_evidence|glossary_updates|open_questions_review_and_updates|feature_discovery_and_updates|features_index_updates|roles_and_permissions_updates|security_and_auth_updates|deployment_and_operability|risks_and_tech_debt_updates>
+          status: <not_started|in_progress|completed|blocked>
+          source_paths:
+            - <путь-из-дельты>
+          notes: <что обновлено и в каких артефактах>
+      notes: <общая заметка по репозиторию>
+
+  cascade_impacts:
+    - source_repo: <repo-где-обнаружено-изменение>
+      target: <repo-B-или-путь-артефакта-второй-стороны>
+      reason: <почему вторая сторона может быть затронута>
+      status: <not_started|in_progress|completed>
+      notes: <что проверено / что обновлено / "вне scope"-пометка>
+
+  validation:
+    consistency_status: <not_started|in_progress|completed>
+    last_validated_at: <дата-время>
+    issues:
+      - <расхождение-или-проблема>
+
+  update_run_summary:
+    repos_with_no_changes:
+      - <repo-name>
+    repos_updated:
+      - <repo-name>
+    artifacts_touched:
+      - <путь-к-обновлённому-артефакту>
+    new_gaps:
+      - <описание-нового-пробела-со-ссылкой-на-open-questions.md>
+    invalid_baseline_repos:
+      - <repo-name>   # baseline не найден в истории, нужен полный пересмотр
+
+  next_actions:
+    - <следующее-действие>
+
+  resume_hint: <с-какого-шага-и-репозитория-проще-всего-продолжить>

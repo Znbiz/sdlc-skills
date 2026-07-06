@@ -1,3 +1,18 @@
+---
+title: "Функциональные и нефункциональные требования"
+type: requirements
+sources:
+  - <repo-name/path/to/file>
+related:
+  - features/<feature-file>.md
+created: "<YYYY-MM-DD>"
+updated: "<YYYY-MM-DD>"
+confidence: medium
+domain: "<domain-id>"
+repositories:
+  - <repo-name>
+---
+
 # Функциональные и нефункциональные требования
 
 ## Наблюдаемые функциональные требования

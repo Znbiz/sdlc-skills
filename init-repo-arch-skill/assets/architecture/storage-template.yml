@@ -4,17 +4,26 @@ storage:
   type: <postgresql|mongodb|redis|kafka-topic|...>
   owner: <владелец, если известен>
   description: <описание>
-  confidence: <подтверждено|выведено>
+  assertion_type: <наблюдаемый факт|выведено косвенно|требует подтверждения>
+  sources:
+    - <repo-name/path/to/migration-or-config>
 
 schemas:
   - name: <название-схемы>
+    assertion_type: <наблюдаемый факт|выведено косвенно|требует подтверждения>
+    sources:
+      - <repo-name/path/to/schema-source>
     tables:
       - name: <название-таблицы>
         description: <описание>
+        assertion_type: <наблюдаемый факт|выведено косвенно|требует подтверждения>
+        sources:
+          - <repo-name/path/to/table-source>
         columns:
           - name: <название-колонки>
             type: <тип-колонки>
             nullable: false
             description: <описание>
-        evidence:
-          - <миграция, модель или другой артефакт>
+            assertion_type: <наблюдаемый факт|выведено косвенно|требует подтверждения>
+            sources:
+              - <repo-name/path/to/column-source>

@@ -1,0 +1,6 @@
+system: ai-cli-gateway
+services:
+  - name: gateway-service
+    analyzed_commit: abc123
+  - name: gateway-web
+    analyzed_commit: def456

@@ -1,0 +1,114 @@
+repo_structure_map:
+  repository: <название-репозитория>
+  analyzed_commit: <commit-sha-на-момент-построения-карты>
+  built_at: <дата-время>
+  assertion_type: <наблюдаемый факт|выведено косвенно|требует подтверждения>
+  sources:
+    - <repo-name/path/to/root-or-structure-signal>
+
+  # Категории совпадают с категориями сигналов в update-repo-arch-skill.
+  # Для каждой категории: paths — список путей/паттернов, status — found|not_found|not_applicable.
+  # not_found — категория структурно не выражена в этом репозитории (например, нет интеграций).
+  # not_applicable — категория неприменима к этому типу репозитория (см. checklist-repository-classification.md).
+  # signal пиши на русском (см. SKILL.md → Правила работы): английские слова оставляй только
+  # для точных кодовых идентификаторов/имён технологий (Go net/http, Next.js), а не для описательных фраз.
+  categories:
+    entrypoints_and_interfaces:
+      status: <found|not_found|not_applicable>
+      paths:
+        - path: <например, internal/api/handlers/>
+          signal: <например, "HTTP-хендлеры, Go net/http">
+          assertion_type: <наблюдаемый факт|выведено косвенно|требует подтверждения>
+          sources:
+            - <repo-name/path/to/file-or-dir>
+    ui_screens_and_navigation:
+      # Только для frontend-репозиториев (web/mobile). Для чисто backend-репозиториев — not_applicable.
+      status: <found|not_found|not_applicable>
+      paths:
+        - path: <например, app/(routes)/billing/page.tsx>
+          signal: <например, "Next.js app router, экран биллинга">
+          assertion_type: <наблюдаемый факт|выведено косвенно|требует подтверждения>
+          sources:
+            - <repo-name/path/to/file-or-dir>
+    contracts_and_schemas:
+      status: <found|not_found|not_applicable>
+      paths:
+        - path: <например, internal/dto/>
+          signal: <например, "request/response DTO, источник для авто-генерируемого OpenAPI">
+          assertion_type: <наблюдаемый факт|выведено косвенно|требует подтверждения>
+          sources:
+            - <repo-name/path/to/file-or-dir>
+    data_and_storage:
+      status: <found|not_found|not_applicable>
+      paths:
+        - path: <например, internal/models/, migrations/>
+          signal: <например, "GORM модели + миграции">
+          assertion_type: <наблюдаемый факт|выведено косвенно|требует подтверждения>
+          sources:
+            - <repo-name/path/to/file-or-dir>
+    integrations_and_dependencies:
+      status: <found|not_found|not_applicable>
+      paths:
+        - path: <например, internal/clients/>
+          signal: <например, "HTTP-клиенты к внешним сервисам">
+          assertion_type: <наблюдаемый факт|выведено косвенно|требует подтверждения>
+          sources:
+            - <repo-name/path/to/file-or-dir>
+    business_flow_orchestration:
+      status: <found|not_found|not_applicable>
+      paths:
+        - path: <например, internal/usecases/>
+          signal: <например, "сервисы приложения / use cases">
+          assertion_type: <наблюдаемый факт|выведено косвенно|требует подтверждения>
+          sources:
+            - <repo-name/path/to/file-or-dir>
+    roles_and_permissions_updates:
+      status: <found|not_found|not_applicable>
+      paths:
+        - path: <например, internal/rbac/>
+          signal: <краткий сигнал>
+          assertion_type: <наблюдаемый факт|выведено косвенно|требует подтверждения>
+          sources:
+            - <repo-name/path/to/file-or-dir>
+    security_and_auth_updates:
+      status: <found|not_found|not_applicable>
+      paths:
+        - path: <например, internal/middleware/auth.go>
+          signal: <краткий сигнал>
+          assertion_type: <наблюдаемый факт|выведено косвенно|требует подтверждения>
+          sources:
+            - <repo-name/path/to/file-or-dir>
+    configs_and_runtime:
+      status: <found|not_found|not_applicable>
+      paths:
+        - path: <например, config/, .env.example>
+          signal: <краткий сигнал>
+          assertion_type: <наблюдаемый факт|выведено косвенно|требует подтверждения>
+          sources:
+            - <repo-name/path/to/file-or-dir>
+    deployment_and_operability:
+      status: <found|not_found|not_applicable>
+      paths:
+        - path: <например, deploy/, Dockerfile, .github/workflows/>
+          signal: <краткий сигнал>
+          assertion_type: <наблюдаемый факт|выведено косвенно|требует подтверждения>
+          sources:
+            - <repo-name/path/to/file-or-dir>
+    tech_stack_collection:
+      status: <found|not_found|not_applicable>
+      paths:
+        - path: <например, go.mod, go.sum>
+          signal: <краткий сигнал>
+          assertion_type: <наблюдаемый факт|выведено косвенно|требует подтверждения>
+          sources:
+            - <repo-name/path/to/file-or-dir>
+    tests_and_behavior_evidence:
+      status: <found|not_found|not_applicable>
+      paths:
+        - path: <например, tests/integration/>
+          signal: <краткий сигнал>
+          assertion_type: <наблюдаемый факт|выведено косвенно|требует подтверждения>
+          sources:
+            - <repo-name/path/to/file-or-dir>
+
+  notes: "<общая сводка: сколько категорий покрыто, какие отсутствуют и почему>"

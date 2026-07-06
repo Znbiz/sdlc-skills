@@ -3,13 +3,25 @@
 from __future__ import annotations
 
 import argparse
+import calendar
+import datetime as dt
+import subprocess
 from pathlib import Path
 
+from .commit_consistency import validate_commit_consistency
 from .contracts import validate_contracts_dir
 from .definitions import (
     CHECKLIST_INDEX,
     REPOSITORY_CHECKLIST_DEFINITIONS,
     STEP_INDEX,
+)
+from .knowledge import (
+    build_compile_report_stub,
+    build_knowledge_log_stub,
+    build_navigation_index,
+    compile_knowledge_graph,
+    resolve_layout_paths,
+    run_knowledge_lint,
 )
 from .models import (
     default_repo_domain_map,
@@ -17,6 +29,7 @@ from .models import (
     default_progress,
     find_repository,
     load_progress,
+    normalize_historical_analysis,
     normalize_repo_domain_map,
     normalize_repository,
     now_iso,
@@ -35,6 +48,257 @@ def init_command(args: argparse.Namespace) -> int:
     data = default_progress(args.product, args.scope, args.analyst)
     save_progress(path, data)
     print(f"Initialized progress file: {path}")
+    return 0
+
+
+def _parse_iso_date(value: str, field_name: str) -> dt.date:
+    try:
+        return dt.date.fromisoformat(value)
+    except ValueError as exc:
+        raise SystemExit(f"{field_name} must be in YYYY-MM-DD format, got: {value}") from exc
+
+
+def _add_months(source_date: dt.date, months: int) -> dt.date:
+    month_index = source_date.month - 1 + months
+    year = source_date.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(source_date.day, calendar.monthrange(year, month)[1])
+    return dt.date(year, month, day)
+
+
+def _resolve_commit_for_date(repo_path: Path, target_date: str, main_branch: str) -> str:
+    before_value = f"{target_date} 23:59:59"
+    revision = main_branch or "HEAD"
+    result = subprocess.run(
+        [
+            "git",
+            "rev-list",
+            "-1",
+            f"--before={before_value}",
+            revision,
+        ],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise SystemExit(f"Failed to resolve commit for {repo_path}: {detail}")
+    return result.stdout.strip()
+
+
+def timeline_command(args: argparse.Namespace) -> int:
+    action_count = sum(
+        [
+            bool(args.plan),
+            bool(args.advance_window),
+            bool(args.resolve_local),
+        ]
+    )
+    if action_count != 1:
+        raise SystemExit(
+            "timeline command requires exactly one action: --plan, --advance-window, or --resolve-local."
+        )
+    if args.checkout and not args.resolve_local:
+        raise SystemExit("--checkout is allowed only together with --resolve-local.")
+
+    path = Path(args.progress)
+    progress = load_progress(path)
+    normalize_historical_analysis(progress)
+    root = progress["analysis_progress"]
+    historical = root["historical_analysis"]
+    repositories = root.get("repositories") or []
+
+    for repo in repositories:
+        normalize_repository(repo)
+
+    if args.plan:
+        in_scope_repositories = repositories_in_scope(progress)
+        if not in_scope_repositories:
+            raise SystemExit("timeline --plan requires at least one in-scope repository.")
+
+        missing_created_at = [
+            repo.get("name", "<unknown>")
+            for repo in in_scope_repositories
+            if not repo.get("created_at")
+        ]
+        if missing_created_at:
+            raise SystemExit(
+                "timeline --plan requires created_at for every in-scope repository: "
+                + ", ".join(missing_created_at)
+            )
+
+        ordered = sorted(
+            in_scope_repositories,
+            key=lambda repo: (str(repo.get("created_at")), str(repo.get("name"))),
+        )
+        anchor_repo = ordered[0]
+        anchor_created_at = _parse_iso_date(
+            str(anchor_repo.get("created_at")),
+            f"repositories.{anchor_repo.get('name')}.created_at",
+        )
+        snapshot_date = _add_months(anchor_created_at, int(historical.get("window_months", 3)))
+        snapshot_date_str = snapshot_date.isoformat()
+
+        root.setdefault("repository_execution", {})["ordered_repository_names"] = [
+            str(repo.get("name"))
+            for repo in ordered
+        ]
+        historical["anchor_repository"] = str(anchor_repo.get("name") or "")
+        historical["anchor_created_at"] = anchor_created_at.isoformat()
+        historical["current_snapshot_at"] = snapshot_date_str
+        if not isinstance(historical.get("completed_snapshot_dates"), list):
+            historical["completed_snapshot_dates"] = []
+
+        for repo in in_scope_repositories:
+            repo["analysis_target_date"] = snapshot_date_str
+            repo["analysis_target_commit"] = ""
+            repo["analysis_target_commit_status"] = "not_started"
+
+        save_progress(path, progress)
+        print(
+            "Historical timeline planned: "
+            f"anchor={historical['anchor_repository']} "
+            f"created_at={historical['anchor_created_at']} "
+            f"snapshot_at={historical['current_snapshot_at']}"
+        )
+        print(
+            "Repository order: "
+            + ", ".join(root["repository_execution"]["ordered_repository_names"])
+        )
+        return 0
+
+    if args.advance_window:
+        current_snapshot_at = str(historical.get("current_snapshot_at") or "")
+        if not current_snapshot_at:
+            raise SystemExit("timeline --advance-window requires historical_analysis.current_snapshot_at.")
+        snapshot_date = _parse_iso_date(current_snapshot_at, "historical_analysis.current_snapshot_at")
+        next_snapshot_date = _add_months(snapshot_date, int(historical.get("window_months", 3)))
+
+        completed_dates = historical.setdefault("completed_snapshot_dates", [])
+        if current_snapshot_at not in completed_dates:
+            completed_dates.append(current_snapshot_at)
+        historical["current_snapshot_at"] = next_snapshot_date.isoformat()
+
+        for repo in repositories_in_scope(progress):
+            repo["analysis_target_date"] = historical["current_snapshot_at"]
+            repo["analysis_target_commit"] = ""
+            repo["analysis_target_commit_status"] = "not_started"
+
+        save_progress(path, progress)
+        print(
+            f"Advanced historical window: previous={current_snapshot_at} current={historical['current_snapshot_at']}"
+        )
+        return 0
+
+    snapshot_date = str(historical.get("current_snapshot_at") or "")
+    if not snapshot_date:
+        raise SystemExit("timeline --resolve-local requires historical_analysis.current_snapshot_at.")
+
+    resolved_count = 0
+    missing_count = 0
+    checked_out_count = 0
+    for repo in repositories_in_scope(progress):
+        local_path_value = str(repo.get("local_path") or "")
+        if not local_path_value:
+            repo["analysis_target_commit_status"] = "missing_on_date"
+            missing_count += 1
+            continue
+        repo_path = Path(local_path_value)
+        if not repo_path.is_absolute():
+            repo_path = path.parent / repo_path
+        if not repo_path.exists():
+            repo["analysis_target_commit_status"] = "missing_on_date"
+            missing_count += 1
+            continue
+
+        commit_sha = _resolve_commit_for_date(
+            repo_path=repo_path,
+            target_date=snapshot_date,
+            main_branch=str(repo.get("main_branch") or "HEAD"),
+        )
+        if not commit_sha:
+            repo["analysis_target_commit"] = ""
+            repo["analysis_target_commit_status"] = "missing_on_date"
+            missing_count += 1
+            continue
+
+        repo["analysis_target_date"] = snapshot_date
+        repo["analysis_target_commit"] = commit_sha
+        repo["analysis_target_commit_status"] = "resolved"
+        resolved_count += 1
+
+        if args.checkout:
+            checkout_result = subprocess.run(
+                ["git", "checkout", commit_sha],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if checkout_result.returncode != 0:
+                detail = (checkout_result.stderr or checkout_result.stdout).strip()
+                raise SystemExit(f"Failed to checkout {repo.get('name')} to {commit_sha}: {detail}")
+            repo["analysis_target_commit_status"] = "checked_out"
+            checked_out_count += 1
+
+    save_progress(path, progress)
+    print(
+        f"Resolved historical commits for snapshot {snapshot_date}: resolved={resolved_count}, missing={missing_count}"
+    )
+    if args.checkout:
+        print(f"Checked out repositories: {checked_out_count}")
+    return 0
+
+
+def bootstrap_command(args: argparse.Namespace) -> int:
+    path = Path(args.progress)
+    progress = load_progress(path)
+    arch_repo_path = Path(args.arch_repo_path)
+    layout_paths = resolve_layout_paths(arch_repo_path)
+    arch_repo_path.mkdir(parents=True, exist_ok=True)
+    layout_paths.navigation_root.mkdir(parents=True, exist_ok=True)
+    layout_paths.compile_report_path.parent.mkdir(parents=True, exist_ok=True)
+
+    skill_root = Path(__file__).resolve().parents[2]
+    index_template_path = skill_root / "assets" / "index-template.md"
+    knowledge_log_template_path = skill_root / "assets" / "knowledge-log-template.md"
+
+    product = progress["analysis_progress"].get("product", "unknown-system")
+    index_content = index_template_path.read_text(encoding="utf-8").replace(
+        "<название системы>",
+        product,
+    )
+    knowledge_log_content = knowledge_log_template_path.read_text(encoding="utf-8")
+    compile_report_content = build_compile_report_stub()
+
+    files_to_write = (
+        (layout_paths.index_path, index_content),
+        (layout_paths.log_path, knowledge_log_content),
+        (layout_paths.compile_report_path, compile_report_content),
+    )
+    for target_path, content in files_to_write:
+        if target_path.exists() and not args.force:
+            continue
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_text(content.rstrip() + "\n", encoding="utf-8")
+
+    root = progress["analysis_progress"]
+    root["knowledge_layout"] = layout_paths.mode
+    artifacts = root.setdefault("artifacts", {})
+    artifacts.setdefault("index", {})["status"] = "in_progress"
+    artifacts.setdefault("index", {})["path"] = str(layout_paths.index_path)
+    artifacts.setdefault("knowledge_log", {})["status"] = "completed"
+    artifacts.setdefault("knowledge_log", {})["path"] = str(layout_paths.log_path)
+    artifacts.setdefault("compile_report", {})["status"] = "in_progress"
+    artifacts.setdefault("compile_report", {})["path"] = str(layout_paths.compile_report_path)
+
+    save_progress(path, progress)
+    print(f"Bootstrapped wiki layout: {layout_paths.navigation_root}")
+    print(f"Wiki index: {layout_paths.index_path}")
+    print(f"Knowledge log: {layout_paths.log_path}")
+    print(f"Compile report stub: {layout_paths.compile_report_path}")
     return 0
 
 
@@ -160,6 +424,7 @@ def register_repo_command(args: argparse.Namespace) -> int:
     repositories.append(
         {
             "name": args.name,
+            "created_at": args.created_at,
             "role": args.role,
             "repository_url": args.repository_url,
             "in_scope": args.in_scope,
@@ -167,6 +432,9 @@ def register_repo_command(args: argparse.Namespace) -> int:
             "source_type": args.source_type,
             "local_path": args.local_path,
             "main_branch": args.main_branch,
+            "analysis_target_date": "",
+            "analysis_target_commit": "",
+            "analysis_target_commit_status": "not_started",
             "analyzed_commit": "",
             "remote_head_commit": "",
             "remote_status": args.remote_status,
@@ -226,6 +494,23 @@ def start_repo_command(args: argparse.Namespace) -> int:
         raise SystemExit(
             f"Repository traversal order violation: expected {expected_name}, got {args.name}."
         )
+
+    historical = root.get("historical_analysis") or {}
+    current_snapshot_at = historical.get("current_snapshot_at") or ""
+    if current_snapshot_at:
+        if repo.get("analysis_target_date") != current_snapshot_at:
+            raise SystemExit(
+                f"Repository {args.name} is not aligned with historical snapshot {current_snapshot_at}."
+            )
+        if repo.get("analysis_target_commit_status") not in {
+            "resolved",
+            "checked_out",
+            "missing_on_date",
+        }:
+            raise SystemExit(
+                f"Repository {args.name} has unresolved historical target commit status: "
+                f"{repo.get('analysis_target_commit_status')}"
+            )
 
     repo["analysis_status"] = "in_progress"
     if args.notes:
@@ -351,12 +636,15 @@ def repo_command(args: argparse.Namespace) -> int:
     if args.register:
         if not args.role:
             raise SystemExit("repo --register requires --role.")
+        if not args.created_at:
+            raise SystemExit("repo --register requires --created-at because historical mode is always enabled.")
         if not args.repository_url:
             raise SystemExit("repo --register requires --repository-url.")
         register_args = argparse.Namespace(
             progress=args.progress,
             name=args.name,
             role=args.role,
+            created_at=args.created_at,
             repository_url=args.repository_url,
             source_type=args.source_type,
             local_path=args.local_path,
@@ -560,4 +848,134 @@ def validate_contracts_command(args: argparse.Namespace) -> int:
         return 1
 
     print(f"OK: all {sync_count + async_count} contract file(s) are valid.")
+    return 0
+
+
+def validate_commits_command(args: argparse.Namespace) -> int:
+    arch_repo_path = Path(args.arch_repo_path)
+    errors = validate_commit_consistency(arch_repo_path)
+
+    if errors:
+        for error in errors:
+            print(f"ERROR: {error}")
+        return 1
+
+    print("OK: landscape.yaml head_commit matches architecture/structure/<repo>.yml analyzed_commit for all services.")
+    return 0
+
+
+def index_command(args: argparse.Namespace) -> int:
+    path = Path(args.progress)
+    progress = load_progress(path)
+    arch_repo_path = Path(args.arch_repo_path)
+    arch_repo_path.mkdir(parents=True, exist_ok=True)
+    layout_paths = resolve_layout_paths(arch_repo_path)
+    layout_paths.navigation_root.mkdir(parents=True, exist_ok=True)
+
+    root = progress["analysis_progress"]
+    index_content = build_navigation_index(
+        arch_repo_path=arch_repo_path,
+        product=root.get("product", "unknown-system"),
+        repositories=root.get("repositories") or [],
+    )
+    layout_paths.index_path.write_text(index_content + "\n", encoding="utf-8")
+
+    if not layout_paths.log_path.exists():
+        layout_paths.log_path.parent.mkdir(parents=True, exist_ok=True)
+        layout_paths.log_path.write_text(
+            build_knowledge_log_stub() + "\n",
+            encoding="utf-8",
+        )
+
+    artifacts = root.setdefault("artifacts", {})
+    root["knowledge_layout"] = layout_paths.mode
+    artifacts.setdefault("index", {})["status"] = "completed"
+    artifacts.setdefault("index", {})["path"] = str(layout_paths.index_path)
+    artifacts.setdefault("knowledge_log", {})["status"] = "completed"
+    artifacts.setdefault("knowledge_log", {})["path"] = str(layout_paths.log_path)
+
+    save_progress(path, progress)
+    print(f"Built navigation index: {layout_paths.index_path}")
+    print(f"Knowledge log: {layout_paths.log_path}")
+    return 0
+
+
+def lint_command(args: argparse.Namespace) -> int:
+    path = Path(args.progress)
+    progress = load_progress(path)
+    arch_repo_path = Path(args.arch_repo_path)
+    layout_paths = resolve_layout_paths(arch_repo_path)
+
+    lint_issues = run_knowledge_lint(arch_repo_path)
+
+    validation = progress["analysis_progress"].setdefault("validation", {})
+    progress["analysis_progress"]["knowledge_layout"] = layout_paths.mode
+    knowledge_lint_state = validation.setdefault(
+        "knowledge_lint",
+        {"status": "not_started", "last_run_at": "", "issues": []},
+    )
+    knowledge_lint_state["last_run_at"] = now_iso()
+    knowledge_lint_state["issues"] = lint_issues
+    knowledge_lint_state["status"] = (
+        "completed" if not any(issue.startswith("ERROR:") for issue in lint_issues) else "in_progress"
+    )
+    workflow_errors = validate_progress(progress)
+    normalized_workflow_errors = [f"ERROR: {issue}" for issue in workflow_errors]
+    all_issues = normalized_workflow_errors + lint_issues
+    validation["issues"] = all_issues
+    validation["last_validated_at"] = now_iso()
+
+    save_progress(path, progress)
+
+    print(f"Knowledge lint target: {arch_repo_path}")
+    print(f"Knowledge layout: {layout_paths.mode}")
+    print(f"Workflow issues: {len(workflow_errors)}")
+    print(f"Knowledge issues: {len(lint_issues)}")
+    for issue in all_issues:
+        print(issue)
+
+    return 1 if any(str(issue).startswith("ERROR:") for issue in all_issues) else 0
+
+
+def compile_command(args: argparse.Namespace) -> int:
+    path = Path(args.progress)
+    progress = load_progress(path)
+    arch_repo_path = Path(args.arch_repo_path)
+    compile_result = compile_knowledge_graph(arch_repo_path)
+    layout_paths = compile_result.layout_paths
+
+    layout_paths.navigation_root.mkdir(parents=True, exist_ok=True)
+    layout_paths.index_path.write_text(compile_result.index_content + "\n", encoding="utf-8")
+    layout_paths.compile_report_path.parent.mkdir(parents=True, exist_ok=True)
+    layout_paths.compile_report_path.write_text(
+        compile_result.compile_report_content + "\n",
+        encoding="utf-8",
+    )
+    if not layout_paths.log_path.exists():
+        layout_paths.log_path.parent.mkdir(parents=True, exist_ok=True)
+        layout_paths.log_path.write_text(
+            build_knowledge_log_stub() + "\n",
+            encoding="utf-8",
+        )
+
+    root = progress["analysis_progress"]
+    root["knowledge_layout"] = layout_paths.mode
+    artifacts = root.setdefault("artifacts", {})
+    artifacts.setdefault("index", {})["status"] = "completed"
+    artifacts.setdefault("index", {})["path"] = str(layout_paths.index_path)
+    artifacts.setdefault("knowledge_log", {})["status"] = "completed"
+    artifacts.setdefault("knowledge_log", {})["path"] = str(layout_paths.log_path)
+    artifacts.setdefault("compile_report", {})["status"] = "completed"
+    artifacts.setdefault("compile_report", {})["path"] = str(layout_paths.compile_report_path)
+
+    save_progress(path, progress)
+
+    print(f"Compiled knowledge graph layout: {layout_paths.mode}")
+    print(f"Wiki index: {layout_paths.index_path}")
+    print(f"Compile report: {layout_paths.compile_report_path}")
+    print(f"Knowledge log: {layout_paths.log_path}")
+    print(f"Documents scanned: {compile_result.total_documents}")
+    print(f"Documents with frontmatter: {compile_result.documents_with_frontmatter}")
+    print(f"Unresolved references: {len(compile_result.unresolved_references)}")
+    print(f"Weakly linked pages: {len(compile_result.weakly_linked_pages)}")
     return 0

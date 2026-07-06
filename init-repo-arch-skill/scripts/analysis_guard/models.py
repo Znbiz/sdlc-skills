@@ -61,6 +61,17 @@ def default_repo_domain_map() -> dict:
     }
 
 
+def default_historical_analysis() -> dict:
+    return {
+        "mode": "three_month_windows_from_oldest",
+        "window_months": 3,
+        "anchor_repository": "",
+        "anchor_created_at": "",
+        "current_snapshot_at": "",
+        "completed_snapshot_dates": [],
+    }
+
+
 def default_repository_checklist() -> dict:
     return {
         item_id: {
@@ -80,6 +91,7 @@ def default_progress(product: str, scope: str, analyst: str) -> dict:
             "status": "in_progress",
             "product": product,
             "analysis_scope": scope,
+            "knowledge_layout": "wiki",
             "started_at": timestamp,
             "updated_at": timestamp,
             "analyst": analyst,
@@ -95,6 +107,7 @@ def default_progress(product: str, scope: str, analyst: str) -> dict:
                 "current_repository": "",
                 "completed_repository_names": [],
             },
+            "historical_analysis": default_historical_analysis(),
             "repositories": [],
             "artifacts": {
                 "hld": {"status": "not_started", "path": ""},
@@ -104,12 +117,23 @@ def default_progress(product: str, scope: str, analyst: str) -> dict:
                 "storage": {"status": "not_started", "path": ""},
                 "features": {"status": "not_started", "path": ""},
                 "features_index": {"status": "not_started", "path": ""},
+                "index": {"status": "not_started", "path": ""},
+                "knowledge_log": {"status": "not_started", "path": ""},
+                "compile_report": {"status": "not_started", "path": ""},
                 "glossary": {"status": "not_started", "path": ""},
                 "open_questions_file": {"status": "not_started", "path": ""},
                 "roles_and_permissions": {"status": "not_started", "path": ""},
+                "domain_entities": {"status": "not_started", "path": ""},
+                "support_repositories": {"status": "not_started", "path": ""},
+                "structure_map": {"status": "not_started", "path": ""},
             },
             "validation": {
                 "intermediate_status": "not_started",
+                "knowledge_lint": {
+                    "status": "not_started",
+                    "last_run_at": "",
+                    "issues": [],
+                },
                 "final_status": "not_started",
                 "last_validated_at": "",
                 "issues": [],
@@ -233,6 +257,10 @@ def normalize_repo_domain_map(repo: dict) -> None:
 
 
 def normalize_repository(repo: dict) -> None:
+    repo.setdefault("created_at", "")
+    repo.setdefault("analysis_target_date", "")
+    repo.setdefault("analysis_target_commit", "")
+    repo.setdefault("analysis_target_commit_status", "not_started")
     checklist = repo.setdefault("analysis_checklist", {})
     defaults = default_repository_checklist()
     for item_id, item_value in defaults.items():
@@ -241,6 +269,16 @@ def normalize_repository(repo: dict) -> None:
         checklist[item_id].setdefault("notes", "")
         checklist[item_id].setdefault("title", item_value["title"])
     normalize_repo_domain_map(repo)
+
+
+def normalize_historical_analysis(progress: dict) -> None:
+    historical = progress["analysis_progress"].setdefault(
+        "historical_analysis",
+        default_historical_analysis(),
+    )
+    defaults = default_historical_analysis()
+    for key, value in defaults.items():
+        historical.setdefault(key, copy.deepcopy(value))
 
 
 def repositories_in_scope(progress: dict) -> list[dict]:

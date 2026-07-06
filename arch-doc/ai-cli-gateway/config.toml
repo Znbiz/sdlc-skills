@@ -1,0 +1,5 @@
+# Конфигурация Codex CLI, монтируется в codex-auth volume по пути ~/.codex/config.toml
+# Устраняет необходимость передавать флаги при каждом вызове codex exec
+
+approval_policy = "never"
+sandbox_mode = "workspace-write"

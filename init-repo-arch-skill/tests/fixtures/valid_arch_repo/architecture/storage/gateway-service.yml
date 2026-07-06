@@ -1,0 +1,7 @@
+service: gateway-service
+assertion_type: наблюдаемый факт
+sources:
+  - gateway-service/migrations/001_init.sql
+storages:
+  - name: gateway_tokens
+    kind: postgres_table

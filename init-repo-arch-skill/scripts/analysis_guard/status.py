@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from .definitions import REPOSITORY_CHECKLIST_DEFINITIONS
-from .models import find_repository, normalize_repository
+from .models import find_repository, normalize_historical_analysis, normalize_repository
 from .validation import validate_progress
 
 _STATUS_MARKER = {
@@ -16,8 +16,10 @@ _STATUS_MARKER = {
 
 def print_status(progress: dict) -> None:
     root = progress["analysis_progress"]
+    normalize_historical_analysis(progress)
     workflow = root["workflow"]
     repo_execution = root.get("repository_execution") or {}
+    historical = root.get("historical_analysis") or {}
     pending_user_questions = [
         question
         for question in (root.get("open_questions") or [])
@@ -29,8 +31,11 @@ def print_status(progress: dict) -> None:
     lines = [
         f"product: {root.get('product', '')}",
         f"status: {root.get('status', '')}",
+        f"knowledge_layout: {root.get('knowledge_layout', 'wiki')}",
         f"current_step: {current_step}",
         f"current_repository: {repo_execution.get('current_repository', '')}",
+        f"historical_anchor: {historical.get('anchor_repository', '')}",
+        f"historical_snapshot_at: {historical.get('current_snapshot_at', '')}",
         "",
         "workflow:",
     ]
@@ -60,6 +65,13 @@ def print_status(progress: dict) -> None:
                 f"  {marker} {name}: analysis_status={repo.get('analysis_status', '')}"
                 f"  strategy={dm_strategy}{volume_tag}"
             )
+            if repo.get("created_at") or repo.get("analysis_target_date"):
+                lines.append(
+                    "      historical: "
+                    f"created_at={repo.get('created_at', '') or 'n/a'} "
+                    f"target_date={repo.get('analysis_target_date', '') or 'n/a'} "
+                    f"target_status={repo.get('analysis_target_commit_status', 'not_started')}"
+                )
             open_items = [
                 item_id
                 for item_id, _title in REPOSITORY_CHECKLIST_DEFINITIONS
@@ -100,6 +112,14 @@ def print_status(progress: dict) -> None:
             )
 
     errors = validate_progress(progress)
+    knowledge_lint = (root.get("validation") or {}).get("knowledge_lint") or {}
+    lines.extend(
+        [
+            "",
+            f"knowledge_lint_status: {knowledge_lint.get('status', 'not_started')}",
+            f"knowledge_lint_issues: {len(knowledge_lint.get('issues') or [])}",
+        ]
+    )
     lines.extend(["", f"validation_errors: {len(errors)}"])
     for error in errors:
         lines.append(f"  - {error}")

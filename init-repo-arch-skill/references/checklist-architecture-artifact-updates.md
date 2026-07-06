@@ -30,6 +30,12 @@
 - [ ] Секция компонента описывает реализацию (а не black-box)
 - [ ] Раздел "Основные потоки" содержит новые потоки из этого репозитория
 
+### architecture/structure/`<repo>`.yml
+
+- [ ] Файл существует и содержит запись для каждой категории (включая `not_found`/`not_applicable` там, где категория не выражена)
+- [ ] `analyzed_commit` в карте совпадает с фактическим `analyzed_commit` репозитория из этого прогона
+- [ ] Если в ходе анализа найдены пути, не учтённые при первичном построении карты (пункт `repository_structure_mapping`) — карта дополнена, а не оставлена устаревшей
+
 ### architecture/contracts/
 
 - [ ] `<service>-sync.yml` существует **или** notes содержит "нет sync контракта"
@@ -77,7 +83,24 @@
 
 1. Пройти чеклист выше сверху вниз.
 2. Для каждого незакрытого пункта — внести исправления в соответствующий артефакт.
-3. Зафиксировать в notes: что обновлено, что осталось с явной пометкой "нет / не удалось восстановить".
+3. Запустить автоматические проверки согласованности (см. ниже) и устранить все найденные `ERROR`.
+4. Зафиксировать в notes: что обновлено, что осталось с явной пометкой "нет / не удалось восстановить".
+
+## Автоматические проверки
+
+Перед закрытием пункта обязательно прогнать:
+
+```bash
+python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py validate-contracts \
+  --contracts-dir <arch-repo>/architecture/contracts
+python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py validate-commits \
+  --arch-repo-path <arch-repo>
+```
+
+- `validate-contracts` проверяет, что файлы `*-sync.yml`/`*-async.yml` в `architecture/contracts/` — валидные OpenAPI/AsyncAPI.
+- `validate-commits` проверяет, что `landscape.yaml: repository_state.head_commit` совпадает с `architecture/structure/<repo>.yml: analyzed_commit` для каждого сервиса — это два независимых места фиксации коммита анализа, и они не должны расходиться.
+
+Если любая из команд вернула `ERROR`, пункт `architecture_artifact_updates` нельзя считать `completed` — сначала исправь расхождение в артефактах, затем повтори проверку.
 
 ## Проверка согласованности
 

@@ -25,6 +25,14 @@ metadata:
 
 Для временных клонов репозиториев используй локальный каталог `.temp/` в текущем workspace. Если каталога нет, создай его. Эту папку нужно держать в `.gitignore`, чтобы временные checkout'ы не попадали в git.
 
+В knowledge workflow этого skill каталог `.temp/` является **raw layer**: он хранит исходные checkout'ы, конфиги, контракты, тесты и другие первичные источники фактов. Этот слой рассматривается как **immutable source of truth для наблюдаемых фактов**. Агент может читать `.temp/`, индексировать его и ссылаться на файлы, но не должен использовать его как место для редактирования knowledge-артефактов.
+
+Markdown/YAML артефакты, создаваемые в архитектурном репозитории (`features/`, `architecture/`, `glossary.md`, `open-questions.md` и связанные wiki-файлы), образуют **synthesis layer**: это слой синтезированного знания, где агент собирает факты, выводы, пробелы и трассировку источников.
+
+Файлы `AGENTS.md`, `wiki/index.md`, `features-index.md`, `integrations-overview.md` и аналогичные короткие входные документы образуют **navigation layer**: он нужен, чтобы агент и человек быстро находили нужные knowledge-артефакты, не перечитывая весь репозиторий целиком.
+
+Проверки консистентности между raw/synthesis/navigation слоями относятся к **knowledge lint**. Knowledge lint не заменяет `analysis_guard` и не ослабляет обязательный workflow; это дополнительный контроль качества knowledge-слоя.
+
 Для обязательного пошагового исполнения workflow используй `scripts/analysis_guard.py`. Это не опциональная утилита, а основной механизм управления прогрессом анализа и защиты от пропуска этапов.
 
 Шаблон progress-файла: `assets/repo-initialization-progress-template.yaml`.
@@ -43,6 +51,17 @@ metadata:
 4. После завершения этапа переводи workflow дальше через `... advance`.
 5. Если скрипт показывает ошибку консистентности или нарушение обязательных предусловий, сначала исправь progress-файл или артефакты, и только потом продолжай анализ.
 
+Стандартный happy path для `init-repo-arch-skill` всегда включает historical prep до первого содержательного анализа репозиториев:
+
+1. Зарегистрировать все репозитории с `created_at`.
+2. Зафиксировать `main_branch` и доступный `remote_head_commit`.
+3. Найти самый старый репозиторий.
+4. Вычислить первый `snapshot date` как `created_at + 3 месяца`.
+5. Для каждого репозитория найти commit не позже общего `snapshot date`.
+6. Только после этого переходить к `assess_scope_and_domains` и `analyze_repositories`.
+
+Это не дополнительный режим и не optional prep-ветка. Для `init-repo-arch-skill` это обязательная линейная часть стандартного workflow.
+
 Рекомендуемый CLI минимален. По умолчанию агент должен использовать только 5 команд:
 
 - `python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py init --output <path> --product <name> --scope <scope>`
@@ -50,6 +69,20 @@ metadata:
 - `python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py domain ...`
 - `python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py repo ...`
 - `python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py advance --progress <path> --note "<что завершено>"`
+
+Для knowledge workflow дополнительно допустимы специализированные команды:
+
+- `python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py bootstrap --progress <path> --arch-repo-path <arch-repo>`
+- `python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py index --progress <path> --arch-repo-path <arch-repo>`
+- `python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py lint --progress <path> --arch-repo-path <arch-repo>`
+- `python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py compile --progress <path> --arch-repo-path <arch-repo>`
+- `python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py timeline --progress <path> --plan|--resolve-local|--advance-window [--checkout]`
+
+Skill работает в единой wiki-схеме:
+
+- `wiki/index.md` — основной navigation entrypoint;
+- `wiki/log.md` — append-only журнал обновлений knowledge-слоя;
+- `wiki/maps/compile-report.md` — диагностический compile-report.
 
 Перед первым вызовом `status`, `validate`, `repo` или `advance` агент обязан определить фактический путь к progress-файлу в текущем workspace.
 
@@ -68,6 +101,67 @@ metadata:
 status → загрузить reference → выполнить один шаг → advance → повторить
 ```
 
+Для `init-repo-arch-skill` исторический анализ по временным срезам включён всегда. Это и есть стандартный путь выполнения:
+
+1. Найти репозиторий с самой ранней `created_at`.
+2. Взять дату этого репозитория и прибавить `3` месяца.
+3. Использовать эту дату как общий `snapshot date` для всех in-scope репозиториев.
+4. Для каждого репозитория попытаться найти commit не позже `snapshot date`.
+5. Анализировать репозитории в порядке `created_at` от старых к новым.
+6. После завершения прохода по всем репозиториям на текущем срезе перевести окно на следующие `3` месяца и повторить цикл.
+
+Historical prep и его результаты должны фиксироваться в progress-файле через `historical_analysis` и поля репозитория, а не только в заметках агента.
+
+### Standard Happy Path
+
+Нормальный линейный прогон `init-repo-arch-skill` выглядит так:
+
+```text
+define_scope
+  → request_repository_list
+  → prepare_temp_workspace
+  → clone_repositories
+  → refresh_main_branches
+      → для каждого repo зафиксировать main branch, remote HEAD, created_at
+  → plan_repository_order
+      → timeline --progress <path> --plan
+      → timeline --progress <path> --resolve-local --checkout
+      → проверить anchor_repository, anchor_created_at, current_snapshot_at
+      → проверить, что ordered_repository_names отсортирован по created_at
+  → assess_scope_and_domains
+  → analyze_repositories
+  → interview_user
+  → refine_features
+  → build_navigation_index
+  → run_knowledge_lint
+  → validate_final
+  → finalize_progress
+```
+
+Если historical prep не завершён, skill считается не дошедшим до standard happy path и не должен начинать `assess_scope_and_domains` или `analyze_repositories`.
+
+Для шагов knowledge workflow порядок такой:
+
+```text
+refine_features
+  → index --progress <path> --arch-repo-path <arch-repo>
+  → advance
+run_knowledge_lint
+  → lint --progress <path> --arch-repo-path <arch-repo>
+  → исправить ERROR
+  → advance
+```
+
+Для wiki knowledge graph допустим дополнительный compile-цикл:
+
+```text
+build_navigation_index
+  → bootstrap --progress <path> --arch-repo-path <arch-repo>   # если wiki-структура ещё не создана
+  → compile --progress <path> --arch-repo-path <arch-repo>
+  → проверить wiki/index.md и wiki/maps/compile-report.md
+  → при необходимости исправить metadata/frontmatter/links
+```
+
 **Для шага `interview_user`** — выполняется строго по одному открытому вопросу за раз. Нельзя задавать следующий вопрос, пока текущий не закрыт не только в `open-questions.md`, но и во всех связанных артефактах:
 ```
 status → выбрать один open question со статусом open и "Нужен ответ пользователя" = yes
@@ -76,7 +170,7 @@ status → выбрать один open question со статусом open и "
        → сопоставить ответ с уже найденными артефактами и отметить расхождения, если они есть
        → обновить основной артефакт из колонки "Контекст" (feature / security / roles / risk / integration / contract / storage / glossary / hld)
        → обновить другие затронутые артефакты, если знание влияет более чем на один документ
-       → обновить open-questions.md: статус, "Что уже известно", "Как закрыт"
+       → обновить open-questions.md: статус, `Follow-up ID`, `Целевые артефакты`, `Обновление knowledge graph`, "Что уже известно", "Как закрыт"
        → только после этого задать следующий один вопрос
 ```
 
@@ -84,12 +178,13 @@ status → выбрать один open question со статусом open и "
 1. Получить ответ пользователя на один вопрос.
 2. Проверить, не противоречит ли он уже найденному коду и конфигам.
 3. Обновить все целевые документы, на которые влияет ответ.
-4. Обновить `open-questions.md`.
-5. Лишь после сохранения правок переходить к следующему вопросу.
+4. Убедиться, что в целевых документах появился явный `Q-...` reference.
+5. Обновить `open-questions.md`.
+6. Лишь после сохранения правок переходить к следующему вопросу.
 
 Если ответ пользователя влияет на несколько артефактов, агент обязан обновить их в том же цикле, а не откладывать "на потом". Оставлять знание только в `open-questions.md` запрещено.
 
-**Для шага `assess_scope_and_domains`** — выполняется по каждому репозиторию в отдельности, в порядке `ordered_repository_names`. Результат хранится в `repo.domain_map`, не глобально:
+**Для шага `assess_scope_and_domains`** — это первый шаг после обязательного historical prep. Он выполняется по каждому репозиторию в отдельности, в порядке `ordered_repository_names`. Результат хранится в `repo.domain_map`, не глобально:
 ```
 status → загрузить reference checklist-scope-and-domain-assessment.md
        → для каждого репозитория:
@@ -97,6 +192,19 @@ status → загрузить reference checklist-scope-and-domain-assessment.md
            domain --repo <repo> --assess --volume-class <class> --total-files <N> --strategy <per_module|per_domain>
            (если per_domain) domain --repo <repo> --register ... для каждого домена
        → advance --note "repo1: per_domain 2 домена; repo2: per_module"
+```
+
+Historical prep перед `assess_scope_and_domains` и `analyze_repositories` обязателен:
+
+```text
+refresh_main_branches
+  → для каждого repo зафиксировать main branch, remote HEAD и created_at
+plan_repository_order
+  → timeline --progress <path> --plan
+  → timeline --progress <path> --resolve-local --checkout
+  → проверить, что ordered_repository_names отсортирован по created_at
+  → проверить, что у каждого repo заполнены analysis_target_date и analysis_target_commit_status
+  → advance --note "historical snapshot YYYY-MM-DD подготовлен"
 ```
 
 **Для шага `analyze_repositories`** — вложенная петля, форма зависит от стратегии:
@@ -120,7 +228,7 @@ domain --complete --domain-id <id> --notes "<итог домена>"
 1. Добавить в очередь через `repo --register`
 2. Начать через `repo --start`
 3. По одному пункту checklist: загрузить reference → выполнить → `repo --checklist-item ... --checklist-status completed --notes "<findings>"`
-4. Зафиксировать `main_branch`, `analyzed_commit`, `remote_head_commit`
+4. Зафиксировать `main_branch`, `analyzed_commit`, `remote_head_commit`; отдельно проверить `analysis_target_date`, `analysis_target_commit`, `analysis_target_commit_status`
 5. Закрыть через `repo --complete`
 6. **Остановиться.** Вывести пользователю итог по репозиторию и явно попросить открыть новый чат для продолжения со следующим репозиторием. Не переходить к следующему репозиторию в текущем контексте. Пример сообщения:
 
@@ -130,10 +238,16 @@ domain --complete --domain-id <id> --notes "<итог домена>"
 7. Следующий репозиторий начинается только в новом чате.
 
 Короткая памятка по `repo`:
-- `repo --register --name <repo> --role <role> --repository-url <url>`
+- `repo --register --name <repo> --role <role> --repository-url <url> [--created-at <YYYY-MM-DD>]`
 - `repo --start --name <repo>`
 - `repo --checklist-item <item> --checklist-status completed --name <repo> --notes "<findings>"`
 - `repo --complete --name <repo>`
+
+Короткая памятка по `timeline`:
+- `timeline --progress <path> --plan`
+- `timeline --progress <path> --resolve-local`
+- `timeline --progress <path> --resolve-local --checkout`
+- `timeline --progress <path> --advance-window`
 
 Короткая памятка по `domain` (все команды требуют `--repo <имя-репозитория>`):
 - `domain --repo <repo> --assess --volume-class <class> --total-files <N> --strategy <per_module|per_domain>`
@@ -157,6 +271,7 @@ domain --complete --domain-id <id> --notes "<итог домена>"
 | Пункт `analysis_checklist` | Reference-файл |
 |---|---|
 | `repository_classification` | [checklist-repository-classification.md](references/checklist-repository-classification.md) |
+| `repository_structure_mapping` | [checklist-repository-structure-mapping.md](references/checklist-repository-structure-mapping.md) |
 | `entrypoints_and_interfaces` | [checklist-entrypoints-and-interfaces.md](references/checklist-entrypoints-and-interfaces.md) |
 | `business_flow_orchestration` | [checklist-business-flow-orchestration.md](references/checklist-business-flow-orchestration.md) |
 | `configs_and_runtime` | [checklist-configs-and-runtime.md](references/checklist-configs-and-runtime.md) |
@@ -182,10 +297,19 @@ domain --complete --domain-id <id> --notes "<итог домена>"
 
 Каждое утверждение в артефактах — одна из трёх категорий: **наблюдаемый факт** (сильный источник), **обоснованный вывод** (косвенно; помечай `выведено косвенно`), **предположение** (нет подтверждения; помечай `требует подтверждения` или `не найдено в коде`). Не оставляй утверждения без категории.
 
+Для knowledge workflow это означает следующее:
+
+- raw layer хранит первичные доказательства;
+- synthesis layer обязан ссылаться на raw layer или явно помечать косвенный вывод;
+- navigation layer не дублирует подробное содержание synthesis layer, а только указывает, где лежит знание;
+- knowledge lint проверяет, что навигация не указывает на отсутствующие артефакты, а synthesis не теряет связь с источниками.
+- После появления `wiki/maps/compile-report.md` knowledge lint также рассматривает compile output как quality gate: обязательные секции `wiki/index.md` и `wiki/maps/compile-report.md`, а также минимальное покрытие frontmatter и `related`-связей должны быть соблюдены до закрытия шага `run_knowledge_lint`.
+
 
 ## Правила работы
 
 - По умолчанию пиши артефакты архитектурного репозитория на русском языке. Английские термины оставляй только там, где это часть точного технического имени, протокола, библиотеки, endpoint, поля, enum, заголовка, env-переменной или другого кодового идентификатора.
+- Это правило действует и для коротких полей вроде `signal`, `notes`, `description` в `.yml`-артефактах — даже однострочное значение пиши как русскую фразу, а не как полностью англоязычное описание (`"HTTP handlers, routing layer"` — неверно, `"HTTP-хендлеры, слой роутинга"` — верно). Англоязычными остаются только сами имена технологий/библиотек/протоколов внутри фразы.
 - Если в исходном коде или старых артефактах встречаются англоязычные описательные фразы, при обновлении старайся переводить их на естественный русский язык, сохраняя точный технический смысл.
 - Если ссылаешься на кодовый файл, всегда указывай путь вместе с репозиторием, а не только внутренний путь файла. Пиши в формате вроде `<repo-name>/src/app/[locale]/news/[id]/page.tsx`, чтобы по ссылке или пути можно было сразу перейти в нужный репозиторий.
 - Это обязательное требование. Не пиши пути вида только `src/app/[locale]/news/[id]/page.tsx` без указания репозитория-источника.

@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import datetime as dt
+
 from .definitions import (
     REPOSITORY_CHECKLIST_DEFINITIONS,
     STEP_INDEX,
 )
-from .models import normalize_repo_domain_map, normalize_repository, repositories_in_scope
+from .models import (
+    normalize_historical_analysis,
+    normalize_repo_domain_map,
+    normalize_repository,
+    repositories_in_scope,
+)
 
 
 def _find_step(progress: dict, step_id: str) -> dict | None:
@@ -20,6 +27,7 @@ def _find_step(progress: dict, step_id: str) -> dict | None:
 def validate_progress(progress: dict) -> list[str]:
     errors: list[str] = []
     root = progress["analysis_progress"]
+    normalize_historical_analysis(progress)
     workflow = root.get("workflow") or {}
     steps = workflow.get("steps") or []
 
@@ -64,6 +72,7 @@ def validate_progress(progress: dict) -> list[str]:
 
     repositories = root.get("repositories") or []
     repo_execution = root.get("repository_execution") or {}
+    historical = root.get("historical_analysis") or {}
     ordered_repository_names = repo_execution.get("ordered_repository_names") or []
     current_repository = repo_execution.get("current_repository") or ""
     completed_repository_names = repo_execution.get("completed_repository_names") or []
@@ -110,6 +119,11 @@ def validate_progress(progress: dict) -> list[str]:
                 f"{name}"
             )
 
+    analyze_step = _find_step(progress, "analyze_repositories")
+    analyze_or_later = any(
+        step.get("status") == "completed" for step in steps[STEP_INDEX["analyze_repositories"] :]
+    ) or (analyze_step is not None and analyze_step.get("status") == "in_progress")
+
     completed_set = set(completed_repository_names)
     for repo in repositories_in_scope(progress):
         normalize_repository(repo)
@@ -121,10 +135,67 @@ def validate_progress(progress: dict) -> list[str]:
                 f"analysis_status={status}."
             )
 
-    analyze_step = _find_step(progress, "analyze_repositories")
-    analyze_or_later = any(
-        step.get("status") == "completed" for step in steps[STEP_INDEX["analyze_repositories"] :]
-    ) or (analyze_step is not None and analyze_step.get("status") == "in_progress")
+        created_at = repo.get("created_at") or ""
+        if not created_at:
+            errors.append(
+                f"Repository {name} is missing created_at; historical mode is mandatory."
+            )
+        else:
+            try:
+                dt.date.fromisoformat(str(created_at))
+            except ValueError:
+                errors.append(
+                    f"Repository {name} has invalid created_at; expected YYYY-MM-DD, got {created_at}."
+                )
+
+        target_date = repo.get("analysis_target_date") or ""
+        if target_date:
+            try:
+                dt.date.fromisoformat(str(target_date))
+            except ValueError:
+                errors.append(
+                    f"Repository {name} has invalid analysis_target_date; expected YYYY-MM-DD, got {target_date}."
+                )
+
+        target_status = repo.get("analysis_target_commit_status")
+        if target_status not in {
+            "not_started",
+            "resolved",
+            "checked_out",
+            "missing_on_date",
+        }:
+            errors.append(
+                f"Repository {name} has invalid analysis_target_commit_status: {target_status}"
+            )
+
+    anchor_created_at = historical.get("anchor_created_at") or ""
+    current_snapshot_at = historical.get("current_snapshot_at") or ""
+    if repositories_in_scope(progress):
+        if not historical.get("mode"):
+            errors.append("historical_analysis.mode must be set because historical mode is mandatory.")
+        if not historical.get("window_months"):
+            errors.append("historical_analysis.window_months must be set because historical mode is mandatory.")
+    if anchor_created_at:
+        try:
+            dt.date.fromisoformat(str(anchor_created_at))
+        except ValueError:
+            errors.append(
+                "historical_analysis.anchor_created_at must be in YYYY-MM-DD format."
+            )
+    elif ordered_repository_names:
+        errors.append("historical_analysis.anchor_created_at is required once repositories are registered.")
+    if current_snapshot_at:
+        try:
+            dt.date.fromisoformat(str(current_snapshot_at))
+        except ValueError:
+            errors.append(
+                "historical_analysis.current_snapshot_at must be in YYYY-MM-DD format."
+            )
+    elif analyze_or_later or ordered_repository_names:
+        errors.append("historical_analysis.current_snapshot_at is required because historical mode is mandatory.")
+    if ordered_repository_names and not historical.get("anchor_repository"):
+        errors.append("historical_analysis.anchor_repository is required once repositories are registered.")
+
     if analyze_or_later:
         if not ordered_repository_names:
             errors.append(
@@ -135,6 +206,35 @@ def validate_progress(progress: dict) -> list[str]:
                 "ordered_repository_names must exactly match the in-scope repositories "
                 "in the intended traversal order."
             )
+        repos_with_creation_dates = [
+            repo
+            for repo in repositories_in_scope(progress)
+            if repo.get("created_at")
+        ]
+        if len(repos_with_creation_dates) == len(repositories_in_scope(progress)) and repos_with_creation_dates:
+            expected_order = [
+                str(repo.get("name"))
+                for repo in sorted(
+                    repos_with_creation_dates,
+                    key=lambda repo: (str(repo.get("created_at")), str(repo.get("name"))),
+                )
+            ]
+            if ordered_repository_names != expected_order:
+                errors.append(
+                    "ordered_repository_names must be sorted by repository created_at "
+                    "for historical analysis mode."
+                )
+        if current_snapshot_at:
+            snapshot_mismatches = [
+                repo.get("name")
+                for repo in repositories_in_scope(progress)
+                if repo.get("analysis_target_date") != current_snapshot_at
+            ]
+            if snapshot_mismatches:
+                errors.append(
+                    "historical snapshot date must be propagated to all in-scope repositories: "
+                    + ", ".join(str(name) for name in snapshot_mismatches)
+                )
 
     if analyze_step and analyze_step.get("status") == "completed":
         incomplete = [
@@ -147,6 +247,19 @@ def validate_progress(progress: dict) -> list[str]:
                 "analyze_repositories cannot be completed until every in-scope repository "
                 "is completed: " + ", ".join(incomplete)
             )
+        if current_snapshot_at:
+            unresolved_snapshot_repositories = [
+                repo.get("name")
+                for repo in repositories_in_scope(progress)
+                if repo.get("analysis_target_commit_status")
+                not in {"resolved", "checked_out", "missing_on_date"}
+            ]
+            if unresolved_snapshot_repositories:
+                errors.append(
+                    "analyze_repositories cannot be completed until historical target commits "
+                    "are resolved for every repository: "
+                    + ", ".join(str(name) for name in unresolved_snapshot_repositories)
+                )
 
     for repo in repositories_in_scope(progress):
         checklist = repo.get("analysis_checklist") or {}
@@ -234,6 +347,35 @@ def validate_progress(progress: dict) -> list[str]:
         if root.get("validation", {}).get("intermediate_status") != "completed":
             errors.append(
                 "interview_user cannot start before validation.intermediate_status=completed."
+            )
+
+    build_index_step = _find_step(progress, "build_navigation_index")
+    if build_index_step and build_index_step.get("status") in {"in_progress", "completed"}:
+        index_artifact = (root.get("artifacts") or {}).get("index") or {}
+        if index_artifact.get("status") == "not_started" or not index_artifact.get("path"):
+            errors.append(
+                "build_navigation_index requires artifacts.index to have a status and path."
+            )
+
+    lint_step = _find_step(progress, "run_knowledge_lint")
+    lint_state = (root.get("validation") or {}).get("knowledge_lint") or {}
+    if lint_step and lint_step.get("status") in {"in_progress", "completed"}:
+        if lint_state.get("status") == "not_started":
+            errors.append(
+                "run_knowledge_lint requires validation.knowledge_lint.status to be updated."
+            )
+        if not lint_state.get("last_run_at"):
+            errors.append(
+                "run_knowledge_lint requires validation.knowledge_lint.last_run_at."
+            )
+        blocking_issues = [
+            issue
+            for issue in (lint_state.get("issues") or [])
+            if str(issue).startswith("ERROR:")
+        ]
+        if lint_step.get("status") == "completed" and blocking_issues:
+            errors.append(
+                "run_knowledge_lint cannot be completed while blocking knowledge-lint issues remain."
             )
 
     final_validation = root.get("validation", {}).get("final_status")

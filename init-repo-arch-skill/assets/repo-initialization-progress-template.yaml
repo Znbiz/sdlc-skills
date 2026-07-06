@@ -3,13 +3,30 @@ analysis_progress:
   status: <not_started|in_progress|blocked|completed>
   product: <название-продукта>
   analysis_scope: <что входит в анализ>
+  workflow_profile: historical_happy_path
+  knowledge_layout: wiki
   started_at: <дата-время-старта>
   updated_at: <дата-время-последнего-обновления>
   analyst: <агент-или-исполнитель>
 
   workflow:
     enforcement_mode: strict
-    current_step_id: <define_scope|request_repository_list|prepare_temp_workspace|clone_repositories|refresh_main_branches|plan_repository_order|analyze_repositories|interview_user|refine_features|validate_final|finalize_progress>
+    current_step_id: <define_scope|request_repository_list|prepare_temp_workspace|clone_repositories|refresh_main_branches|plan_repository_order|assess_scope_and_domains|analyze_repositories|interview_user|refine_features|build_navigation_index|run_knowledge_lint|validate_final|finalize_progress>
+    happy_path:
+      - define_scope
+      - request_repository_list
+      - prepare_temp_workspace
+      - clone_repositories
+      - refresh_main_branches
+      - plan_repository_order
+      - assess_scope_and_domains
+      - analyze_repositories
+      - interview_user
+      - refine_features
+      - build_navigation_index
+      - run_knowledge_lint
+      - validate_final
+      - finalize_progress
     steps:
       - id: define_scope
         title: Определить продукт, контур и границы анализа
@@ -32,17 +49,22 @@ analysis_progress:
         completed_at: <дата-время-или-null>
         notes: <заметка-или-пусто>
       - id: refresh_main_branches
-        title: Для каждого репозитория зафиксировать main branch и commit SHA
+        title: Для каждого репозитория зафиксировать main branch, remote HEAD и created_at
         status: <not_started|in_progress|completed|blocked>
         completed_at: <дата-время-или-null>
-        notes: <заметка-или-пусто>
+        notes: <для каждого repo заполнены main_branch, remote_head_commit и created_at>
       - id: plan_repository_order
-        title: Определить порядок обхода репозиториев
+        title: Выполнить historical prep: anchor repo, snapshot date и target commits
+        status: <not_started|in_progress|completed|blocked>
+        completed_at: <дата-время-или-null>
+        notes: <anchor repo, snapshot date, порядок по created_at, результат timeline --resolve-local>
+      - id: assess_scope_and_domains
+        title: После historical prep оценить объём репозиториев и определить стратегию per_module/per_domain
         status: <not_started|in_progress|completed|blocked>
         completed_at: <дата-время-или-null>
         notes: <заметка-или-пусто>
       - id: analyze_repositories
-        title: Проанализировать репозитории и собрать технические факты
+        title: Проанализировать репозитории на историческом snapshot и собрать технические факты
         status: <not_started|in_progress|completed|blocked>
         completed_at: <дата-время-или-null>
         notes: <заметка-или-пусто>
@@ -53,6 +75,16 @@ analysis_progress:
         notes: <заметка-или-пусто>
       - id: refine_features
         title: Уточнить features и связанные артефакты
+        status: <not_started|in_progress|completed|blocked>
+        completed_at: <дата-время-или-null>
+        notes: <заметка-или-пусто>
+      - id: build_navigation_index
+        title: Собрать navigation layer: wiki/index.md и wiki/log.md
+        status: <not_started|in_progress|completed|blocked>
+        completed_at: <дата-время-или-null>
+        notes: <заметка-или-пусто>
+      - id: run_knowledge_lint
+        title: Запустить knowledge lint и устранить блокирующие расхождения
         status: <not_started|in_progress|completed|blocked>
         completed_at: <дата-время-или-null>
         notes: <заметка-или-пусто>
@@ -81,8 +113,20 @@ analysis_progress:
     completed_repository_names:
       - <already-completed-repo>
 
+  historical_analysis:
+    mode: three_month_windows_from_oldest
+    window_months: 3
+    status: <not_started|planned|commits_resolved|ready_for_analysis>
+    anchor_repository: <самый-старый-репозиторий>
+    anchor_created_at: <YYYY-MM-DD>
+    current_snapshot_at: <YYYY-MM-DD>
+    completed_snapshot_dates:
+      - <YYYY-MM-DD>
+    prep_notes: <что именно использовано для anchor и какие ограничения были у snapshot>
+
   repositories:
     - name: <название-репозитория>
+      created_at: <YYYY-MM-DD>
       role: <роль-в-системе>
       repository_url: <url-репозитория>
       in_scope: true
@@ -90,6 +134,10 @@ analysis_progress:
       source_type: <temp_clone|user_confirmed_local_copy|unavailable>
       local_path: <локальный-путь-если-есть, обычно .temp/...>
       main_branch: <основная-ветка>
+      analysis_target_date: <YYYY-MM-DD>
+      analysis_target_commit: <commit-sha-на-срезе-или-пусто>
+      analysis_target_commit_status: <not_started|resolved|checked_out|missing_on_date>
+      analysis_target_commit_note: <почему выбран этот commit или почему commit на дату не найден>
       analyzed_commit: <commit-sha>
       remote_head_commit: <commit-sha-удаленной-ветки>
       remote_status: <актуален|отстает|локальные-изменения|не удалось проверить>
@@ -127,6 +175,9 @@ analysis_progress:
         repository_classification:
           status: <not_started|in_progress|completed|blocked>
           notes: <тип репозитория (service|job|monorepo|library|test-repo|infra), категория product|support, роль; если test-repo — какие сервисы покрывает>
+        repository_structure_mapping:
+          status: <not_started|in_progress|completed|blocked>
+          notes: <сколько категорий карты структуры покрыто путями, какие явно not_found/not_applicable; путь к architecture/structure/<repo>.yml>
         entrypoints_and_interfaces:
           status: <not_started|in_progress|completed|blocked>
           notes: <HTTP/gRPC/consumers/producers/CLI/cron/admin UI>
@@ -201,6 +252,15 @@ analysis_progress:
     features_index:
       status: <not_started|in_progress|completed>
       path: <путь-к-файлу-в-корне-арх-репозитория>
+    index:
+      status: <not_started|in_progress|completed>
+      path: <путь-к-файлу-wiki/index.md>
+    knowledge_log:
+      status: <not_started|in_progress|completed>
+      path: <путь-к-файлу-wiki/log.md>
+    compile_report:
+      status: <not_started|in_progress|completed>
+      path: <путь-к-файлу-wiki/maps/compile-report.md>
     glossary:
       status: <not_started|in_progress|completed>
       path: <путь-к-файлу-в-корне-арх-репозитория>
@@ -216,9 +276,17 @@ analysis_progress:
     support_repositories:
       status: <not_started|in_progress|completed>
       path: <путь-к-файлу-architecture/support-repositories.md>
+    structure_map:
+      status: <not_started|in_progress|completed>
+      path: <путь-к-каталогу-architecture/structure>
 
   validation:
     intermediate_status: <not_started|in_progress|completed>
+    knowledge_lint:
+      status: <not_started|in_progress|completed>
+      last_run_at: <дата-время>
+      issues:
+        - <ERROR: или WARN: сообщение knowledge-lint>
     final_status: <not_started|in_progress|completed>
     last_validated_at: <дата-время>
     issues:

@@ -1,0 +1,8 @@
+{
+  "scripts": {
+    "generate:api": "orval"
+  },
+  "devDependencies": {
+    "orval": "{{ORVAL_VERSION}}"
+  }
+}

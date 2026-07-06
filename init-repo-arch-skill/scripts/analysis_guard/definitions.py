@@ -26,12 +26,28 @@ STEP_DEFINITIONS = [
         "Определить порядок обхода репозиториев",
     ),
     (
+        "assess_scope_and_domains",
+        "Оценить объём репозиториев и определить стратегию per_module/per_domain",
+    ),
+    (
         "analyze_repositories",
         "Проанализировать репозитории и собрать технические факты",
     ),
     (
         "interview_user",
         "Задать пользователю только вопросы по пробелам после анализа кода",
+    ),
+    (
+        "refine_features",
+        "Уточнить features и связанные knowledge-артефакты",
+    ),
+    (
+        "build_navigation_index",
+        "Собрать navigation layer: wiki/index.md и wiki/log.md",
+    ),
+    (
+        "run_knowledge_lint",
+        "Запустить knowledge lint и устранить блокирующие расхождения",
     ),
     (
         "validate_final",
@@ -54,7 +70,11 @@ REPOSITORY_CHECKLIST_DEFINITIONS = [
         "repository_classification",
         "Определить тип репозитория, его роль и категорию product/support (service/job/monorepo vs library/test-repo/infra)",
     ),
-    ("entrypoints_and_interfaces", "Найти точки входа и внешние интерфейсы"),
+    (
+        "repository_structure_mapping",
+        "Построить карту структуры репозитория: путь/паттерн → категория (API, контракты, БД/очереди, интеграции, безопасность, фичи/бизнес-логика, конфиги, деплой, техстек) → architecture/structure/<repo>.yml",
+    ),
+    ("entrypoints_and_interfaces", "Найти точки входа и внешние интерфейсы; для frontend — экраны/страницы/роуты как UI entrypoints"),
     ("business_flow_orchestration", "Разобрать orchestration и бизнес-потоки"),
     ("configs_and_runtime", "Собрать конфиги и runtime-зависимости"),
     (

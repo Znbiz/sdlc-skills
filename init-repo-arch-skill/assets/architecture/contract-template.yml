@@ -4,6 +4,13 @@ info:
   version: 1.0.0
   description: <восстановленное или подтвержденное описание контракта сервиса>
 
+x-traceability:
+  assertion_type: <наблюдаемый факт|выведено косвенно|требует подтверждения>
+  sources:
+    - <repo-name/path/to/openapi-or-handler>
+  gaps:
+    - <неизвестная область>
+
 servers:
   - url: https://api.example.com
     description: Основной контур
@@ -28,10 +35,7 @@ components:
       properties:
         id:
           type: string
-
-x-confidence-notes:
-  status: draft
-  evidence:
-    - <файл или артефакт>
-  gaps:
-    - <неизвестная область>
+      x-traceability:
+        assertion_type: <наблюдаемый факт|выведено косвенно|требует подтверждения>
+        sources:
+          - <repo-name/path/to/dto-or-schema>

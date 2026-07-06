@@ -1,0 +1,29 @@
+set dotenv-load
+
+# Полная проверка: линтер + типы + тесты с покрытием
+agent-check:
+    uv run ruff check .
+    uv run ruff format --check .
+    uv run pytest --cov=app --cov-fail-under=90 -x
+
+# Автофикс линтера
+agent-fix:
+    uv run ruff check --fix .
+    uv run ruff format .
+
+# Автофикс только изменённых файлов
+agent-fix-changed:
+    #!/usr/bin/env bash
+    changed=$(git diff --name-only HEAD | grep '\.py$' | tr '\n' ' ')
+    if [ -n "$changed" ]; then
+        uv run ruff check --fix $changed
+        uv run ruff format $changed
+    fi
+
+# Запуск тестов
+test *args:
+    uv run pytest {{ args }}
+
+# Запуск dev-сервера локально
+dev:
+    uv run granian --interface asgi app.main:app --host 0.0.0.0 --port 8000 --reload
