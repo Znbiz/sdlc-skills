@@ -1,0 +1,32 @@
+# local build / cache
+.generated/
+dist/
+build/
+coverage/
+htmlcov/
+tmp/
+tmp-data/
+
+# python / tooling
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# local sessions / runtime state
+sessions/
+runtime/
+artifacts/
+logs/
+
+# docs build outputs
+site/
+public/
+mkdocs-site/
+
+# secrets and local env
+.env
+.env.*
+*.pem
+*.key

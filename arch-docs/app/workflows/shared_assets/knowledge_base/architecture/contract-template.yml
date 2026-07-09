@@ -1,0 +1,41 @@
+openapi: 3.0.3
+info:
+  title: API сервиса <название-сервиса>
+  version: 1.0.0
+  description: <восстановленное или подтвержденное описание контракта сервиса>
+
+x-traceability:
+  assertion_type: <наблюдаемый факт|выведено косвенно|требует подтверждения>
+  sources:
+    - <repo-name/path/to/openapi-or-handler>
+  gaps:
+    - <неизвестная область>
+
+servers:
+  - url: https://api.example.com
+    description: Основной контур
+
+paths:
+  /<resource-path>:
+    get:
+      summary: <краткое описание операции>
+      operationId: <operationId>
+      responses:
+        "200":
+          description: <описание ответа>
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/<ResponseSchema>"
+
+components:
+  schemas:
+    <ResponseSchema>:
+      type: object
+      properties:
+        id:
+          type: string
+      x-traceability:
+        assertion_type: <наблюдаемый факт|выведено косвенно|требует подтверждения>
+        sources:
+          - <repo-name/path/to/dto-or-schema>
