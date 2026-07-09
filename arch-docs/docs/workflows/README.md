@@ -1,6 +1,6 @@
 # Workflow Docs
 
-Этот каталог хранит рабочую документацию по backend workflow в `arch-docs`.
+Этот каталог хранит рабочую документацию по backend workflow и связанным transport-facade слоям в `arch-docs`.
 
 ## Правила ведения
 
@@ -13,6 +13,7 @@
 ## Текущие документы
 
 - [init.md](./init.md) — workflow первичной инициализации архитектурной документации, включая service-driven historical prep, knowledge pipeline и единый REST/RPC/MCP runtime path.
+- [openai-facade.md](./openai-facade.md) — OpenAI-compatible facade поверх conversation-first backend contract для `init_arch`, `update_arch` и `query`.
 
 ## Рекомендуемый шаблон
 

@@ -4,7 +4,7 @@ import pytest
 
 from app.services.task_registry import CliTask, TaskStatus
 from app.workflows.init_arch.domain import AuditActor, EventType, LlmTaskKind, LlmTaskRequest, StepId
-from app.workflows.init_arch.llm_worker import LlmWorkerService
+from app.workflows.init_arch.llm_worker import LlmWorkerService, get_llm_worker_service
 
 
 def _make_request() -> LlmTaskRequest:
@@ -28,7 +28,9 @@ def _make_cli_task() -> CliTask:
         timeout_seconds=30,
     )
     task.task_status = TaskStatus.SUCCESS
-    task.task_result = '{"completed_actions":["updated scope"],"created_artifacts":[],"open_questions_found":[],"notes":"ok"}'
+    task.task_result = (
+        '{"completed_actions":["updated scope"],"created_artifacts":[],"open_questions_found":[],"notes":"ok"}'
+    )
     return task
 
 
@@ -70,3 +72,9 @@ async def test_llm_worker_service_emits_failed_event() -> None:
         EventType.LLM_TASK_REQUESTED,
         EventType.LLM_TASK_FAILED,
     ]
+
+
+def test_get_llm_worker_service_returns_singleton() -> None:
+    service = get_llm_worker_service()
+
+    assert get_llm_worker_service() is service

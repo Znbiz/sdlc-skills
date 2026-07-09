@@ -192,18 +192,21 @@ class LlmCliService:
         self._audit_service = audit_service or get_workflow_audit_service()
 
     async def run_task(self, request: LlmTaskRequest, *, engine_name: str) -> LlmTaskResult:
+        cli_task = self._build_cli_task(request, engine_name=engine_name)
+        self._bind_request_metadata(cli_task, request)
         self._record_event(
             request,
             EventType.LLM_TASK_REQUESTED,
+            llm_call_id=cli_task.task_id,
             engine_name=engine_name,
             expected_schema=request.expected_schema_name,
         )
-        cli_task = self._build_cli_task(request, engine_name=engine_name)
         await self._run_cli_task(cli_task)
         if cli_task.task_status != TaskStatus.SUCCESS:
             self._record_event(
                 request,
                 EventType.LLM_TASK_FAILED,
+                llm_call_id=cli_task.task_id,
                 engine_name=engine_name,
                 error=cli_task.task_error or "CLI task failed",
             )
@@ -213,6 +216,7 @@ class LlmCliService:
         self._record_event(
             request,
             EventType.LLM_TASK_COMPLETED,
+            llm_call_id=cli_task.task_id,
             engine_name=engine_name,
             created_artifacts=str(len(parsed_result.get("created_artifacts", []))),
             open_questions=str(len(parsed_result.get("open_questions_found", []))),
@@ -233,8 +237,20 @@ class LlmCliService:
             engine_name=engine_name,
             prompt_text=request.prompt_text,
             workspace_dir=request.workspace_dir,
+            workflow_id=request.session_id or None,
+            step_id=request.step_id.value,
+            repository_name=request.repository_name or None,
+            domain_id=request.domain_id or None,
+            expected_schema_name=request.expected_schema_name,
             timeout_seconds=request.timeout_seconds,
         )
+
+    def _bind_request_metadata(self, cli_task: CliTask, request: LlmTaskRequest) -> None:
+        cli_task.workflow_id = request.session_id or None
+        cli_task.step_id = request.step_id.value
+        cli_task.repository_name = request.repository_name or None
+        cli_task.domain_id = request.domain_id or None
+        cli_task.expected_schema_name = request.expected_schema_name
 
     async def _run_cli_task(self, cli_task: CliTask) -> None:
         await run_cli_task(cli_task, get_agent_pool())

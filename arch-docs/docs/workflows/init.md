@@ -8,16 +8,28 @@
 
 ## Entrypoints
 
-### REST / RPC
+### Conversation-first REST
 
-- `POST /api/rest/workflows/init/` и `POST /api/rpc/workflows/init/` запускают workflow и создают `WorkflowSessionRecord`.
-- `GET /api/rest/workflows/{workflow_id}/` читает текущий `WorkflowRecord`; если in-memory registry уже потерян, runtime пытается восстановить его из persisted `workflow_runs`.
-- `GET /api/rest/workflows/{workflow_id}/stream/` стримит progress/event updates через SSE.
-- `POST /api/rest/workflows/{workflow_id}/resume/` и `POST /api/rpc/workflows/{workflow_id}/resume/` возобновляют workflow после interrupt.
-- `POST /api/rest/workflows/{workflow_id}/questions/{question_id}/answer/` и `POST /api/rpc/workflows/{workflow_id}/questions/{question_id}/answer/` отвечают на конкретный pending user-question и резюмируют тот же `langgraph` thread.
-- `DELETE /api/rest/workflows/{workflow_id}/` и `DELETE /api/rpc/workflows/{workflow_id}/` переводят workflow в terminal state `cancelled` и отменяют фоновые задачи исполнения.
+- `POST /api/rest/conversations/` создаёт conversation-контейнер для будущих run;
+- `GET /api/rest/conversations/{conversation_id}/` возвращает conversation и активный `response`;
+- `GET /api/rest/conversations/{conversation_id}/items/` читает persisted timeline items;
+- `GET /api/rest/conversations/{conversation_id}/stream/` стримит active response через тот же SSE backend;
+- `POST /api/rest/responses/` запускает новый `response` внутри conversation, сейчас поддержан `workflow_type=init_arch`;
+- `GET /api/rest/responses/{response_id}/` возвращает status/read-model response, `required_actions` и `terminal_result`;
+- `POST /api/rest/responses/{response_id}/actions/` проксирует `cancel`, `resume` и `answer_question` в тот же workflow runtime;
+- `workflow_type` уже покрывает `init_arch`, `update_arch` и `query`.
 
-Реализация: [rest/workflows.py](../../app/api/rest/workflows.py), [rpc/workflows.py](../../app/api/rpc/workflows.py)
+Реализация: [rest/conversations.py](../../app/api/rest/conversations.py), [init_arch_workflow.py](../../app/services/init_arch_workflow.py)
+
+### OpenAI-Compatible Facade
+
+- `GET /v1/models` публикует facade-models `arch-docs-init_arch`, `arch-docs-update_arch`, `arch-docs-query`;
+- `POST /v1/responses` запускает те же backend runs через model-to-workflow mapping;
+- `GET /v1/responses/{response_id}` возвращает OpenAI-shaped read-model поверх того же runtime;
+- `POST /v1/chat/completions` сейчас покрывает query-only сценарий для OpenAI-compatible chat clients;
+- streaming facade не меняет source of truth: conversation timeline и persisted execution dialog остаются внутренними.
+
+Реализация: [openai.py](../../app/api/openai.py)
 
 ### MCP
 
@@ -174,7 +186,7 @@ sequenceDiagram
     participant FS as Arch repo files
     participant Audit as WorkflowAuditService
 
-    User->>API: POST /workflows/{workflow_id}/questions/{question_id}/answer/
+    User->>API: POST /api/rest/responses/{response_id}/actions/
     Note over User,API: Пользователь присылает уточняющий ответ на конкретный open question
     API->>WF: resume thread with {"answer": "..."}
     Note over API,WF: Возобновляем тот же workflow session, а не стартуем новый чат
@@ -213,11 +225,11 @@ sequenceDiagram
 
 ### API Layer
 
-- принимает transport-запросы на `init`, `status`, `stream`, `resume`, `answer_open_question`, `cancel`;
-- REST и RPC используют общий runtime service `init_arch_workflow`, а не держат отдельную orchestration-логику;
+- принимает transport-запросы через `conversations/responses`;
+- response actions резюмируют и отменяют тот же backend runtime, не создавая отдельный workflow-specific transport;
 - MCP `init_arch` вызывает тот же service-layer и больше не обходит backend workflow через legacy prompt-path.
 
-Код: [init_arch_workflow.py](../../app/services/init_arch_workflow.py), [rest/workflows.py](../../app/api/rest/workflows.py), [rpc/workflows.py](../../app/api/rpc/workflows.py), [mcp_server.py](../../app/mcp_server.py)
+Код: [init_arch_workflow.py](../../app/services/init_arch_workflow.py), [rest/conversations.py](../../app/api/rest/conversations.py), [mcp_server.py](../../app/mcp_server.py)
 
 ### Workflow Graph
 
@@ -297,9 +309,9 @@ sequenceDiagram
 
 Ограничение текущего среза:
 
-- conversation-first API ещё не реализован;
 - `workflow_registry` пока остаётся runtime-cache поверх БД, а не полностью убран;
-- `llm_messages`, отдельные `step_transitions` / `artifact_events` таблицы и продолжение нескольких runs в одном conversation остаются следующими шагами.
+- `llm_messages` и causal links между conversation items остаются отдельным хвостом;
+- facade-level submit actions для OpenAI-compatible long-running clients ещё не собраны.
 
 ## State И Артефакты
 
@@ -451,7 +463,7 @@ Resume semantics:
 - `user_*` — lifecycle пользовательского интервью.
 - `artifact_*` — изменения knowledge-слоя.
 
-События пока живут в memory-backed `WorkflowAuditService`, без persistence в БД.
+События больше не ограничены только memory-backed runtime: transport читает persisted `conversation_items`, а workflow step transitions и artifact events дополнительно пишутся в специализированные таблицы.
 
 Transport-level terminal states:
 
@@ -472,26 +484,25 @@ Transport-level terminal states:
 - resume через `langgraph` interrupts и question-scoped answer endpoint;
 - service-driven interview loop с `Q-*` ids, question sync в `open-questions.md` и post-answer reconciliation;
 - audit hooks на step/guard/worker уровнях;
-- единый transport/runtime path для REST, RPC и MCP `init_arch`, включая cancel semantics и SSE terminal event `workflow_cancelled`.
+- единый transport/runtime path для REST и MCP `init_arch`, включая cancel semantics и SSE terminal event `workflow_cancelled`;
+- OpenAI-compatible facade `/v1/*` поверх того же conversation-first backend contract.
 
 Частично реализовано:
 
-- knowledge pipeline уже service-driven на шагах `refine_features` / `build_navigation_index` / `run_knowledge_lint`, но execution dialog и artifact persistence пока только в memory-backed session/audit;
-- interview loop исполняется как service-driven async process, но его session state и audit trail всё ещё in-memory.
+- multi-run dialogue model внутри одного conversation пока ограничен одним активным run;
+- `chat/completions` пока intentionally работает только как facade для `query`.
 
 Не реализовано:
 
-- persistence execution dialog в БД;
-- полный parity с `init-repo-arch-skill` по knowledge bootstrap/index/lint/compile;
-- transport-level streaming/status API beyond current registry model.
+- facade-level actions для long-running OpenAI clients (`resume`, `answer_question`, `cancel`);
+- полный parity с `init-repo-arch-skill` по knowledge bootstrap/index/lint/compile.
 
 ## Known Gaps
 
 1. Workflow graph остаётся линейным; richer branching/state machine semantics ещё не вынесены за пределы conditional retry routing.
-2. `WorkflowAuditService` пока in-memory, поэтому events теряются при рестарте процесса.
-3. `progress_file_path` ещё существует как compatibility field, хотя long-term owner состояния должен быть persisted session state.
-4. `session.open_questions` уже синхронизирован с `open-questions.md` и post-answer reconcile loop, но question/session lifecycle пока не переживает рестарт процесса без этапа 8 persistence.
-5. knowledge-step execution dialog и artifact events пока не персистятся в БД, хотя сервис уже публикует их в typed audit trail.
+2. `progress_file_path` ещё существует как compatibility field, хотя long-term owner состояния должен быть persisted session state.
+3. OpenAI facade пока не экспонирует submit actions для `requires_action` response и поэтому не заменяет внутренний conversation-first transport полностью.
+4. `chat/completions` специально ограничен `arch-docs-query` и не должен использоваться как псевдо-чат для `init_arch`/`update_arch`.
 
 ## Связанные Документы
 

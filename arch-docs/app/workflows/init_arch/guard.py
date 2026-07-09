@@ -313,9 +313,7 @@ class InitArchGuardService:
             bridge_output="Finalized workflow session",
         )
 
-    async def run_validation(
-        self, session: WorkflowSessionRecord, *, progress_file_path: str
-    ) -> GuardOperationResult:
+    async def run_validation(self, session: WorkflowSessionRecord, *, progress_file_path: str) -> GuardOperationResult:
         self._record_guard_event(
             session,
             EventType.GUARD_COMMAND_REQUESTED,

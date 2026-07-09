@@ -62,7 +62,7 @@ def create_app() -> fastapi.FastAPI:
     application = fastapi.FastAPI(
         title="arch-docs",
         version="1.0.0",
-        description="HTTP/WebSocket API поверх CLI-инструментов codex и claude",
+        description="HTTP API поверх CLI-инструментов codex и claude",
         lifespan=lifespan,
     )
 

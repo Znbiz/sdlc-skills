@@ -24,6 +24,13 @@ class CliTaskModel(Base):
     prompt_text: orm.Mapped[str] = orm.mapped_column(sa.Text, nullable=False)
     workspace_dir: orm.Mapped[str] = orm.mapped_column(sa.Text, nullable=False)
     session_id: orm.Mapped[str | None] = orm.mapped_column(sa.Text, nullable=True)
+    conversation_id: orm.Mapped[str | None] = orm.mapped_column(sa.Text, nullable=True, index=True)
+    response_type: orm.Mapped[str | None] = orm.mapped_column(sa.Text, nullable=True)
+    workflow_id: orm.Mapped[str | None] = orm.mapped_column(sa.Text, nullable=True, index=True)
+    step_id: orm.Mapped[str | None] = orm.mapped_column(sa.Text, nullable=True)
+    repository_name: orm.Mapped[str | None] = orm.mapped_column(sa.Text, nullable=True)
+    domain_id: orm.Mapped[str | None] = orm.mapped_column(sa.Text, nullable=True)
+    expected_schema_name: orm.Mapped[str | None] = orm.mapped_column(sa.Text, nullable=True)
     task_result: orm.Mapped[str | None] = orm.mapped_column(sa.Text, nullable=True)
     task_error: orm.Mapped[str | None] = orm.mapped_column(sa.Text, nullable=True)
     stdout_output: orm.Mapped[str | None] = orm.mapped_column(sa.Text, nullable=True)
@@ -135,4 +142,59 @@ class RequiredActionModel(Base):
         sa.DateTime(timezone=True),
         nullable=False,
         server_default=sa.func.now(),
+    )
+
+
+class WorkflowStepTransitionModel(Base):
+    __tablename__ = "workflow_step_transitions"
+
+    transition_id: orm.Mapped[uuid.UUID] = orm.mapped_column(sa.Uuid, primary_key=True, default=uuid.uuid4)
+    conversation_id: orm.Mapped[str] = orm.mapped_column(
+        sa.ForeignKey("conversations.conversation_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    workflow_id: orm.Mapped[str] = orm.mapped_column(
+        sa.ForeignKey("workflow_runs.workflow_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    previous_step_id: orm.Mapped[str | None] = orm.mapped_column(sa.Text, nullable=True)
+    current_step_id: orm.Mapped[str] = orm.mapped_column(sa.Text, nullable=False)
+    completed_steps: orm.Mapped[list[str]] = orm.mapped_column(sa.JSON, nullable=False, default=list)
+    created_at: orm.Mapped[datetime.datetime] = orm.mapped_column(
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+        index=True,
+    )
+
+
+class ArtifactEventModel(Base):
+    __tablename__ = "artifact_events"
+
+    artifact_event_id: orm.Mapped[uuid.UUID] = orm.mapped_column(sa.Uuid, primary_key=True, default=uuid.uuid4)
+    conversation_id: orm.Mapped[str] = orm.mapped_column(
+        sa.ForeignKey("conversations.conversation_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    workflow_id: orm.Mapped[str] = orm.mapped_column(
+        sa.ForeignKey("workflow_runs.workflow_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    event_type: orm.Mapped[str] = orm.mapped_column(sa.Text, nullable=False)
+    actor: orm.Mapped[str] = orm.mapped_column(sa.Text, nullable=False, default="service")
+    step_id: orm.Mapped[str | None] = orm.mapped_column(sa.Text, nullable=True)
+    artifact_path: orm.Mapped[str] = orm.mapped_column(sa.Text, nullable=False)
+    artifact_kind: orm.Mapped[str] = orm.mapped_column(sa.Text, nullable=False)
+    repository_name: orm.Mapped[str | None] = orm.mapped_column(sa.Text, nullable=True)
+    domain_id: orm.Mapped[str | None] = orm.mapped_column(sa.Text, nullable=True)
+    payload_json: orm.Mapped[dict] = orm.mapped_column(sa.JSON, nullable=False, default=dict)
+    created_at: orm.Mapped[datetime.datetime] = orm.mapped_column(
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+        index=True,
     )

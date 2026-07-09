@@ -23,6 +23,13 @@ class CliTask:
     engine_name: str
     prompt_text: str
     workspace_dir: str
+    conversation_id: str | None = None
+    response_type: str | None = None
+    workflow_id: str | None = None
+    step_id: str | None = None
+    repository_name: str | None = None
+    domain_id: str | None = None
+    expected_schema_name: str | None = None
     sandbox_mode: str = "workspace-write"
     session_id: str | None = None
     timeout_seconds: int = 300

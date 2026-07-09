@@ -3,7 +3,7 @@
 ## 1. Общее описание
 
 **Название проекта:** Arch Docs Service  
-**Назначение:** Веб-сервис, предоставляющий HTTP/WebSocket API поверх CLI-инструментов (`codex exec` / `claude -p`) запущенных внутри Docker-контейнера. Пользователь авторизует CLI один раз, сессия сохраняется в volume, последующие запросы через FastAPI выполняются в контейнере без повторной авторизации.
+**Назначение:** Веб-сервис, предоставляющий HTTP API поверх CLI-инструментов (`codex exec` / `claude -p`) запущенных внутри Docker-контейнера. Пользователь авторизует CLI один раз, сессия сохраняется в volume, последующие запросы через FastAPI выполняются в контейнере без повторной авторизации.
 
 ***
 
@@ -19,13 +19,13 @@ CLI-инструменты OpenAI Codex и Claude Code поддерживают 
 
 **В скоупе:**
 - Dockerfile с установленными CLI (`@openai/codex` и/или `@anthropic-ai/claude-code`)
-- FastAPI-сервис внутри контейнера с REST + WebSocket эндпоинтами
+- FastAPI-сервис внутри контейнера с REST эндпоинтами
 - Механизм авторизации CLI с сохранением сессии через volume
 - **API-инициация авторизации** в Claude Code и Codex без API-токенов (OAuth/device-auth flow через API-эндпоинт сервиса)
 - Управление задачами: запуск, отмена, получение статуса/результата
 - **Хранение всех сессий (запуск задач, вывод, статусы) в PostgreSQL**
 - **Пул агентов**: управление пулом экземпляров Claude Code / Codex для параллельного выполнения задач
-- Streaming вывода через WebSocket
+- Streaming вывода через SSE
 - MCP-сервер: инструменты `init_arch`, `update_arch`, `query`
 - Легковесный фронтенд (опционально)
 
@@ -77,7 +77,7 @@ CLI-инструменты OpenAI Codex и Claude Code поддерживают 
 |------|-----------|-------------|
 | Runtime | Python 3.14+ + Node.js 22 | FastAPI требует Python 3.14+ (pylines); Codex CLI — Node.js |
 | Пакетный менеджер | `uv` | Стандарт pylines; `pyproject.toml` вместо `requirements.txt` |
-| Web-фреймворк | FastAPI | Async, WebSocket, автодокументация |
+| Web-фреймворк | FastAPI | Async, SSE, автодокументация |
 | ASGI-сервер | `granian` | Предпочтительный сервер по pylines/stack |
 | Bootstrapping | `microbootstrap` | Логирование через structlog, health, observability |
 | DI | `that-depends` | Стандартный DI-инструмент pylines |
@@ -693,7 +693,7 @@ arch-docs/
 
 **Соответствие слоям pylines:**
 
-- `app/api/rest/`, `app/api/rpc/`, `app/api/ws/` — HTTP/WS обработчики, тонкий слой без бизнес-логики
+- `app/api/rest/`, `app/api/rpc/` — HTTP обработчики, тонкий слой без бизнес-логики
 - `app/services/` — бизнес-логика: запуск задач, реестр, проверка auth-статуса CLI
 - `app/external/` — CLI-клиенты через subprocess; retry через `stamina`
 - `tests/` — зеркально повторяет структуру `app/`; покрытие не ниже 90%
@@ -980,7 +980,7 @@ Stdio-транспорт (`uv run python -m app.mcp_server`) остаётся д
 **Поведение:**
 
 1. Запускает `POST /execute` с `engine=claude`, `prompt` — промпт активации `init-repo-arch-skill`
-2. Стримит прогресс через внутренний WebSocket
+2. Стримит прогресс через внутренний SSE stream
 3. Возвращает `task_id` и список созданных файлов после завершения
 
 **Output:**
@@ -1186,7 +1186,7 @@ app/
 └── mcp_server.py          # fastmcp: определения инструментов; монтируется в FastAPI через http_app()
 ```
 
-`app/api/ws/mcp_sse.py` больше не нужен — маршрут `/api/mcp/` создаётся через `app.mount()` в `main.py`, отдельного модуля не требуется.
+Отдельный `ws`-слой больше не нужен — маршрут `/api/mcp/` создаётся через `app.mount()` в `main.py`, а response/workflow streaming реализован через SSE.
 
 В `docker-compose.yml` — единственная команда:
 

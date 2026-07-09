@@ -4,7 +4,7 @@ import unittest.mock
 
 import pytest
 
-from app.mcp_server import INIT_ARCH_PROMPT, UPDATE_ARCH_PROMPT_BASE, init_arch, query, run_cli_subprocess, update_arch
+from app.mcp_server import UPDATE_ARCH_PROMPT_BASE, init_arch, query, run_cli_subprocess, update_arch
 
 
 def _make_mock_process(returncode: int = 0, stdout: bytes = b"", stderr: bytes = b"") -> unittest.mock.MagicMock:
@@ -80,7 +80,9 @@ class TestRunCliSubprocess:
 
 class TestInitArch:
     async def test_delegates_to_backend_workflow_runtime(self) -> None:
-        with unittest.mock.patch("app.mcp_server.start_init_arch_workflow", new_callable=unittest.mock.AsyncMock) as mock_start:
+        with unittest.mock.patch(
+            "app.mcp_server.start_init_arch_workflow", new_callable=unittest.mock.AsyncMock
+        ) as mock_start:
             mock_start.return_value = types.SimpleNamespace(
                 workflow_id="wf-mcp",
                 workflow_status="running",
@@ -99,7 +101,9 @@ class TestInitArch:
         mock_start.assert_awaited_once()
 
     async def test_builds_default_dirs_from_repo_path(self) -> None:
-        with unittest.mock.patch("app.mcp_server.start_init_arch_workflow", new_callable=unittest.mock.AsyncMock) as mock_start:
+        with unittest.mock.patch(
+            "app.mcp_server.start_init_arch_workflow", new_callable=unittest.mock.AsyncMock
+        ) as mock_start:
             mock_start.return_value = types.SimpleNamespace(
                 workflow_id="wf-mcp",
                 workflow_status="running",

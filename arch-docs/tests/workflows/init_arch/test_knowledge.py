@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from app.workflows.init_arch.domain import RepositoryExecution, StepId, WorkflowSessionRecord
+from app.workflows.init_arch.domain import OpenQuestionRecord
 from app.workflows.init_arch.knowledge import KnowledgeArtifactService
 from app.workflows.shared_assets.loader import WorkflowAssetLoader
 
@@ -68,10 +69,70 @@ async def test_lint_knowledge_raises_on_blocking_issues(tmp_path: Path) -> None:
         await service.lint_knowledge(_make_session(), arch_repo_dir=str(arch_repo_dir))
 
 
-def test_shared_asset_loader_reads_vendored_template() -> None:
-    loader = WorkflowAssetLoader(
-        Path("/Users/aanekraso2/github.com/znbiz/sdlc/arch-docs/app/workflows/shared_assets")
+@pytest.mark.asyncio
+async def test_collect_worker_artifacts_deduplicates_paths() -> None:
+    service = KnowledgeArtifactService()
+
+    result = await service.collect_worker_artifacts(
+        _make_session(),
+        step_id=StepId.REFINE_FEATURES,
+        created_artifacts=["wiki/index.md", "wiki/index.md", "features/auth.md"],
     )
+
+    assert result.written_artifacts == ["features/auth.md", "wiki/index.md"]
+    assert {artifact.artifact_path for artifact in result.session.artifacts} >= {"features/auth.md", "wiki/index.md"}
+
+
+@pytest.mark.asyncio
+async def test_sync_open_questions_writes_markdown_table(tmp_path: Path) -> None:
+    service = KnowledgeArtifactService()
+    session = _make_session().model_copy(
+        update={
+            "open_questions": [
+                OpenQuestionRecord(
+                    question_id="Q-1",
+                    question_text="What API?",
+                    related_repositories=["gateway-service"],
+                    target_artifacts=["features/api.md"],
+                )
+            ]
+        }
+    )
+
+    result = await service.sync_open_questions(session, arch_repo_dir=str(tmp_path / "arch"))
+
+    content = (tmp_path / "arch" / "open-questions.md").read_text(encoding="utf-8")
+    assert "Q-1" in content
+    assert "features/api.md" in content
+    assert result.written_artifacts == ["open-questions.md"]
+
+
+@pytest.mark.asyncio
+async def test_lint_knowledge_returns_non_blocking_issues(tmp_path: Path) -> None:
+    service = KnowledgeArtifactService()
+    arch_repo_dir = tmp_path / "arch"
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr("app.workflows.init_arch.knowledge.run_knowledge_lint", lambda _path: ["WARN: gap"])
+        result = await service.lint_knowledge(_make_session(), arch_repo_dir=str(arch_repo_dir))
+
+    assert "Knowledge lint passed" in result.summary
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_arch_repo_skips_existing_files(tmp_path: Path) -> None:
+    service = KnowledgeArtifactService()
+    arch_repo_dir = tmp_path / "arch"
+    (arch_repo_dir / "wiki" / "maps").mkdir(parents=True)
+    (arch_repo_dir / "wiki" / "index.md").write_text("existing", encoding="utf-8")
+
+    result = await service.bootstrap_arch_repo(_make_session(), arch_repo_dir=str(arch_repo_dir))
+
+    assert "wiki/index.md" not in result.written_artifacts
+
+
+def test_shared_asset_loader_reads_vendored_template() -> None:
+    loader = WorkflowAssetLoader(Path("/Users/aanekraso2/github.com/znbiz/sdlc/arch-docs/app/workflows/shared_assets"))
 
     content = loader.read_text("knowledge_base", "features-index-template.md")
 

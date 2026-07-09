@@ -371,12 +371,16 @@ class TestLlmCliService:
         mock_run.assert_awaited_once_with(cli_task)
         assert result.task_kind == LlmTaskKind.STEP_EXECUTION
         assert result.completed_actions == ["updated scope"]
+        assert cli_task.workflow_id == "wf-1"
+        assert cli_task.step_id == "define_scope"
+        assert cli_task.expected_schema_name == "init_arch_v1"
         recorded_events = [call.args[0] for call in audit_service.record.call_args_list]
         assert [event.event_type for event in recorded_events] == [
             EventType.LLM_TASK_REQUESTED,
             EventType.LLM_TASK_COMPLETED,
         ]
         assert all(event.actor is AuditActor.LLM_WORKER for event in recorded_events)
+        assert all(event.payload["llm_call_id"] == cli_task.task_id for event in recorded_events)
 
     async def test_run_task_raises_when_cli_task_fails(self) -> None:
         audit_service = unittest.mock.MagicMock()
@@ -403,3 +407,4 @@ class TestLlmCliService:
             EventType.LLM_TASK_REQUESTED,
             EventType.LLM_TASK_FAILED,
         ]
+        assert all(event.payload["llm_call_id"] == cli_task.task_id for event in recorded_events)

@@ -84,7 +84,9 @@ def test_build_step_prompt_no_reference_fallback():
 
 def test_build_step_prompt_includes_completed_steps():
     state = _make_state()
-    state["session"] = state["session"].model_copy(update={"completed_steps": [StepId.DEFINE_SCOPE, StepId.REQUEST_REPOSITORY_LIST]})
+    state["session"] = state["session"].model_copy(
+        update={"completed_steps": [StepId.DEFINE_SCOPE, StepId.REQUEST_REPOSITORY_LIST]}
+    )
     with patch.object(prompts_module, "_load_skill_md", return_value="SKILL"):
         result = build_step_prompt("prepare_temp_workspace", state)
     assert "define_scope" in result

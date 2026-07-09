@@ -6,7 +6,14 @@ import structlog
 from langgraph.types import interrupt
 
 from app.workflows.init_arch.audit import get_workflow_audit_service
-from app.workflows.init_arch.domain import AuditActor, EventType, LlmTaskKind, LlmTaskRequest, StepId, WorkflowEventRecord
+from app.workflows.init_arch.domain import (
+    AuditActor,
+    EventType,
+    LlmTaskKind,
+    LlmTaskRequest,
+    StepId,
+    WorkflowEventRecord,
+)
 from app.workflows.init_arch.guard import get_guard_service
 from app.workflows.init_arch.historical import HistoricalPrepResult, get_historical_prep_service
 from app.workflows.init_arch.knowledge import get_knowledge_artifact_service
@@ -26,11 +33,7 @@ def _session_update_payload(
     last_guard_output: str = "",
 ) -> dict[str, typing.Any]:
     current_repository = next(
-        (
-            repo.repository_name
-            for repo in session.repositories
-            if repo.analysis_status == "in_progress"
-        ),
+        (repo.repository_name for repo in session.repositories if repo.analysis_status == "in_progress"),
         "",
     )
     return {

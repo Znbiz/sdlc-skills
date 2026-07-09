@@ -149,7 +149,11 @@ def historical_prep_is_complete(session: WorkflowSessionRecord) -> bool:
 
     if not repositories:
         return False
-    if not historical.anchor_repository_name or historical.anchor_created_at is None or historical.current_snapshot_at is None:
+    if (
+        not historical.anchor_repository_name
+        or historical.anchor_created_at is None
+        or historical.current_snapshot_at is None
+    ):
         return False
 
     expected_order = [

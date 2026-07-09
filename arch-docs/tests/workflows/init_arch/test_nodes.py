@@ -25,7 +25,11 @@ def _make_state(**kwargs) -> InitArchState:
         session_id="wf-1",
         product_name="Prod",
         analysis_scope="full",
-        repositories=[RepositoryExecution(repository_name="svc-a", analysis_target_commit_status=AnalysisTargetCommitStatus.PENDING)],
+        repositories=[
+            RepositoryExecution(
+                repository_name="svc-a", analysis_target_commit_status=AnalysisTargetCommitStatus.PENDING
+            )
+        ],
     )
     base = InitArchState(
         session_id=session.session_id,
@@ -85,7 +89,10 @@ async def test_node_request_repository_list_advances_when_repositories_exist() -
     guard_service = MagicMock()
     audit_service = MagicMock()
     advanced_session = state["session"].model_copy(
-        update={"current_step": StepId.PREPARE_TEMP_WORKSPACE, "completed_steps": [StepId.DEFINE_SCOPE, StepId.REQUEST_REPOSITORY_LIST]}
+        update={
+            "current_step": StepId.PREPARE_TEMP_WORKSPACE,
+            "completed_steps": [StepId.DEFINE_SCOPE, StepId.REQUEST_REPOSITORY_LIST],
+        }
     )
     guard_service.advance_step = AsyncMock(return_value=GuardOperationResult(session=advanced_session))
 
@@ -127,7 +134,9 @@ async def test_node_refresh_main_branches_uses_historical_service_without_llm() 
             ],
         }
     )
-    historical_service.refresh_main_branches = AsyncMock(return_value=nodes_module.HistoricalPrepResult(session=refreshed_session))
+    historical_service.refresh_main_branches = AsyncMock(
+        return_value=nodes_module.HistoricalPrepResult(session=refreshed_session)
+    )
     guard_service.advance_step = AsyncMock(return_value=GuardOperationResult(session=next_session))
 
     with (
@@ -164,7 +173,9 @@ async def test_node_plan_repository_order_plans_and_resolves_historical_prep() -
                 update={"anchor_created_at": dt.date(2024, 1, 1), "current_snapshot_at": dt.date(2024, 4, 1)}
             ),
             "repositories": [
-                state["session"].repositories[0].model_copy(
+                state["session"]
+                .repositories[0]
+                .model_copy(
                     update={
                         "created_at": dt.date(2024, 1, 1),
                         "analysis_target_date": dt.date(2024, 4, 1),
@@ -214,8 +225,12 @@ async def test_node_plan_repository_order_plans_and_resolves_historical_prep() -
 
 
 async def test_node_analyze_repositories_uses_typed_services() -> None:
-    repository = RepositoryExecution(repository_name="svc-a", analysis_target_commit_status=AnalysisTargetCommitStatus.PENDING)
-    session = WorkflowSessionRecord(session_id="wf-1", product_name="Prod", analysis_scope="full", repositories=[repository])
+    repository = RepositoryExecution(
+        repository_name="svc-a", analysis_target_commit_status=AnalysisTargetCommitStatus.PENDING
+    )
+    session = WorkflowSessionRecord(
+        session_id="wf-1", product_name="Prod", analysis_scope="full", repositories=[repository]
+    )
     state = _make_state(session=session)
     guard_service = MagicMock()
     knowledge_service = MagicMock()
@@ -223,7 +238,9 @@ async def test_node_analyze_repositories_uses_typed_services() -> None:
 
     running_session = session.model_copy(
         update={
-            "historical_analysis": session.historical_analysis.model_copy(update={"ordered_repository_names": ["svc-a"]}),
+            "historical_analysis": session.historical_analysis.model_copy(
+                update={"ordered_repository_names": ["svc-a"]}
+            ),
             "current_step": StepId.ANALYZE_REPOSITORIES,
         }
     )
@@ -235,7 +252,9 @@ async def test_node_analyze_repositories_uses_typed_services() -> None:
         update={"current_step": StepId.INTERVIEW_USER, "completed_steps": [StepId.ANALYZE_REPOSITORIES]}
     )
     guard_service.start_repository = AsyncMock(return_value=GuardOperationResult(session=running_session))
-    guard_service.complete_repository_item = AsyncMock(return_value=GuardOperationResult(session=completed_repo_session))
+    guard_service.complete_repository_item = AsyncMock(
+        return_value=GuardOperationResult(session=completed_repo_session)
+    )
     guard_service.complete_repository = AsyncMock(return_value=GuardOperationResult(session=questioned_session))
     guard_service.register_open_questions = AsyncMock(return_value=GuardOperationResult(session=questioned_session))
     guard_service.advance_step = AsyncMock(return_value=GuardOperationResult(session=next_session))
@@ -304,13 +323,20 @@ async def test_node_interview_user_records_answer_and_advances_after_reconcile()
     llm_service = MagicMock()
 
     answered_session = session.model_copy(
-        update={"open_questions": [session.open_questions[0].model_copy(update={"status": "answered", "answer_text": "REST"})]}
+        update={
+            "open_questions": [
+                session.open_questions[0].model_copy(update={"status": "answered", "answer_text": "REST"})
+            ]
+        }
     )
     closed_session = answered_session.model_copy(
         update={"open_questions": [answered_session.open_questions[0].model_copy(update={"status": "closed"})]}
     )
     next_session = closed_session.model_copy(
-        update={"current_step": StepId.REFINE_FEATURES, "completed_steps": [StepId.ANALYZE_REPOSITORIES, StepId.INTERVIEW_USER]}
+        update={
+            "current_step": StepId.REFINE_FEATURES,
+            "completed_steps": [StepId.ANALYZE_REPOSITORIES, StepId.INTERVIEW_USER],
+        }
     )
     guard_service.record_user_answer = AsyncMock(return_value=GuardOperationResult(session=answered_session))
     guard_service.close_user_question = AsyncMock(return_value=GuardOperationResult(session=closed_session))
@@ -468,3 +494,16 @@ async def test_node_finalize_progress_uses_guard_service() -> None:
         EventType.WORKFLOW_STEP_STARTED,
         EventType.WORKFLOW_STEP_COMPLETED,
     ]
+
+
+def test_extract_question_answer_validates_and_normalizes_input() -> None:
+    assert nodes_module._extract_question_answer({"answer": "  REST  "}) == "REST"
+
+    with pytest.raises(ValueError, match="non-empty answer"):
+        nodes_module._extract_question_answer({"answer": "   "})
+
+
+async def test_node_handle_error_returns_empty_payload() -> None:
+    result = await nodes_module.node_handle_error(_make_state(step_error="boom", retry_count=2))
+
+    assert result == {}

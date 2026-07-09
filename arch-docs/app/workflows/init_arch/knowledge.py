@@ -209,7 +209,7 @@ class KnowledgeArtifactService:
             "glossary.md": self._load_asset("architecture/glossary-template.md"),
             "open-questions.md": self._load_asset("open-questions-template.md"),
             "wiki/index.md": build_navigation_index(
-                pathlib.Path("."),
+                pathlib.Path(),
                 session.product_name,
                 repositories,
             ).replace("](./", "](../"),
@@ -263,7 +263,7 @@ class KnowledgeArtifactService:
         source_refs: list[str],
     ) -> WorkflowSessionRecord:
         updated_session = session
-        today = dt.date.today().isoformat()
+        today = dt.datetime.now(dt.UTC).date().isoformat()
         for artifact_path in written_artifacts:
             artifact = ArtifactRecord(
                 artifact_path=artifact_path,

@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 import datetime
-import uuid
 
 import sqlalchemy as sa
 import sqlalchemy.ext.asyncio as async_sa
 
-from app.db.models import ConversationItemModel, ConversationModel, RequiredActionModel, WorkflowRunModel
+from app.db.models import (
+    ArtifactEventModel,
+    ConversationItemModel,
+    ConversationModel,
+    RequiredActionModel,
+    WorkflowRunModel,
+    WorkflowStepTransitionModel,
+)
 from app.services.workflow_registry import WorkflowRecord, WorkflowStatus
-from app.workflows.init_arch.domain import WorkflowEventRecord, WorkflowSessionRecord
+from app.workflows.init_arch.domain import EventType, WorkflowEventRecord, WorkflowSessionRecord
 
 
 def _session_payload(session: WorkflowSessionRecord | None) -> dict | None:
@@ -81,6 +87,49 @@ def _workflow_record_from_model(model: WorkflowRunModel) -> WorkflowRecord:
     )
 
 
+def _build_step_transition_model(
+    record: WorkflowRecord,
+    *,
+    conversation_id: str,
+    previous_step: str | None,
+) -> WorkflowStepTransitionModel:
+    return WorkflowStepTransitionModel(
+        conversation_id=conversation_id,
+        workflow_id=record.workflow_id,
+        previous_step_id=previous_step,
+        current_step_id=record.current_step_id,
+        completed_steps=list(record.completed_steps),
+        created_at=record.updated_at,
+    )
+
+
+def _build_artifact_event_model(
+    event: WorkflowEventRecord,
+    *,
+    conversation_id: str,
+) -> ArtifactEventModel | None:
+    if event.event_type not in {EventType.ARTIFACT_WRITTEN, EventType.ARTIFACT_REJECTED}:
+        return None
+
+    artifact_path = event.payload.get("artifact_path")
+    artifact_kind = event.payload.get("artifact_kind")
+    if not isinstance(artifact_path, str) or not isinstance(artifact_kind, str):
+        return None
+
+    return ArtifactEventModel(
+        conversation_id=conversation_id,
+        workflow_id=event.session_id,
+        event_type=event.event_type.value,
+        actor=event.actor.value,
+        step_id=event.step_id.value if event.step_id is not None else None,
+        artifact_path=artifact_path,
+        artifact_kind=artifact_kind,
+        repository_name=event.repository_name or None,
+        domain_id=event.domain_id or None,
+        payload_json=event.model_dump(mode="json"),
+    )
+
+
 async def upsert_workflow_run(session: async_sa.AsyncSession, record: WorkflowRecord) -> None:
     conversation_id = record.conversation_id or record.workflow_id
     conversation = await session.get(ConversationModel, conversation_id)
@@ -97,7 +146,9 @@ async def upsert_workflow_run(session: async_sa.AsyncSession, record: WorkflowRe
     existing = await session.get(WorkflowRunModel, record.workflow_id)
     previous_status = existing.workflow_status if existing is not None else None
     previous_step = existing.current_step_id if existing is not None else None
-    previous_interrupt = dict(existing.pending_interrupt_payload) if existing and existing.pending_interrupt_payload else None
+    previous_interrupt = (
+        dict(existing.pending_interrupt_payload) if existing and existing.pending_interrupt_payload else None
+    )
 
     if existing is None:
         existing = WorkflowRunModel(
@@ -143,6 +194,7 @@ async def upsert_workflow_run(session: async_sa.AsyncSession, record: WorkflowRe
         existing.updated_at = record.updated_at
 
     if previous_step != record.current_step_id:
+        session.add(_build_step_transition_model(record, conversation_id=conversation_id, previous_step=previous_step))
         session.add(
             ConversationItemModel(
                 conversation_id=conversation_id,
@@ -218,12 +270,15 @@ async def append_workflow_event(session: async_sa.AsyncSession, event: WorkflowE
         ConversationItemModel(
             conversation_id=conversation_id,
             workflow_id=event.session_id,
-            item_kind=str(event.event_type),
-            actor=str(event.actor),
+            item_kind=event.event_type.value,
+            actor=event.actor.value,
             step_id=event.step_id.value if event.step_id is not None else None,
             payload_json=event.model_dump(mode="json"),
         )
     )
+    artifact_event = _build_artifact_event_model(event, conversation_id=conversation_id)
+    if artifact_event is not None:
+        session.add(artifact_event)
     await session.commit()
 
 
@@ -232,6 +287,47 @@ async def get_workflow_run(session: async_sa.AsyncSession, workflow_id: str) -> 
     if model is None:
         return None
     return _workflow_record_from_model(model)
+
+
+async def create_conversation(
+    session: async_sa.AsyncSession,
+    *,
+    conversation_id: str,
+    created_at: datetime.datetime | None = None,
+) -> ConversationModel:
+    conversation = await session.get(ConversationModel, conversation_id)
+    if conversation is not None:
+        return conversation
+
+    now = created_at or datetime.datetime.now(datetime.timezone.utc)
+    conversation = ConversationModel(
+        conversation_id=conversation_id,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(conversation)
+    await session.commit()
+    return conversation
+
+
+async def get_conversation(
+    session: async_sa.AsyncSession,
+    conversation_id: str,
+) -> ConversationModel | None:
+    return await session.get(ConversationModel, conversation_id)
+
+
+async def list_workflow_runs_for_conversation(
+    session: async_sa.AsyncSession,
+    *,
+    conversation_id: str,
+) -> list[WorkflowRecord]:
+    result = await session.execute(
+        sa.select(WorkflowRunModel)
+        .where(WorkflowRunModel.conversation_id == conversation_id)
+        .order_by(WorkflowRunModel.updated_at.desc(), WorkflowRunModel.created_at.desc())
+    )
+    return [_workflow_record_from_model(model) for model in result.scalars()]
 
 
 async def list_required_actions(
@@ -243,6 +339,26 @@ async def list_required_actions(
         sa.select(RequiredActionModel)
         .where(RequiredActionModel.workflow_id == workflow_id)
         .order_by(RequiredActionModel.created_at.asc(), RequiredActionModel.question_id.asc().nulls_last())
+    )
+    return list(result.scalars())
+
+
+async def list_conversation_items(
+    session: async_sa.AsyncSession,
+    *,
+    workflow_id: str | None = None,
+    conversation_id: str | None = None,
+) -> list[ConversationItemModel]:
+    if workflow_id is None and conversation_id is None:
+        return []
+
+    query = sa.select(ConversationItemModel)
+    if workflow_id is not None:
+        query = query.where(ConversationItemModel.workflow_id == workflow_id)
+    if conversation_id is not None:
+        query = query.where(ConversationItemModel.conversation_id == conversation_id)
+    result = await session.execute(
+        query.order_by(ConversationItemModel.created_at.asc(), ConversationItemModel.item_id.asc())
     )
     return list(result.scalars())
 

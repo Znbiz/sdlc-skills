@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-
 TRACEABILITY_MARKERS: Final[tuple[str, ...]] = (
     "Источники",
     "sources:",
@@ -146,9 +145,7 @@ def build_navigation_index(
 
     repo_names = [repo.get("name", "") for repo in repositories if repo.get("name")]
     completed_repos = [
-        repo.get("name", "")
-        for repo in repositories
-        if repo.get("analysis_status") == "completed" and repo.get("name")
+        repo.get("name", "") for repo in repositories if repo.get("analysis_status") == "completed" and repo.get("name")
     ]
     primary_index_name = "wiki/index.md"
 
@@ -194,16 +191,50 @@ def build_navigation_index(
             "",
             "## Архитектура",
             "",
-            _link_or_missing(layout_paths, arch_repo_path, "architecture/hld.md", "HLD", "общий обзор системы и основных потоков"),
-            _link_or_missing(layout_paths, arch_repo_path, "architecture/landscape.yaml", "Ландшафт сервисов", "машиночитаемая карта сервисов и зависимостей"),
-            _link_or_missing(layout_paths, arch_repo_path, "architecture/tech-stack.md", "Технологический стек", "ЯП, фреймворки, transport, observability"),
-            _link_or_missing(layout_paths, arch_repo_path, "architecture/roles-and-permissions.md", "Роли и доступы", "роли пользователей и границы функционала"),
-            _link_or_missing(layout_paths, arch_repo_path, "architecture/security.md", "Безопасность", "auth, trust boundaries, чувствительные данные"),
-            _link_or_missing(layout_paths, arch_repo_path, "architecture/risks.md", "Риски", "известные architectural gaps и техдолг"),
+            _link_or_missing(
+                layout_paths, arch_repo_path, "architecture/hld.md", "HLD", "общий обзор системы и основных потоков"
+            ),
+            _link_or_missing(
+                layout_paths,
+                arch_repo_path,
+                "architecture/landscape.yaml",
+                "Ландшафт сервисов",
+                "машиночитаемая карта сервисов и зависимостей",
+            ),
+            _link_or_missing(
+                layout_paths,
+                arch_repo_path,
+                "architecture/tech-stack.md",
+                "Технологический стек",
+                "ЯП, фреймворки, transport, observability",
+            ),
+            _link_or_missing(
+                layout_paths,
+                arch_repo_path,
+                "architecture/roles-and-permissions.md",
+                "Роли и доступы",
+                "роли пользователей и границы функционала",
+            ),
+            _link_or_missing(
+                layout_paths,
+                arch_repo_path,
+                "architecture/security.md",
+                "Безопасность",
+                "auth, trust boundaries, чувствительные данные",
+            ),
+            _link_or_missing(
+                layout_paths, arch_repo_path, "architecture/risks.md", "Риски", "известные architectural gaps и техдолг"
+            ),
             "",
             "## Интеграции, контракты и данные",
             "",
-            _link_or_missing(layout_paths, arch_repo_path, "architecture/integrations-overview.md", "Обзор интеграций", "входящие и исходящие интеграции по сервисам"),
+            _link_or_missing(
+                layout_paths,
+                arch_repo_path,
+                "architecture/integrations-overview.md",
+                "Обзор интеграций",
+                "входящие и исходящие интеграции по сервисам",
+            ),
         ]
     )
 
@@ -221,9 +252,7 @@ def build_navigation_index(
     if contract_files:
         for contract_file in contract_files:
             contract_relative_path = contract_file.relative_to(arch_repo_path).as_posix()
-            lines.append(
-                f"  - `{_render_relative_link(layout_paths, arch_repo_path, contract_relative_path)}`"
-            )
+            lines.append(f"  - `{_render_relative_link(layout_paths, arch_repo_path, contract_relative_path)}`")
     else:
         lines.append("  - `не найдены`")
 
@@ -231,9 +260,7 @@ def build_navigation_index(
     if storage_files:
         for storage_file in storage_files:
             storage_relative_path = storage_file.relative_to(arch_repo_path).as_posix()
-            lines.append(
-                f"  - `{_render_relative_link(layout_paths, arch_repo_path, storage_relative_path)}`"
-            )
+            lines.append(f"  - `{_render_relative_link(layout_paths, arch_repo_path, storage_relative_path)}`")
     else:
         lines.append("  - `не найдены`")
 
@@ -243,16 +270,36 @@ def build_navigation_index(
             "",
             "## Термины и открытые вопросы",
             "",
-            _link_or_missing(layout_paths, arch_repo_path, "glossary.md", "Глоссарий", "продуктовые и технические термины"),
-            _link_or_missing(layout_paths, arch_repo_path, "open-questions.md", "Открытые вопросы", "gaps, которые не удалось закрыть из кода"),
+            _link_or_missing(
+                layout_paths, arch_repo_path, "glossary.md", "Глоссарий", "продуктовые и технические термины"
+            ),
+            _link_or_missing(
+                layout_paths,
+                arch_repo_path,
+                "open-questions.md",
+                "Открытые вопросы",
+                "gaps, которые не удалось закрыть из кода",
+            ),
             "",
             "## Support-репозитории",
             "",
-            _link_or_missing(layout_paths, arch_repo_path, "architecture/support-repositories.md", "Support repositories", "библиотеки, infra и test-repo, которые не оформляются как продуктовые фичи"),
+            _link_or_missing(
+                layout_paths,
+                arch_repo_path,
+                "architecture/support-repositories.md",
+                "Support repositories",
+                "библиотеки, infra и test-repo, которые не оформляются как продуктовые фичи",
+            ),
             "",
             "## Knowledge log",
             "",
-            _link_or_missing(layout_paths, arch_repo_path, layout_paths.log_path.relative_to(arch_repo_path).as_posix(), "Журнал knowledge-обновлений", log_description),
+            _link_or_missing(
+                layout_paths,
+                arch_repo_path,
+                layout_paths.log_path.relative_to(arch_repo_path).as_posix(),
+                "Журнал knowledge-обновлений",
+                log_description,
+            ),
             "",
             "## Правило обновления",
             "",
@@ -264,7 +311,7 @@ def build_navigation_index(
 
 
 def build_knowledge_log_stub() -> str:
-    today = dt.date.today().isoformat()
+    today = dt.datetime.now(dt.UTC).date().isoformat()
     return "\n".join(
         [
             "# Knowledge Log",
@@ -432,7 +479,8 @@ def compile_knowledge_graph(arch_repo_path: Path) -> CompileResult:
     weakly_linked_pages = sorted(
         document.relative_path
         for document in documents
-        if document.relative_path not in {
+        if document.relative_path
+        not in {
             layout_paths.index_path.relative_to(arch_repo_path).as_posix(),
             layout_paths.log_path.relative_to(arch_repo_path).as_posix(),
         }
@@ -540,18 +588,12 @@ def _build_compiled_wiki_index(
     lines.extend(["## Quality Gates", ""])
     lines.extend(
         _build_quality_gate_lines(
-            documents_requiring_metadata=sum(
-                1 for document in documents if _requires_graph_metadata(document)
-            ),
+            documents_requiring_metadata=sum(1 for document in documents if _requires_graph_metadata(document)),
             documents_with_frontmatter=sum(
-                1
-                for document in documents
-                if _requires_graph_metadata(document) and document.frontmatter
+                1 for document in documents if _requires_graph_metadata(document) and document.frontmatter
             ),
             documents_with_related=sum(
-                1
-                for document in documents
-                if _requires_graph_metadata(document) and document.metadata_related
+                1 for document in documents if _requires_graph_metadata(document) and document.metadata_related
             ),
         )
     )
@@ -618,8 +660,8 @@ def _build_compile_report(
     lines.extend(
         [
             "",
-        "## Unresolved References",
-        "",
+            "## Unresolved References",
+            "",
         ]
     )
     if unresolved_references:
@@ -672,14 +714,12 @@ def _lint_feature_index(features_index_path: Path, feature_files: list[Path]) ->
         feature_names = {feature_file.name for feature_file in feature_files}
         missing_files = sorted(link for link in indexed_feature_links if link not in feature_names)
         for missing_file in missing_files:
-            issues.append(
-                f"ERROR: features-index.md ссылается на отсутствующий файл features/{missing_file}"
-            )
-        unindexed_files = sorted(feature_name for feature_name in feature_names if feature_name not in indexed_feature_links)
+            issues.append(f"ERROR: features-index.md ссылается на отсутствующий файл features/{missing_file}")
+        unindexed_files = sorted(
+            feature_name for feature_name in feature_names if feature_name not in indexed_feature_links
+        )
         for unindexed_file in unindexed_files:
-            issues.append(
-                f"WARN: файл features/{unindexed_file} не упомянут в features-index.md"
-            )
+            issues.append(f"WARN: файл features/{unindexed_file} не упомянут в features-index.md")
     elif feature_files:
         issues.append("ERROR: есть feature-файлы, но отсутствует features-index.md")
     return issues
@@ -691,12 +731,7 @@ def _lint_traceability(artifact_path: Path, arch_repo_path: Path) -> list[str]:
     has_sources = bool(frontmatter.get("sources")) if frontmatter else False
     if has_sources or _has_traceability_markers(content):
         return []
-    return [
-        (
-            "ERROR: в "
-            f"{artifact_path.relative_to(arch_repo_path)} нет явной трассировки источников"
-        )
-    ]
+    return [(f"ERROR: в {artifact_path.relative_to(arch_repo_path)} нет явной трассировки источников")]
 
 
 def _lint_open_questions(open_questions_path: Path, arch_repo_path: Path) -> list[str]:
@@ -724,11 +759,12 @@ def _lint_open_questions_with_graph(
         follow_up_id = row.get("Follow-up ID", "").strip() or row.get("Follow-upID", "").strip()
         knowledge_graph_updated = row.get("Обновление knowledge graph", "").strip().lower()
 
-        if status_value == "open" and row.get("Нужен ответ пользователя", "").strip().lower() == "yes" and not follow_up_id:
-            issues.append(
-                "WARN: open-вопрос "
-                f"{question_id} с требуемым ответом пользователя не содержит Follow-up ID"
-            )
+        if (
+            status_value == "open"
+            and row.get("Нужен ответ пользователя", "").strip().lower() == "yes"
+            and not follow_up_id
+        ):
+            issues.append(f"WARN: open-вопрос {question_id} с требуемым ответом пользователя не содержит Follow-up ID")
 
         if status_value != "resolved":
             continue
@@ -736,16 +772,12 @@ def _lint_open_questions_with_graph(
         closure_text = row.get("Как закрыт или что нужно для закрытия", "").strip()
         context_text = row.get("Контекст", "").strip()
         if not closure_text:
-            issues.append(
-                f"ERROR: resolved-вопрос {question_id} в open-questions.md не содержит описания закрытия"
-            )
+            issues.append(f"ERROR: resolved-вопрос {question_id} в open-questions.md не содержит описания закрытия")
             continue
 
         artifact_refs = target_artifact_refs or _extract_artifact_references(f"{context_text} {closure_text}")
         if not artifact_refs:
-            issues.append(
-                f"ERROR: resolved-вопрос {question_id} в open-questions.md не ссылается на целевой артефакт"
-            )
+            issues.append(f"ERROR: resolved-вопрос {question_id} в open-questions.md не ссылается на целевой артефакт")
             continue
 
         for artifact_ref in artifact_refs:
@@ -758,10 +790,10 @@ def _lint_open_questions_with_graph(
             if knowledge_graph_updated == "yes":
                 document = document_by_path.get(artifact_ref)
                 artifact_content = artifact_path.read_text(encoding="utf-8")
-                if question_id not in artifact_content and not _document_contains_question_reference(document, question_id):
-                    issues.append(
-                        f"ERROR: resolved-вопрос {question_id} не отражён в артефакте {artifact_ref}"
-                    )
+                if question_id not in artifact_content and not _document_contains_question_reference(
+                    document, question_id
+                ):
+                    issues.append(f"ERROR: resolved-вопрос {question_id} не отражён в артефакте {artifact_ref}")
     return issues
 
 
@@ -772,9 +804,7 @@ def _lint_graph_awareness(
     documents: list[KnowledgeDocument],
 ) -> list[str]:
     issues: list[str] = []
-    issues.extend(
-        _lint_missing_related_references(compile_result.unresolved_references)
-    )
+    issues.extend(_lint_missing_related_references(compile_result.unresolved_references))
     issues.extend(_lint_orphan_pages(compile_result.weakly_linked_pages))
     issues.extend(_lint_stale_low_confidence_pages(documents))
     issues.extend(_lint_repository_domain_conflicts(documents))
@@ -805,7 +835,7 @@ def _lint_orphan_pages(weakly_linked_pages: tuple[str, ...]) -> list[str]:
 
 def _lint_stale_low_confidence_pages(documents: list[KnowledgeDocument]) -> list[str]:
     issues: list[str] = []
-    today = dt.date.today()
+    today = dt.datetime.now(dt.UTC).date()
     for document in documents:
         if document.confidence != "low":
             continue
@@ -816,8 +846,7 @@ def _lint_stale_low_confidence_pages(documents: list[KnowledgeDocument]) -> list
         age_days = (today - updated_date).days
         if age_days >= 90:
             issues.append(
-                "DEBT: low-confidence страница давно не обновлялась: "
-                f"{document.relative_path} (age_days={age_days})"
+                f"DEBT: low-confidence страница давно не обновлялась: {document.relative_path} (age_days={age_days})"
             )
     return issues
 
@@ -888,10 +917,7 @@ def _lint_compile_quality_gates(compile_result: CompileResult) -> list[str]:
         compile_result.documents_with_frontmatter,
         compile_result.documents_requiring_metadata,
     )
-    if (
-        compile_result.documents_requiring_metadata
-        and frontmatter_coverage < MIN_FRONTMATTER_COVERAGE
-    ):
+    if compile_result.documents_requiring_metadata and frontmatter_coverage < MIN_FRONTMATTER_COVERAGE:
         issues.append(
             "ERROR: compile quality gate не пройден: frontmatter coverage "
             f"{compile_result.documents_with_frontmatter}/{compile_result.documents_requiring_metadata} "
@@ -922,9 +948,7 @@ def _lint_knowledge_log(log_path: Path, arch_repo_path: Path) -> list[str]:
     if not log_content:
         return [f"ERROR: {log_path.relative_to(arch_repo_path)} пуст"]
 
-    entry_matches = list(
-        re.finditer(rf"(?m)^({re.escape(KNOWLEDGE_LOG_ENTRY_PREFIX)} .+)$", log_content)
-    )
+    entry_matches = list(re.finditer(rf"(?m)^({re.escape(KNOWLEDGE_LOG_ENTRY_PREFIX)} .+)$", log_content))
     if not entry_matches:
         return [
             f"WARN: {log_path.relative_to(arch_repo_path)} не содержит ни одной записи формата '{KNOWLEDGE_LOG_ENTRY_PREFIX} YYYY-MM-DD'"
@@ -962,9 +986,7 @@ def _lint_markdown_links(path: Path, root: Path) -> list[str]:
             continue
         normalized = (path.parent / target).resolve()
         if not normalized.exists():
-            issues.append(
-                f"ERROR: {path.relative_to(root)} содержит битую ссылку на {target}"
-            )
+            issues.append(f"ERROR: {path.relative_to(root)} содержит битую ссылку на {target}")
     return issues
 
 
@@ -985,33 +1007,25 @@ def _lint_frontmatter(markdown_path: Path, arch_repo_path: Path) -> list[str]:
         if value is None:
             continue
         if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-            issues.append(
-                f"ERROR: {path_label} содержит некорректное поле frontmatter `{key}`; ожидается список строк"
-            )
+            issues.append(f"ERROR: {path_label} содержит некорректное поле frontmatter `{key}`; ожидается список строк")
 
     for key in ("title", "type", "confidence", "domain"):
         value = frontmatter.get(key)
         if value is None:
             continue
         if not isinstance(value, str):
-            issues.append(
-                f"ERROR: {path_label} содержит некорректное поле frontmatter `{key}`; ожидается строка"
-            )
+            issues.append(f"ERROR: {path_label} содержит некорректное поле frontmatter `{key}`; ожидается строка")
 
     confidence_value = frontmatter.get("confidence")
     if isinstance(confidence_value, str) and confidence_value not in VALID_CONFIDENCE:
-        issues.append(
-            f"ERROR: {path_label} содержит неизвестное значение confidence `{confidence_value}`"
-        )
+        issues.append(f"ERROR: {path_label} содержит неизвестное значение confidence `{confidence_value}`")
 
     for key in ("created", "updated"):
         value = frontmatter.get(key)
         if value is None:
             continue
         if not isinstance(value, str) or not DATE_PATTERN.match(value):
-            issues.append(
-                f"ERROR: {path_label} содержит некорректное поле frontmatter `{key}`; ожидается YYYY-MM-DD"
-            )
+            issues.append(f"ERROR: {path_label} содержит некорректное поле frontmatter `{key}`; ожидается YYYY-MM-DD")
 
     return issues
 
@@ -1119,9 +1133,7 @@ def _iter_knowledge_artifacts(*directories: Path) -> list[Path]:
 
 def _iter_markdown_documents_for_lint(arch_repo_path: Path, layout_paths: LayoutPaths) -> list[Path]:
     documents = [
-        path
-        for path in arch_repo_path.rglob("*.md")
-        if ".git" not in path.parts and path.name != "compile-report.md"
+        path for path in arch_repo_path.rglob("*.md") if ".git" not in path.parts and path.name != "compile-report.md"
     ]
     return sorted(documents)
 
@@ -1135,9 +1147,7 @@ def _iter_markdown_documents_for_compile(arch_repo_path: Path, layout_paths: Lay
     documents = [
         path
         for path in arch_repo_path.rglob("*.md")
-        if ".git" not in path.parts
-        and path.resolve() not in excluded_paths
-        and path.name != "compile-report.md"
+        if ".git" not in path.parts and path.resolve() not in excluded_paths and path.name != "compile-report.md"
     ]
     return sorted(documents)
 
@@ -1277,7 +1287,7 @@ def _parse_markdown_table(content: str) -> list[dict[str, str]]:
         values = _split_markdown_row(line)
         if len(values) != len(headers):
             continue
-        rows.append(dict(zip(headers, values)))
+        rows.append(dict(zip(headers, values, strict=True)))
     return rows
 
 

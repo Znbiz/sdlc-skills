@@ -146,7 +146,7 @@
 - расширена typed historical state-модель (`completed_snapshot_dates`, `prep_notes`) и добавлены regression tests на historical planning, commit resolution и node orchestration;
 - verification: `19 passed` в targeted red/green срезе (`tests/workflows/init_arch/domain/test_operations.py`, `tests/workflows/init_arch/test_historical.py`, `tests/workflows/init_arch/test_nodes.py`), затем `67 passed` в `tests/workflows/init_arch`, `tests/api/rpc/test_workflows.py`, `tests/services/test_workflow_registry.py`.
 
-### Этап 5. [~] Встроить knowledge-artifact pipeline
+### Этап 5. [x] Встроить knowledge-artifact pipeline
 
 **Задача:** реализовать слой синтеза артефактов так, как он описан в `repository-layout.md` и `knowledge-workflow.md`, без делегирования контроля над прогрессом LLM.
 
@@ -160,16 +160,18 @@
 
 **Результат этапа:** сервис умеет создавать и поддерживать knowledge-слой, а не только запускать агент с общей инструкцией.
 
-**Статус выполнения:** частично выполнено
+**Статус выполнения:** выполнено
 
 **Мини-отчёт:**
 - добавлен внутренний `KnowledgeArtifactService`, который использует vendored templates из `app/workflows/shared_assets/knowledge_base/`, bootstrap-ит базовый knowledge layout и ведёт typed artifact registry в `WorkflowSessionRecord`;
 - knowledge-этапы `refine_features`, `build_navigation_index`, `run_knowledge_lint` переведены на service-driven pipeline: LLM остаётся только на synthesis-шаге `refine_features`, а compile/navigation и knowledge lint теперь выполняются самим сервисом;
 - в сервис перенесён knowledge runtime для `compile_knowledge_graph()` и `run_knowledge_lint()`, а audit дополнен событиями `artifact_written` при bootstrap/compile;
 - добавлены regression tests для bootstrap, compile, lint и knowledge-node orchestration; verification: `27 passed` в targeted knowledge/domain срезе и `74 passed` в `tests/workflows/init_arch`, `tests/api/rpc/test_workflows.py`, `tests/services/test_workflow_registry.py`;
-- открытый хвост этапа: персистентный execution dialog по knowledge-шагам в БД остаётся зависимостью этапа 8, поэтому этап пока отмечен как частично закрытый, а не финально завершённый.
+- knowledge execution dialog доведён до persisted read-model: workflow пишет `conversation_items`, `artifact_events`, `workflow_step_transitions`, а transport-слой умеет читать эти события через `GET /api/rest/workflows/{workflow_id}/events/` и DB-backed SSE fallback после рестарта;
+- worker-аудит knowledge-шагов теперь воспроизводим по `llm_task_*` событиям с `llm_call_id`, а сервисные artifact decisions доступны как отдельные persisted события и через status/event API;
+- финальная verification после закрытия хвоста этапов 5-7: `161 passed` в `tests/workflows/init_arch`, `tests/services/test_init_arch_workflow.py`, `tests/services/test_task_runner.py`, `tests/services/test_workflow_registry.py`, `tests/api/rest/test_workflows.py`, `tests/api/rest/test_workflow_stream.py`, `tests/api/rpc/test_workflows.py`, `tests/mcp/test_mcp_server.py`, `tests/db/test_workflow_repo.py`, `tests/db/test_task_repo.py`.
 
-### Этап 6. [~] Реализовать interview loop и resume-семантику
+### Этап 6. [x] Реализовать interview loop и resume-семантику
 
 **Задача:** адаптировать ограничение исходного skill “один открытый вопрос за раз” к long-running gateway workflow так, чтобы именно сервис контролировал паузу, ожидание ответа и продолжение.
 
@@ -183,7 +185,7 @@
 
 **Результат этапа:** skill становится управляемым асинхронным процессом, совместимым с HTTP/MCP.
 
-**Статус выполнения:** частично выполнено
+**Статус выполнения:** выполнено
 
 **Мини-отчёт:**
 - `analyze_repositories` теперь поднимает `open_questions` из `LlmTaskResult.open_questions_found`, сервис сам назначает `Q-*` id и синхронизирует `open-questions.md` до входа в `interview_user`;
@@ -191,9 +193,11 @@
 - в RPC добавлен явный endpoint `POST /workflows/{workflow_id}/questions/{question_id}/answer/`, который валидирует pending question и резюмирует тот же backend workflow без обходного shell-path;
 - `KnowledgeArtifactService` получил service-side sync `open-questions.md`, поэтому question lifecycle теперь отражается не только в runtime `session`, но и в knowledge-слое;
 - verification: `44 passed` в targeted срезе (`tests/workflows/init_arch/domain/test_operations.py`, `tests/workflows/init_arch/test_guard.py`, `tests/workflows/init_arch/test_nodes.py`, `tests/api/rpc/test_workflows.py`), затем `75 passed` в `tests/workflows/init_arch` и `tests/api/rpc/test_workflows.py`;
-- открытый хвост этапа: хранение interview state и execution dialog всё ещё memory-backed через `workflow_registry`/`WorkflowAuditService`, а не persisted в БД, поэтому этап пока остаётся частично закрытым до этапа 8.
+- interview state и required actions перестали быть только memory-backed: статус workflow lazy-restore-ится из БД, `required_actions` читаются через persisted `required_actions`, а `answer_init_arch_question()` покрыт тестом на resume после DB-only восстановления workflow;
+- REST status теперь возвращает `conversation_id` и current `required_actions`, а SSE может воспроизвести persisted interrupt/event trail даже если in-memory registry пуст после рестарта сервиса;
+- финальная verification после закрытия хвоста этапов 5-7: `161 passed` в общем workflow/db/transport срезе.
 
-### Этап 7. Довести внешние API до продуктового контура
+### Этап 7. [x] Довести внешние API до продуктового контура
 
 **Задача:** сделать `init_arch` полноценной пользовательской операцией сервиса, а не оболочкой над prompt `/init-repo-arch-skill`.
 
@@ -211,7 +215,7 @@
 
 **Результат этапа:** один backend workflow, несколько одинаково корректных transport-слоёв.
 
-**Статус выполнения:** частично выполнен, не готово дополнение по целевому дизайну transport-слоя
+**Статус выполнения:** выполнено
 
 **Мини-отчёт:**
 - orchestration runtime для `init_arch` вынесен в общий service-layer `app/services/init_arch_workflow.py`, чтобы REST, RPC и MCP работали через один backend path, а не дублировали lifecycle workflow в transport-коде;
@@ -219,7 +223,9 @@
 - RPC переведён на тот же runtime API и получил `DELETE /api/rpc/workflows/{workflow_id}/` для штатной отмены long-running workflow;
 - `WorkflowStatus` расширен состоянием `cancelled`, а SSE stream теперь умеет эмитить terminal event `workflow_cancelled` для transport-level наблюдаемости;
 - MCP tool `init_arch` больше не запускает legacy `/init-repo-arch-skill` subprocess path и теперь стартует тот же backend workflow, возвращая `workflow_id`, `workflow_status`, `current_step_id` и `created_at`;
-- verification: `39 passed` в targeted transport red/green (`tests/api/rest/test_workflows.py`, `tests/api/rpc/test_workflows.py`, `tests/mcp/test_mcp_server.py`), затем `53 passed` в расширенном срезе с SSE/runtime (`tests/api/rest/test_workflows.py`, `tests/api/rest/test_workflow_stream.py`, `tests/api/rpc/test_workflows.py`, `tests/mcp/test_mcp_server.py`, `tests/services/test_workflow_registry.py`, `tests/test_main.py`).
+- transport read-model расширен до execution-dialog surface: `GET /api/rest/workflows/{workflow_id}/` теперь возвращает `conversation_id` и `required_actions`, `GET /api/rest/workflows/{workflow_id}/events/` отдаёт persisted event log, а `GET /api/rest/workflows/{workflow_id}/stream/` умеет падать обратно на DB-backed replay, если runtime registry уже пуст;
+- это закрывает продуктовый контур для `init_arch` как для long-running capability gateway: status, answer, cancel, event-log и SSE работают через единый backend workflow независимо от transport-а и переживают потерю in-memory runtime;
+- verification: `23 passed` в targeted red/green (`tests/services/test_init_arch_workflow.py`, `tests/api/rest/test_workflows.py`, `tests/api/rest/test_workflow_stream.py`), затем `161 passed` в общем workflow/db/transport/regression срезе.
 
 **Дополнение по целевому дизайну transport-слоя:**
 - текущий `/workflows/*` API следует считать переходным compatibility-layer, а не финальным публичным контрактом сервиса;
@@ -229,6 +235,7 @@
 - все события workflow, включая user-facing сообщения, questions/required actions и низкоуровневые технические события (`step_started`, `guard_command_applied`, `artifact_written`, `llm_task_*`), должны попадать в единую хронологическую ленту conversation как typed items;
 - вместо набора специализированных endpoint-ов под каждый workflow целевой transport должен свестись к небольшому универсальному набору операций: `create conversation`, `create response/run`, `append user item`, `submit action`, `get conversation`, `get response`, `stream conversation events`;
 - workflow-specific semantics (`resume`, `answer question`, `pause`, `cancel`, `restart run`) должны моделироваться как стандартные conversation actions, а не как отдельные REST-ручки на каждый тип workflow.
+- этот следующий шаг больше не блокирует готовность этапа 7: текущий product contour закрыт, а conversation-first API остаётся отдельным расширением transport-модели поверх уже persisted execution dialog.
 
 ### Этап 8. Персистентность и операционная модель
 
@@ -252,24 +259,100 @@
 - `start/status/resume/cancel` для `init_arch` больше не зависят только от `workflow_registry`: runtime пытается lazy-restore `WorkflowRecord` из БД и использует registry как cache поверх persisted state;
 - `WorkflowAuditService` начал дублировать `WorkflowEventRecord` в `conversation_items`, а lifecycle workflow пишет в БД step/status snapshots и required actions;
 - на startup сервис теперь помечает застрявшие `running` workflow-runs как `failed` c причиной `Service restarted`, чтобы после рестарта не оставались «висящие» состояния без terminal transition;
+- `cli_tasks` дополнительно расширен workflow-метаданными `workflow_id`, `step_id`, `repository_name`, `domain_id`, `expected_schema_name`, а audit-события `llm_task_requested/completed/failed` теперь несут `llm_call_id`, связывающий execution dialog с конкретным persisted LLM-вызовом;
+- добавлены отдельные persisted сущности `workflow_step_transitions` и `artifact_events`: смена шага теперь пишется не только в `conversation_items`, но и в специализированную таблицу переходов, а `artifact_written/artifact_rejected` сохраняются как отдельные artifact-events с repo/domain context и полным payload;
 - verification: `44 passed` в targeted workflow/db/transport срезе (`tests/db/test_task_repo.py`, `tests/db/test_workflow_repo.py`, `tests/services/test_workflow_registry.py`, `tests/services/test_init_arch_workflow.py`, `tests/api/rest/test_workflows.py`, `tests/api/rpc/test_workflows.py`) и ещё `39 passed` в смежном срезе (`tests/services/test_task_runner.py`, `tests/db/test_session.py`, `tests/test_main.py`);
-- открытый хвост этапа: conversation-first public API, полноценное хранение `llm_messages`/causal links, несколько `workflow_run` внутри одного `conversation` и отдельные persisted сущности для artifact/step transition ещё не реализованы, поэтому этап остаётся частично закрытым.
+- открытый хвост этапа: conversation-first public API, полноценное хранение `llm_messages`/causal links и несколько `workflow_run` внутри одного `conversation` ещё не реализованы, поэтому этап остаётся частично закрытым.
 
-### Этап 9. Тестирование на parity и регрессии
+### Этап 9. Целевой conversation-first API-контракт
+
+**Задача:** убрать переходные workflow-specific transport-слои и перейти на единый внешний HTTP-контракт, в котором backend workflow запускаются и сопровождаются через conversation/run model.
+
+**Что сделать:**
+- удалить текущие реализации `app/api/rest/workflows.py` и `app/api/rpc/workflows.py` как legacy workflow-specific transport layer;
+- ввести единый REST transport с базовыми сущностями `conversation`, `response/run`, `conversation item`, `required action`;
+- зафиксировать минимальный внешний набор операций:
+  - `POST /api/rest/conversations/` — создать conversation;
+  - `GET /api/rest/conversations/{conversation_id}/` — получить conversation и активный run;
+  - `GET /api/rest/conversations/{conversation_id}/items/` — получить persisted timeline items;
+  - `GET /api/rest/conversations/{conversation_id}/stream/` — единый SSE stream по conversation;
+  - `POST /api/rest/responses/` — создать новый workflow run внутри conversation;
+  - `GET /api/rest/responses/{response_id}/` — получить статус run, required actions и terminal result;
+  - `POST /api/rest/responses/{response_id}/actions/` — отправить action (`resume`, `answer_question`, `cancel`, в будущем `pause/restart`);
+- перенести `init_arch`, `update_arch` и `query` на единый способ запуска через `POST /responses/`, где тип workflow задаётся в typed payload, а не отдельной ручкой;
+- перенести user-facing required actions и технические workflow events в общую conversation timeline как typed items, чтобы transport не строился вокруг `workflow_id` как отдельной сущности;
+- обновить transport-level SSE так, чтобы события стримились из conversation timeline, а не из отдельных workflow endpoints.
+
+**Результат этапа:** внешний продуктовый контракт становится `conversation-first`, а все workflow-specific HTTP endpoints удалены.
+
+**Статус выполнения:** выполнено
+
+**Мини-отчёт:**
+- введён единый REST transport `app/api/rest/conversations.py` с contract `conversations/responses`: `POST /api/rest/conversations/`, `GET /api/rest/conversations/{conversation_id}/`, `GET /api/rest/conversations/{conversation_id}/items/`, `GET /api/rest/conversations/{conversation_id}/stream/`, `POST /api/rest/responses/`, `GET /api/rest/responses/{response_id}/`, `POST /api/rest/responses/{response_id}/actions/`;
+- `POST /responses/` теперь запускает не только `init_arch`, но и `update_arch` / `query` через typed `workflow_type`, а `GET /responses/{response_id}/` возвращает единый status/read-model c `required_actions` и `terminal_result`;
+- task-backed responses получили `conversation_id` и `response_type`, поэтому `update_arch/query` живут в том же conversation-first contract, что и workflow-backed `init_arch`; stream и items для них синтезируются из task runtime и persisted task metadata;
+- legacy workflow-specific transport удалён из публичного HTTP-контура: `app/api/rest/workflows.py`, `app/api/rpc/workflows.py` и `app/api/rpc/arch_ops.py` убраны, router registration переведён на новый conversation-first REST слой;
+- verification: `11 passed` в `tests/api/rest/test_conversations.py`, затем `71 passed` в regression-срезе `tests/api/rest/test_conversations.py`, `tests/api/rest/test_tasks.py`, `tests/services/test_init_arch_workflow.py`, `tests/services/test_task_runner.py`, `tests/db/test_task_repo.py`.
+
+### Этап 10. [x] OpenAI compatibility facade
+
+**Задача:** дать внешним клиентам и UI вроде LibreChat / OpenWebUI стабильный OpenAI-compatible вход, не раскрывая им внутренний `conversation-first` контракт напрямую.
+
+**Что сделать:**
+- добавить отдельный transport/facade слой с OpenAI-compatible surface;
+- реализовать как минимум:
+  - `GET /v1/models`;
+  - `POST /v1/chat/completions` и/или `POST /v1/responses`;
+  - streaming-ответы в OpenAI-compatible SSE формате;
+- внутри facade транслировать OpenAI-compatible запросы в новый backend contract:
+  - создать `conversation`;
+  - создать `response/run`;
+  - читать `conversation items`;
+  - отправлять `response actions`;
+- зафиксировать mapping workflow-типов:
+  - `init_arch` → workflow run с typed `init_arch` input;
+  - `update_arch` → workflow run с typed `update_arch` input;
+  - `query` → workflow run с typed `query` input;
+- описать ограничения facade:
+  - facade не является source of truth;
+  - внутренний persisted execution dialog живёт только в conversation-first модели;
+  - не все внутренние workflow events обязаны быть напрямую видимы в OpenAI-compatible stream;
+- подготовить facade к подключению LibreChat и OpenWebUI как к обычному OpenAI-compatible provider.
+
+**Результат этапа:** внешние OpenAI-compatible клиенты подключаются через facade, а внутренний backend остаётся conversation-first.
+
+**Статус выполнения:** выполнено
+
+**Мини-отчёт:**
+- добавлен отдельный facade-transport [app/api/openai.py](/Users/aanekraso2/github.com/znbiz/sdlc/arch-docs/app/api/openai.py) и router `/v1/*`, не меняющий внутренний conversation-first backend contract;
+- реализованы `GET /v1/models`, `POST /v1/responses`, `GET /v1/responses/{response_id}` и `POST /v1/chat/completions`, при этом `/v1/responses` покрывает `init_arch`, `update_arch` и `query` через model-to-workflow mapping, а `chat/completions` пока сознательно ограничен `arch-docs-query`;
+- добавлен OpenAI-compatible SSE surface: facade транслирует backend `stream_response_events_async()` в `response.created` / `response.output_text.delta` / terminal events и в `chat.completion.chunk`;
+- conversation id и typed workflow input теперь проходят через facade metadata, а source of truth по-прежнему остаётся внутренний `conversations/responses` runtime;
+- verification: `4 passed` в `tests/api/rest/test_openai_facade.py`; затем `15 passed` в совместном transport-срезе `tests/api/rest/test_openai_facade.py` и `tests/api/rest/test_conversations.py`.
+
+### Этап 11. Тестирование на parity и регрессии
 
 **Задача:** доказать, что gateway действительно реализует механику skill сам, а не только проксирует её во внешний LLM-run.
 
 **Что сделать:**
 - перенести критичные сценарии из `init-repo-arch-skill/tests/test_analysis_guard_knowledge.py`;
 - добавить integration tests для полного happy path и для отрицательных сценариев: broken historical order, missing snapshot commit, compile drift, unresolved references;
-- проверить transport-слой: REST, RPC, MCP, WebSocket;
+- проверить transport-слой: REST, RPC, MCP, SSE/conversation stream;
 - ввести smoke тест на реальный arch-repo fixture.
 - добавить отдельные тесты на границу orchestrator/worker: сервис выбирает шаг, формирует prompt, валидирует ответ, принимает решение о retry/advance.
 - добавить tests на audit persistence: ни один step transition и ни один CLI LLM call не теряется и корректно восстанавливается по workflow session.
 
 **Результат этапа:** регрессии ловятся тестами раньше, чем в рабочих запусках.
 
-### Этап 10. Hardening и вывод в эксплуатацию
+**Статус выполнения:** частично выполнено
+
+**Мини-отчёт:**
+- добавлены regression tests на persistence LLM-call metadata и causal link в audit trail: `tests/services/test_task_runner.py`, `tests/db/test_task_repo.py`, `tests/workflows/init_arch/test_llm_worker.py`, `tests/db/test_workflow_repo.py`;
+- red-green цикл зафиксировал новую гарантию: `LlmCliService` обязан привязывать `workflow_id/step_id/expected_schema_name` к persisted `cli_task` и публиковать `llm_call_id` в workflow events независимо от реализации `_build_cli_task`;
+- добавлены regression tests на отдельную persistence шагов и knowledge-artifacts: `tests/db/test_workflow_repo.py` теперь проверяет запись `WorkflowStepTransitionModel` и `ArtifactEventModel`, а заодно поймал и зафиксировал корректный storage format для `EventType/AuditActor` (`.value`, а не `EnumName.MEMBER`);
+- verification: `39 passed` в targeted red/green (`tests/services/test_task_runner.py`, `tests/db/test_task_repo.py`), затем `45 passed` в расширенном соседнем срезе с worker/audit (`tests/workflows/init_arch/test_llm_worker.py`, `tests/db/test_workflow_repo.py`, `tests/services/test_task_runner.py`, `tests/db/test_task_repo.py`).
+
+### Этап 12. Hardening и вывод в эксплуатацию
 
 **Задача:** подготовить реализацию к реальному использованию в контейнере с Codex/Claude.
 
@@ -287,13 +370,17 @@
 1. Этапы 1-3: зафиксировать контракт и вынести доменную логику из shell-обёрток.
 2. Этапы 4-6: реализовать core workflow parity с исходным skill.
 3. Этапы 7-8: вывести workflow в transport и persistence.
-4. Этапы 9-10: закрыть quality gates, нагрузочные риски и документацию.
+4. Этап 9: убрать legacy workflow transport и перейти на conversation-first API.
+5. Этап 10: добавить OpenAI compatibility facade для внешних клиентов.
+6. Этапы 11-12: закрыть quality gates, нагрузочные риски и документацию.
 
 ## 7. Критерий готовности
 
 Реализацию можно считать завершённой, когда:
 
-- `init_arch` запускается через REST, RPC и MCP через один и тот же backend workflow;
+- `init_arch`, `update_arch` и `query` запускаются через единый conversation-first backend contract;
+- legacy `/workflows/*` REST/RPC endpoints удалены из публичного transport-слоя;
+- LibreChat / OpenWebUI и другие OpenAI-compatible клиенты подключаются через отдельный compatibility facade;
 - progress, status-file semantics и historical prep управляются сервисом, а не внешним `analysis_guard.py` и не самой LLM;
 - knowledge-artifacts создаются и валидируются в соответствии с `init-repo-arch-skill`;
 - пользователь может отвечать на open questions и безопасно резюмировать workflow;

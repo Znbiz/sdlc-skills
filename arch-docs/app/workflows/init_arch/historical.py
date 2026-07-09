@@ -33,7 +33,12 @@ class HistoricalPrepService:
         self._audit_service = audit_service or get_workflow_audit_service()
         self._settings = settings or get_gateway_settings()
 
-    async def refresh_main_branches(self, session: WorkflowSessionRecord, *, workspace_dir: str) -> HistoricalPrepResult:
+    async def refresh_main_branches(
+        self,
+        session: WorkflowSessionRecord,
+        *,
+        workspace_dir: str,
+    ) -> HistoricalPrepResult:
         repositories: list[RepositoryExecution] = []
         self._record_event(session, EventType.GUARD_COMMAND_REQUESTED, command="refresh_main_branches")
         for repository in session.repositories:
@@ -65,7 +70,9 @@ class HistoricalPrepService:
         if not in_scope_repositories:
             raise ValueError("historical prep requires at least one repository")
 
-        missing_created_at = [repository.repository_name for repository in in_scope_repositories if repository.created_at is None]
+        missing_created_at = [
+            repository.repository_name for repository in in_scope_repositories if repository.created_at is None
+        ]
         if missing_created_at:
             raise ValueError(
                 "historical prep requires created_at for every repository: " + ", ".join(missing_created_at)
@@ -77,7 +84,8 @@ class HistoricalPrepService:
         )
         anchor_repository = ordered_repositories[0]
         anchor_created_at = anchor_repository.created_at
-        assert anchor_created_at is not None
+        if anchor_created_at is None:
+            raise ValueError("historical prep requires created_at for anchor repository")
         snapshot_at = self._add_months(
             anchor_created_at,
             self._settings.workflows.init.historical_window_months,
@@ -237,7 +245,13 @@ class HistoricalPrepService:
         return pathlib.Path(workspace_dir) / repository_name
 
     def _run_git_command(self, repo_path: pathlib.Path, command: list[str], *, allow_empty: bool = False) -> str:
-        completed = subprocess.run(command, cwd=repo_path, check=False, capture_output=True, text=True)
+        completed = subprocess.run(  # noqa: S603
+            command,
+            cwd=repo_path,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
         if completed.returncode != 0:
             detail = (completed.stderr or completed.stdout).strip()
             raise ValueError(f"git command failed for {repo_path}: {detail}")

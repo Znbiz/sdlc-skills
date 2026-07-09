@@ -81,11 +81,14 @@ def build_step_prompt(step_id: StepId | str, state: InitArchState, checklist_ite
         (repo.repository_name for repo in state["session"].repositories if repo.analysis_status == "in_progress"),
         "—",
     )
-    open_questions = "\n".join(
-        f"- {question.question_id} [{question.status}]: {question.question_text}"
-        + (f" | answer: {question.answer_text}" if question.answer_text else "")
-        for question in state["session"].open_questions
-    ) or "нет"
+    open_questions = (
+        "\n".join(
+            f"- {question.question_id} [{question.status}]: {question.question_text}"
+            + (f" | answer: {question.answer_text}" if question.answer_text else "")
+            for question in state["session"].open_questions
+        )
+        or "нет"
+    )
 
     return f"""# Контекст навыка
 

@@ -17,9 +17,9 @@ from app.workflows.init_arch.domain.models import (
     WorkflowStatus,
 )
 from app.workflows.init_arch.domain.operations import (
-    close_question,
     DomainOperationError,
     advance_step,
+    close_question,
     fail_step,
     finalize_session,
     historical_prep_is_complete,
@@ -38,7 +38,6 @@ __all__ = [
     "AnalysisTargetCommitStatus",
     "ArtifactRecord",
     "AuditActor",
-    "close_question",
     "DomainDefinition",
     "DomainOperationError",
     "DomainStrategy",
@@ -55,6 +54,7 @@ __all__ = [
     "WorkflowSessionRecord",
     "WorkflowStatus",
     "advance_step",
+    "close_question",
     "fail_step",
     "finalize_session",
     "historical_prep_is_complete",

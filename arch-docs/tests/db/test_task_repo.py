@@ -58,7 +58,13 @@ async def test_upsert_updates_existing_record(mock_session):
 
 
 async def test_upsert_includes_stdout(mock_session):
-    cli_task = _make_cli_task()
+    cli_task = _make_cli_task(
+        workflow_id="wf-1",
+        step_id="define_scope",
+        repository_name="repo-a",
+        domain_id="billing",
+        expected_schema_name="init_arch_v1",
+    )
     cli_task.stdout_lines = ["line1", "line2"]
     cli_task.stderr_lines = ["warn1"]
     cli_task.exit_code = 7
@@ -67,6 +73,11 @@ async def test_upsert_includes_stdout(mock_session):
     assert added.stdout_output == "line1\nline2"
     assert added.stderr_output == "warn1"
     assert added.exit_code == 7
+    assert added.workflow_id == "wf-1"
+    assert added.step_id == "define_scope"
+    assert added.repository_name == "repo-a"
+    assert added.domain_id == "billing"
+    assert added.expected_schema_name == "init_arch_v1"
 
 
 async def test_upsert_empty_stdout_is_none(mock_session):

@@ -95,4 +95,3 @@ STEP_DEFINITIONS: tuple[StepDefinition, ...] = (
 
 
 STEP_DEFINITION_BY_ID = {definition.step_id: definition for definition in STEP_DEFINITIONS}
-

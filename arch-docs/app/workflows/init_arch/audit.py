@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import collections
 import asyncio
-import typing
+import collections
 
 import structlog
 
