@@ -67,6 +67,7 @@ def default_historical_analysis() -> dict:
         "window_months": 3,
         "anchor_repository": "",
         "anchor_created_at": "",
+        "previous_snapshot_at": "",
         "current_snapshot_at": "",
         "completed_snapshot_dates": [],
     }
@@ -261,6 +262,17 @@ def normalize_repository(repo: dict) -> None:
     repo.setdefault("analysis_target_date", "")
     repo.setdefault("analysis_target_commit", "")
     repo.setdefault("analysis_target_commit_status", "not_started")
+    repo.setdefault("previous_analysis_target_commit", "")
+    repo.setdefault("window_start_commit", "")
+    repo.setdefault("window_end_commit", "")
+    repo.setdefault("commit_range", "")
+    repo.setdefault("commit_range_status", "not_started")
+    repo.setdefault("diff_stat_summary", "")
+    repo.setdefault("commit_log_summary", "")
+    repo.setdefault("changed_paths", [])
+    repo.setdefault("renamed_paths", [])
+    repo.setdefault("deleted_paths", [])
+    repo.setdefault("temporal_delta_note", "")
     checklist = repo.setdefault("analysis_checklist", {})
     defaults = default_repository_checklist()
     for item_id, item_value in defaults.items():

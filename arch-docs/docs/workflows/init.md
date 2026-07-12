@@ -514,6 +514,40 @@ Temporal delta теперь не только видна worker'у (Stage 6), н
 - Инвариант "temporal diff не заменяет целостный анализ" закреплён кодом: `historical_prep_is_complete()` (Stage 4) по-прежнему блокирует переход к `analyze_repositories` без построенной delta, а `guard_service.complete_repository()` не требует полноты `checklist_items_completed` — сокращённый routing не может тихо пометить репозиторий "полностью проанализированным".
 - Обратная совместимость: default `commit_range_status = NOT_STARTED` маппится в `full_required` -> полный чеклист, поэтому существующие сценарии без построенной temporal-delta не меняют поведение.
 
+### Legacy Interop Tooling (Stage 8)
+
+Помимо service-owned `init_arch` (этот документ), в `init-repo-arch-skill/scripts/analysis_guard/` живёт отдельный
+standalone Python CLI (`analysis_guard.py`) — не связанный импортами с `arch-docs`, со своей JSON/YAML progress-моделью.
+Он используется, когда skill исполняется вручную агентом (Claude Code/Codex) вне backend workflow runtime. Diff-aware
+temporal contract синхронизирован и туда:
+
+- `scripts/analysis_guard/models.py`: `default_historical_analysis()`/`normalize_repository()` несут те же temporal-delta
+  поля, что и `arch-docs`-модель (Stage 2) — `previous_snapshot_at` на уровне `historical_analysis`; `previous_analysis_target_commit`,
+  `window_start_commit`, `window_end_commit`, `commit_range`, `commit_range_status`, `diff_stat_summary`, `commit_log_summary`,
+  `changed_paths`/`renamed_paths`/`deleted_paths`, `temporal_delta_note` на уровне репозитория.
+- `scripts/analysis_guard/commands.py`: `timeline --resolve-local` строит `_build_temporal_delta()` сразу после резолва
+  `analysis_target_commit` (независимо от `--checkout`) — те же четыре исхода, что и `HistoricalPrepService` (Stage 3):
+  `baseline_missing` (baseline недоступен, first-window fallback — первый commit на `main_branch`), `no_changes`
+  (`window_start_commit == window_end_commit`), `invalid_range` (`window_start_commit` не предок `window_end_commit` —
+  переписанная история/force-push, через `git merge-base --is-ancestor`), `diff_collected` (`git log --oneline` +
+  `git diff --stat` + `git diff --name-status` для диапазона). `timeline --advance-window` переносит `current_snapshot_at`
+  в `previous_snapshot_at`, сохраняет только что resolved commit как `previous_analysis_target_commit` следующего окна
+  и сбрасывает temporal-delta поля через `_reset_temporal_delta()` (тот же reset — и в `timeline --plan`).
+- `scripts/analysis_guard/validation.py`: `commit_range_status` валидируется против того же словаря значений, что и
+  `CommitRangeStatus` в `arch-docs`; новый gate — `analyze_repositories` не может быть `completed`, пока для каждого
+  repo (кроме `missing_on_date`) `commit_range_status` не в `{diff_collected, no_changes, baseline_missing}` — тот же
+  инвариант "diff обязателен как quality gate", что и Stage 4 в service-owned workflow.
+- `scripts/analysis_guard/status.py`: `status` печатает `historical_previous_snapshot_at` и per-repository строку
+  `temporal_delta: range_status=... range=... changed=N renamed=N deleted=N`.
+- `assets/repo-initialization-progress-template.yaml` и `SKILL.md` обновлены синхронно с реализацией.
+- Обратная совместимость: `normalize_repository()` подставляет `commit_range_status="not_started"` через `setdefault`,
+  так что старые progress-файлы без temporal-delta полей продолжают проходить `validate`/`status` — но, как и требовал
+  план, ценой нового инварианта: **завершить** `analyze_repositories` для repo без построенной delta теперь нельзя.
+- Регрессии: `init-repo-arch-skill/tests/test_analysis_guard_knowledge.py` — 13 тестов, включая end-to-end двухоконный
+  сценарий (`no_changes` на первом окне, `diff_collected` на втором после `--advance-window`), gate-тест на
+  `invalid_range`/недостроенную delta и unit-тесты на `_build_temporal_delta()` (`baseline_missing`, `invalid_range`
+  через реальный `git commit --amend`, happy path).
+
 Progress file path по-прежнему прокидывается в state как compatibility artifact:
 
 - `arch-doc/repo-initialization-progress.yaml`
@@ -715,7 +749,7 @@ Transport-level terminal states:
 
 ## Known Gaps
 
-1. Temporal historical prep строит `commit_range`, `diff_stat_summary`, `changed_paths` и `commit_log_summary` для окна и требует их как обязательный quality gate перед content-анализом (Stage 3-4 закрыты); domain-контракт, реальный graph loop-back и REST/OpenAI transport wiring для подтверждения следующего окна тоже готовы (Stage 5 полностью закрыт); prompts/worker получают structured change context — compact/expanded temporal-delta блок и `diff_based_findings`/`snapshot_based_findings` в `LlmTaskResult` (Stage 6 закрыт); diff теперь ещё и приоритизирует глубину анализа внутри `analyze_repositories` через `DiffSeverity`/`route_checklist_items()` (Stage 7 закрыт) — читай "Worker Prompt Enrichment", "Diff Signal Routing" и "Temporal Window Confirmation" в разделе Pause/Resume. Открыто: Stage 8 (синхронизация нового contract с legacy `analysis_guard` interop tooling — progress template, `status`/`validate` выводы).
+1. Temporal historical prep строит `commit_range`, `diff_stat_summary`, `changed_paths` и `commit_log_summary` для окна и требует их как обязательный quality gate перед content-анализом (Stage 3-4 закрыты); domain-контракт, реальный graph loop-back и REST/OpenAI transport wiring для подтверждения следующего окна тоже готовы (Stage 5 полностью закрыт); prompts/worker получают structured change context — compact/expanded temporal-delta блок и `diff_based_findings`/`snapshot_based_findings` в `LlmTaskResult` (Stage 6 закрыт); diff приоритизирует глубину анализа внутри `analyze_repositories` через `DiffSeverity`/`route_checklist_items()` (Stage 7 закрыт); legacy `analysis_guard` CLI (`init-repo-arch-skill/scripts/analysis_guard/`) синхронизирован с тем же diff-aware contract — temporal-delta поля, `timeline --resolve-local`/`--advance-window`, `validate`-gate и `status`-вывод (Stage 8 закрыт) — читай "Worker Prompt Enrichment", "Diff Signal Routing", "Legacy Interop Tooling" и "Temporal Window Confirmation". Открыто: Stage 9 (расширенный тестовый контур/регрессии специально для этого набора этапов) и Stage 10 (финальная документация/операционные критерии).
 2. Workflow graph больше не полностью линеен: `confirm_next_temporal_window` умеет зацикливаться на `refresh_main_branches` для следующего temporal-окна; richer branching/state machine semantics за пределами этого и conditional retry routing по-прежнему не реализованы.
 3. `progress_file_path` ещё существует как compatibility field, хотя long-term owner состояния должен быть persisted session state.
 4. OpenAI facade теперь экспонирует generic submit-action route (`POST /v1/responses/{response_id}/actions`, тот же `submit_response_action_async()`, что и REST), но это по-прежнему не полноценный аналог OpenAI Assistants API `submit_tool_outputs` — это custom-расширение facade, а не часть официальной OpenAI-спецификации.

@@ -168,6 +168,19 @@ def validate_progress(progress: dict) -> list[str]:
                 f"Repository {name} has invalid analysis_target_commit_status: {target_status}"
             )
 
+        commit_range_status = repo.get("commit_range_status")
+        if commit_range_status not in {
+            "not_started",
+            "baseline_missing",
+            "range_resolved",
+            "diff_collected",
+            "no_changes",
+            "invalid_range",
+        }:
+            errors.append(
+                f"Repository {name} has invalid commit_range_status: {commit_range_status}"
+            )
+
     anchor_created_at = historical.get("anchor_created_at") or ""
     current_snapshot_at = historical.get("current_snapshot_at") or ""
     if repositories_in_scope(progress):
@@ -259,6 +272,18 @@ def validate_progress(progress: dict) -> list[str]:
                     "analyze_repositories cannot be completed until historical target commits "
                     "are resolved for every repository: "
                     + ", ".join(str(name) for name in unresolved_snapshot_repositories)
+                )
+            unready_temporal_delta_repositories = [
+                repo.get("name")
+                for repo in repositories_in_scope(progress)
+                if repo.get("analysis_target_commit_status") != "missing_on_date"
+                and repo.get("commit_range_status") not in {"diff_collected", "no_changes", "baseline_missing"}
+            ]
+            if unready_temporal_delta_repositories:
+                errors.append(
+                    "analyze_repositories cannot be completed until temporal delta (commit_range/diff) "
+                    "is built for every repository: "
+                    + ", ".join(str(name) for name in unready_temporal_delta_repositories)
                 )
 
     for repo in repositories_in_scope(progress):

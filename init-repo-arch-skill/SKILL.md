@@ -204,8 +204,19 @@ plan_repository_order
   → timeline --progress <path> --resolve-local --checkout
   → проверить, что ordered_repository_names отсортирован по created_at
   → проверить, что у каждого repo заполнены analysis_target_date и analysis_target_commit_status
-  → advance --note "historical snapshot YYYY-MM-DD подготовлен"
+  → проверить, что у каждого repo commit_range_status ∈ {diff_collected, no_changes, baseline_missing}
+  → advance --note "historical snapshot YYYY-MM-DD и temporal delta подготовлены"
 ```
+
+`timeline --resolve-local` теперь строит не только `analysis_target_commit` (snapshot state), но и temporal delta
+относительно предыдущего окна: `window_start_commit`/`window_end_commit`, `commit_range`, `diff_stat_summary`,
+`commit_log_summary`, `changed_paths`/`renamed_paths`/`deleted_paths`. Для первого окна baseline берётся из первого
+доступного commit на `main_branch`; если baseline не найден — `commit_range_status=baseline_missing` (это валидное
+состояние, а не ошибка). Если снапшот не изменился с прошлого окна — `commit_range_status=no_changes`. Если история
+переписана (force-push/rebase) и `window_start_commit` больше не предок `window_end_commit` — `commit_range_status=invalid_range`,
+и `validate` заблокирует завершение `analyze_repositories`, пока это не будет исправлено или окно не будет пересчитано.
+`timeline --advance-window` переносит только что закрытое окно в `previous_snapshot_at`/`previous_analysis_target_commit`
+и сбрасывает temporal-delta поля для следующего окна — новый baseline станет доступен после следующего `--resolve-local`.
 
 **Для шага `analyze_repositories`** — вложенная петля, форма зависит от стратегии:
 
@@ -228,7 +239,7 @@ domain --complete --domain-id <id> --notes "<итог домена>"
 1. Добавить в очередь через `repo --register`
 2. Начать через `repo --start`
 3. По одному пункту checklist: загрузить reference → выполнить → `repo --checklist-item ... --checklist-status completed --notes "<findings>"`
-4. Зафиксировать `main_branch`, `analyzed_commit`, `remote_head_commit`; отдельно проверить `analysis_target_date`, `analysis_target_commit`, `analysis_target_commit_status`
+4. Зафиксировать `main_branch`, `analyzed_commit`, `remote_head_commit`; отдельно проверить `analysis_target_date`, `analysis_target_commit`, `analysis_target_commit_status`, а также `commit_range_status`/`commit_range`/`changed_paths` (temporal delta текущего окна) — изучи их до чтения итогового состояния файлов
 5. Закрыть через `repo --complete`
 6. **Остановиться.** Вывести пользователю итог по репозиторию и явно попросить открыть новый чат для продолжения со следующим репозиторием. Не переходить к следующему репозиторию в текущем контексте. Пример сообщения:
 
@@ -245,9 +256,9 @@ domain --complete --domain-id <id> --notes "<итог домена>"
 
 Короткая памятка по `timeline`:
 - `timeline --progress <path> --plan`
-- `timeline --progress <path> --resolve-local`
-- `timeline --progress <path> --resolve-local --checkout`
-- `timeline --progress <path> --advance-window`
+- `timeline --progress <path> --resolve-local` — резолвит `analysis_target_commit` и строит temporal delta (`commit_range`, diff/log summaries, changed/renamed/deleted paths) для каждого repo
+- `timeline --progress <path> --resolve-local --checkout` — то же самое, плюс git checkout на resolved commit
+- `timeline --progress <path> --advance-window` — переносит текущее окно в `previous_snapshot_at`, сохраняет resolved commit как baseline следующего окна (`previous_analysis_target_commit`) и сбрасывает temporal-delta поля
 
 Короткая памятка по `domain` (все команды требуют `--repo <имя-репозитория>`):
 - `domain --repo <repo> --assess --volume-class <class> --total-files <N> --strategy <per_module|per_domain>`

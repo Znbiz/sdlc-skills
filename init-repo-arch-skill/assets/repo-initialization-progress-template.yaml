@@ -119,6 +119,7 @@ analysis_progress:
     status: <not_started|planned|commits_resolved|ready_for_analysis>
     anchor_repository: <самый-старый-репозиторий>
     anchor_created_at: <YYYY-MM-DD>
+    previous_snapshot_at: <YYYY-MM-DD-или-пусто-для-первого-окна>
     current_snapshot_at: <YYYY-MM-DD>
     completed_snapshot_dates:
       - <YYYY-MM-DD>
@@ -138,6 +139,20 @@ analysis_progress:
       analysis_target_commit: <commit-sha-на-срезе-или-пусто>
       analysis_target_commit_status: <not_started|resolved|checked_out|missing_on_date>
       analysis_target_commit_note: <почему выбран этот commit или почему commit на дату не найден>
+      previous_analysis_target_commit: <resolved-commit-предыдущего-окна-или-пусто>
+      window_start_commit: <baseline-commit-текущего-окна-или-пусто>
+      window_end_commit: <совпадает-с-analysis_target_commit-или-пусто>
+      commit_range: <window_start_commit..window_end_commit-или-пусто>
+      commit_range_status: <not_started|baseline_missing|range_resolved|diff_collected|no_changes|invalid_range>
+      diff_stat_summary: <вывод-git-diff---stat-для-commit_range-или-пусто>
+      commit_log_summary: <вывод-git-log---oneline-для-commit_range-или-пусто>
+      changed_paths:
+        - <путь-изменённого-файла>
+      renamed_paths:
+        - <старый-путь -> новый-путь>
+      deleted_paths:
+        - <путь-удалённого-файла>
+      temporal_delta_note: <почему commit_range_status не diff_collected, если применимо>
       analyzed_commit: <commit-sha>
       remote_head_commit: <commit-sha-удаленной-ветки>
       remote_status: <актуален|отстает|локальные-изменения|не удалось проверить>

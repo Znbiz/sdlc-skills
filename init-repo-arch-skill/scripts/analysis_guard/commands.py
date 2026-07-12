@@ -88,6 +88,139 @@ def _resolve_commit_for_date(repo_path: Path, target_date: str, main_branch: str
     return result.stdout.strip()
 
 
+_MAX_COMMIT_LOG_LINES = 50
+_MAX_CHANGED_PATHS = 200
+
+
+def _run_git(repo_path: Path, args: list[str]) -> tuple[int, str, str]:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode, result.stdout, result.stderr
+
+
+def _resolve_first_commit(repo_path: Path, main_branch: str) -> str:
+    """First-window baseline fallback: oldest reachable commit on the main branch."""
+    revision = main_branch or "HEAD"
+    returncode, stdout, _stderr = _run_git(repo_path, ["rev-list", "--max-parents=0", revision])
+    commits = [line.strip() for line in stdout.splitlines() if line.strip()]
+    if returncode != 0 or not commits:
+        return ""
+    return commits[-1]
+
+
+def _is_ancestor(repo_path: Path, start_commit: str, end_commit: str) -> bool:
+    returncode, _stdout, _stderr = _run_git(repo_path, ["merge-base", "--is-ancestor", start_commit, end_commit])
+    return returncode == 0
+
+
+def _parse_name_status(name_status_output: str) -> tuple[list[str], list[str], list[str]]:
+    changed: list[str] = []
+    renamed: list[str] = []
+    deleted: list[str] = []
+    for line in name_status_output.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        status = parts[0]
+        if status.startswith("R") and len(parts) >= 3:
+            renamed.append(f"{parts[1]} -> {parts[2]}")
+        elif status.startswith("D") and len(parts) >= 2:
+            deleted.append(parts[1])
+        elif len(parts) >= 2:
+            changed.append(parts[1])
+    return changed[:_MAX_CHANGED_PATHS], renamed[:_MAX_CHANGED_PATHS], deleted[:_MAX_CHANGED_PATHS]
+
+
+def _collect_commit_range_diff(repo_path: Path, window_start_commit: str, window_end_commit: str) -> dict:
+    commit_range = f"{window_start_commit}..{window_end_commit}"
+
+    _log_code, log_stdout, _log_stderr = _run_git(repo_path, ["log", "--oneline", commit_range])
+    log_lines = [line for line in log_stdout.splitlines() if line.strip()]
+    truncated_note = ""
+    if len(log_lines) > _MAX_COMMIT_LOG_LINES:
+        truncated_note = f"\n... (+{len(log_lines) - _MAX_COMMIT_LOG_LINES} more commits)"
+        log_lines = log_lines[:_MAX_COMMIT_LOG_LINES]
+    commit_log_summary = "\n".join(log_lines) + truncated_note
+
+    _stat_code, stat_stdout, _stat_stderr = _run_git(repo_path, ["diff", "--stat", commit_range])
+    diff_stat_summary = stat_stdout.strip()
+
+    _status_code, status_stdout, _status_stderr = _run_git(repo_path, ["diff", "--name-status", commit_range])
+    changed_paths, renamed_paths, deleted_paths = _parse_name_status(status_stdout)
+
+    return {
+        "commit_range": commit_range,
+        "commit_log_summary": commit_log_summary,
+        "diff_stat_summary": diff_stat_summary,
+        "changed_paths": changed_paths,
+        "renamed_paths": renamed_paths,
+        "deleted_paths": deleted_paths,
+    }
+
+
+def _reset_temporal_delta(repo: dict) -> None:
+    repo["window_start_commit"] = ""
+    repo["window_end_commit"] = ""
+    repo["commit_range"] = ""
+    repo["commit_range_status"] = "not_started"
+    repo["diff_stat_summary"] = ""
+    repo["commit_log_summary"] = ""
+    repo["changed_paths"] = []
+    repo["renamed_paths"] = []
+    repo["deleted_paths"] = []
+    repo["temporal_delta_note"] = ""
+
+
+def _build_temporal_delta(repo: dict, repo_path: Path, window_end_commit: str) -> None:
+    """Build commit_range/diff metadata for the just-resolved snapshot commit.
+
+    Mirrors the arch-docs service contract (HistoricalPrepService, Этап 3-4): baseline
+    comes from the previous window's resolved commit, or falls back to the first commit
+    reachable on the main branch for the first window.
+    """
+    window_start_commit = str(repo.get("previous_analysis_target_commit") or "")
+    if not window_start_commit:
+        window_start_commit = _resolve_first_commit(repo_path, str(repo.get("main_branch") or "HEAD"))
+
+    repo["window_end_commit"] = window_end_commit
+
+    if not window_start_commit:
+        repo["window_start_commit"] = ""
+        repo["commit_range"] = ""
+        repo["commit_range_status"] = "baseline_missing"
+        repo["temporal_delta_note"] = "Baseline commit is unavailable for this window."
+        return
+
+    repo["window_start_commit"] = window_start_commit
+
+    if window_start_commit == window_end_commit:
+        repo["commit_range"] = ""
+        repo["commit_range_status"] = "no_changes"
+        repo["temporal_delta_note"] = ""
+        return
+
+    if not _is_ancestor(repo_path, window_start_commit, window_end_commit):
+        repo["commit_range"] = ""
+        repo["commit_range_status"] = "invalid_range"
+        repo["temporal_delta_note"] = "window_start_commit is not an ancestor of window_end_commit."
+        return
+
+    diff_payload = _collect_commit_range_diff(repo_path, window_start_commit, window_end_commit)
+    repo["commit_range"] = diff_payload["commit_range"]
+    repo["commit_log_summary"] = diff_payload["commit_log_summary"]
+    repo["diff_stat_summary"] = diff_payload["diff_stat_summary"]
+    repo["changed_paths"] = diff_payload["changed_paths"]
+    repo["renamed_paths"] = diff_payload["renamed_paths"]
+    repo["deleted_paths"] = diff_payload["deleted_paths"]
+    repo["commit_range_status"] = "diff_collected"
+    repo["temporal_delta_note"] = ""
+
+
 def timeline_command(args: argparse.Namespace) -> int:
     action_count = sum(
         [
@@ -155,6 +288,7 @@ def timeline_command(args: argparse.Namespace) -> int:
             repo["analysis_target_date"] = snapshot_date_str
             repo["analysis_target_commit"] = ""
             repo["analysis_target_commit_status"] = "not_started"
+            _reset_temporal_delta(repo)
 
         save_progress(path, progress)
         print(
@@ -179,12 +313,17 @@ def timeline_command(args: argparse.Namespace) -> int:
         completed_dates = historical.setdefault("completed_snapshot_dates", [])
         if current_snapshot_at not in completed_dates:
             completed_dates.append(current_snapshot_at)
+        historical["previous_snapshot_at"] = current_snapshot_at
         historical["current_snapshot_at"] = next_snapshot_date.isoformat()
 
         for repo in repositories_in_scope(progress):
+            resolved_commit = str(repo.get("analysis_target_commit") or "")
+            if resolved_commit and repo.get("analysis_target_commit_status") in {"resolved", "checked_out"}:
+                repo["previous_analysis_target_commit"] = resolved_commit
             repo["analysis_target_date"] = historical["current_snapshot_at"]
             repo["analysis_target_commit"] = ""
             repo["analysis_target_commit_status"] = "not_started"
+            _reset_temporal_delta(repo)
 
         save_progress(path, progress)
         print(
@@ -228,6 +367,7 @@ def timeline_command(args: argparse.Namespace) -> int:
         repo["analysis_target_commit"] = commit_sha
         repo["analysis_target_commit_status"] = "resolved"
         resolved_count += 1
+        _build_temporal_delta(repo, repo_path, commit_sha)
 
         if args.checkout:
             checkout_result = subprocess.run(

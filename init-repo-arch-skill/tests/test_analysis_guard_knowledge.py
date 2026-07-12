@@ -9,7 +9,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SKILL_ROOT = REPO_ROOT / "init-repo-arch-skill"
 SCRIPT_PATH = SKILL_ROOT / "scripts" / "analysis_guard.py"
@@ -17,7 +16,50 @@ FIXTURES_ROOT = SKILL_ROOT / "tests" / "fixtures"
 
 sys.path.insert(0, str(SKILL_ROOT / "scripts"))
 
+from analysis_guard.commands import _build_temporal_delta  # noqa: E402
 from analysis_guard.knowledge import run_knowledge_lint  # noqa: E402
+
+
+def _create_git_repo_with_commits(repo_path: Path, commits: list[tuple[str, str]]) -> list[str]:
+    repo_path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.name", "Codex Test"],
+        cwd=repo_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "codex@example.com"],
+        cwd=repo_path,
+        check=True,
+        capture_output=True,
+    )
+
+    commit_ids: list[str] = []
+    tracked_file = repo_path / "payload.txt"
+    for index, (commit_date, content) in enumerate(commits, start=1):
+        tracked_file.write_text(f"{content}\n", encoding="utf-8")
+        subprocess.run(["git", "add", "payload.txt"], cwd=repo_path, check=True, capture_output=True)
+        env = dict(os.environ)
+        env["GIT_AUTHOR_DATE"] = f"{commit_date}T12:00:00+00:00"
+        env["GIT_COMMITTER_DATE"] = f"{commit_date}T12:00:00+00:00"
+        subprocess.run(
+            ["git", "commit", "-m", f"commit-{index}"],
+            cwd=repo_path,
+            check=True,
+            capture_output=True,
+            env=env,
+        )
+        rev_parse = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        commit_ids.append(rev_parse.stdout.strip())
+    return commit_ids
 
 
 class AnalysisGuardKnowledgeTests(unittest.TestCase):
@@ -30,45 +72,7 @@ class AnalysisGuardKnowledgeTests(unittest.TestCase):
         )
 
     def _create_git_repo_with_commits(self, repo_path: Path, commits: list[tuple[str, str]]) -> list[str]:
-        repo_path.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["git", "init", "-b", "main"], cwd=repo_path, check=True, capture_output=True)
-        subprocess.run(
-            ["git", "config", "user.name", "Codex Test"],
-            cwd=repo_path,
-            check=True,
-            capture_output=True,
-        )
-        subprocess.run(
-            ["git", "config", "user.email", "codex@example.com"],
-            cwd=repo_path,
-            check=True,
-            capture_output=True,
-        )
-
-        commit_ids: list[str] = []
-        tracked_file = repo_path / "payload.txt"
-        for index, (commit_date, content) in enumerate(commits, start=1):
-            tracked_file.write_text(f"{content}\n", encoding="utf-8")
-            subprocess.run(["git", "add", "payload.txt"], cwd=repo_path, check=True, capture_output=True)
-            env = dict(os.environ)
-            env["GIT_AUTHOR_DATE"] = f"{commit_date}T12:00:00+00:00"
-            env["GIT_COMMITTER_DATE"] = f"{commit_date}T12:00:00+00:00"
-            subprocess.run(
-                ["git", "commit", "-m", f"commit-{index}"],
-                cwd=repo_path,
-                check=True,
-                capture_output=True,
-                env=env,
-            )
-            rev_parse = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=repo_path,
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            commit_ids.append(rev_parse.stdout.strip())
-        return commit_ids
+        return _create_git_repo_with_commits(repo_path, commits)
 
     def test_timeline_plan_resolve_checkout_and_advance_window(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -177,6 +181,13 @@ class AnalysisGuardKnowledgeTests(unittest.TestCase):
             self.assertEqual(repositories["new-repo"]["analysis_target_commit"], new_commits[0])
             self.assertEqual(repositories["old-repo"]["analysis_target_commit_status"], "checked_out")
             self.assertEqual(repositories["new-repo"]["analysis_target_commit_status"], "checked_out")
+            # First window: only one commit precedes the snapshot date for each repo, so the
+            # resolved baseline (first commit) equals the target commit itself -> no_changes.
+            self.assertEqual(repositories["old-repo"]["commit_range_status"], "no_changes")
+            self.assertEqual(repositories["old-repo"]["window_start_commit"], old_commits[0])
+            self.assertEqual(repositories["old-repo"]["window_end_commit"], old_commits[0])
+            self.assertEqual(repositories["old-repo"]["commit_range"], "")
+            self.assertEqual(repositories["new-repo"]["commit_range_status"], "no_changes")
 
             old_head = subprocess.run(
                 ["git", "rev-parse", "HEAD"],
@@ -199,7 +210,53 @@ class AnalysisGuardKnowledgeTests(unittest.TestCase):
             progress_after_advance = json.loads(progress_path.read_text(encoding="utf-8"))
             historical_after_advance = progress_after_advance["analysis_progress"]["historical_analysis"]
             self.assertEqual(historical_after_advance["current_snapshot_at"], "2021-07-15")
+            self.assertEqual(historical_after_advance["previous_snapshot_at"], "2021-04-15")
             self.assertEqual(historical_after_advance["completed_snapshot_dates"], ["2021-04-15"])
+
+            repositories_after_advance = {
+                repo["name"]: repo
+                for repo in progress_after_advance["analysis_progress"]["repositories"]
+            }
+            # advance-window must carry the just-closed window's resolved commit forward as the
+            # next window's baseline, and reset the rest of the temporal-delta fields.
+            self.assertEqual(
+                repositories_after_advance["old-repo"]["previous_analysis_target_commit"], old_commits[0]
+            )
+            self.assertEqual(
+                repositories_after_advance["new-repo"]["previous_analysis_target_commit"], new_commits[0]
+            )
+            self.assertEqual(repositories_after_advance["old-repo"]["commit_range_status"], "not_started")
+            self.assertEqual(repositories_after_advance["old-repo"]["analysis_target_commit"], "")
+
+            second_resolve_result = self._run_cli(
+                "timeline",
+                "--progress",
+                str(progress_path),
+                "--resolve-local",
+            )
+            self.assertEqual(second_resolve_result.returncode, 0, second_resolve_result.stderr)
+
+            progress_after_second_resolve = json.loads(progress_path.read_text(encoding="utf-8"))
+            repositories_after_second_resolve = {
+                repo["name"]: repo
+                for repo in progress_after_second_resolve["analysis_progress"]["repositories"]
+            }
+            # Second window: each repo gained one new commit since its window-1 baseline, so the
+            # range is a real diff_collected delta, not a degenerate no_changes/baseline_missing case.
+            self.assertEqual(repositories_after_second_resolve["old-repo"]["analysis_target_commit"], old_commits[1])
+            self.assertEqual(repositories_after_second_resolve["old-repo"]["commit_range_status"], "diff_collected")
+            self.assertEqual(
+                repositories_after_second_resolve["old-repo"]["window_start_commit"], old_commits[0]
+            )
+            self.assertEqual(repositories_after_second_resolve["old-repo"]["window_end_commit"], old_commits[1])
+            self.assertEqual(
+                repositories_after_second_resolve["old-repo"]["commit_range"],
+                f"{old_commits[0]}..{old_commits[1]}",
+            )
+            self.assertIn("payload.txt", repositories_after_second_resolve["old-repo"]["changed_paths"])
+            self.assertTrue(repositories_after_second_resolve["old-repo"]["diff_stat_summary"])
+            self.assertTrue(repositories_after_second_resolve["old-repo"]["commit_log_summary"])
+            self.assertEqual(repositories_after_second_resolve["new-repo"]["commit_range_status"], "diff_collected")
 
     def test_validate_rejects_historical_order_and_snapshot_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -277,6 +334,91 @@ class AnalysisGuardKnowledgeTests(unittest.TestCase):
             self.assertIn(
                 "historical snapshot date must be propagated to all in-scope repositories: new-repo",
                 validate_result.stdout,
+            )
+
+    def test_validate_rejects_missing_temporal_delta_and_invalid_commit_range_status(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            progress_path = temp_path / "repo-initialization-progress.json"
+
+            init_result = self._run_cli(
+                "init",
+                "--output",
+                str(progress_path),
+                "--product",
+                "Historical Product",
+                "--scope",
+                "full",
+            )
+            self.assertEqual(init_result.returncode, 0, init_result.stderr)
+
+            progress_data = json.loads(progress_path.read_text(encoding="utf-8"))
+            for step in progress_data["analysis_progress"]["workflow"]["steps"]:
+                if step["id"] == "analyze_repositories" or step["id"] in {
+                    "define_scope",
+                    "request_repository_list",
+                    "prepare_temp_workspace",
+                    "clone_repositories",
+                    "refresh_main_branches",
+                    "plan_repository_order",
+                    "assess_scope_and_domains",
+                }:
+                    step["status"] = "completed"
+                elif step["id"] == "interview_user":
+                    step["status"] = "in_progress"
+            progress_data["analysis_progress"]["workflow"]["current_step_id"] = "interview_user"
+            progress_data["analysis_progress"]["current_position"]["current_step"] = "interview_user"
+            progress_data["analysis_progress"]["repository_execution"] = {
+                "ordered_repository_names": ["old-repo"],
+                "current_repository": "",
+                "completed_repository_names": ["old-repo"],
+            }
+            progress_data["analysis_progress"]["historical_analysis"]["anchor_repository"] = "old-repo"
+            progress_data["analysis_progress"]["historical_analysis"]["anchor_created_at"] = "2021-01-15"
+            progress_data["analysis_progress"]["historical_analysis"]["current_snapshot_at"] = "2021-04-15"
+            progress_data["analysis_progress"]["repositories"] = [
+                {
+                    "name": "old-repo",
+                    "created_at": "2021-01-15",
+                    "analysis_target_date": "2021-04-15",
+                    "analysis_target_commit": "abc123",
+                    "analysis_target_commit_status": "resolved",
+                    "commit_range_status": "range_resolved",
+                    "analysis_status": "completed",
+                    "in_scope": True,
+                },
+            ]
+            progress_path.write_text(
+                json.dumps(progress_data, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            validate_result = self._run_cli(
+                "validate",
+                "--progress",
+                str(progress_path),
+            )
+            self.assertEqual(validate_result.returncode, 1)
+            self.assertIn(
+                "analyze_repositories cannot be completed until temporal delta (commit_range/diff) "
+                "is built for every repository: old-repo",
+                validate_result.stdout,
+            )
+
+            progress_data["analysis_progress"]["repositories"][0]["commit_range_status"] = "not-a-real-status"
+            progress_path.write_text(
+                json.dumps(progress_data, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            invalid_status_result = self._run_cli(
+                "validate",
+                "--progress",
+                str(progress_path),
+            )
+            self.assertEqual(invalid_status_result.returncode, 1)
+            self.assertIn(
+                "Repository old-repo has invalid commit_range_status: not-a-real-status",
+                invalid_status_result.stdout,
             )
 
     def test_bootstrap_command_creates_wiki_scaffold_and_updates_progress(self) -> None:
@@ -390,6 +532,7 @@ class AnalysisGuardKnowledgeTests(unittest.TestCase):
                     "analysis_target_date": "2026-04-01",
                     "analysis_target_commit": "abc123",
                     "analysis_target_commit_status": "checked_out",
+                    "commit_range_status": "no_changes",
                     "analysis_status": "completed",
                     "in_scope": True,
                     "domain_map": {
@@ -479,6 +622,7 @@ class AnalysisGuardKnowledgeTests(unittest.TestCase):
             self.assertEqual(status_result.returncode, 0, status_result.stderr)
             self.assertIn("current_step: build_navigation_index", status_result.stdout)
             self.assertIn("knowledge_lint_status: not_started", status_result.stdout)
+            self.assertIn("temporal_delta: range_status=no_changes", status_result.stdout)
 
             compile_result = subprocess.run(
                 [
@@ -988,6 +1132,76 @@ class AnalysisGuardKnowledgeTests(unittest.TestCase):
                     for issue in issues
                 )
             )
+
+
+class TemporalDeltaUnitTests(unittest.TestCase):
+    def test_build_temporal_delta_marks_baseline_missing_for_empty_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir) / "empty-repo"
+            repo_path.mkdir(parents=True, exist_ok=True)
+            subprocess.run(["git", "init", "-b", "main"], cwd=repo_path, check=True, capture_output=True)
+
+            repo: dict = {"main_branch": "main", "previous_analysis_target_commit": ""}
+            _build_temporal_delta(repo, repo_path, "irrelevant-target-commit")
+
+            self.assertEqual(repo["commit_range_status"], "baseline_missing")
+            self.assertEqual(repo["window_start_commit"], "")
+            self.assertEqual(repo["commit_range"], "")
+            self.assertTrue(repo["temporal_delta_note"])
+
+    def test_build_temporal_delta_marks_invalid_range_for_non_ancestor_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir) / "rewritten-repo"
+            commits = _create_git_repo_with_commits(
+                repo_path,
+                [("2021-01-01", "v1"), ("2021-02-01", "v2")],
+            )
+            first_commit, second_commit = commits
+
+            # Simulate a rewritten history (force-push/rebase): amend the second commit so the
+            # original second_commit is no longer an ancestor of the new HEAD.
+            env = dict(os.environ)
+            env["GIT_AUTHOR_DATE"] = "2021-03-01T12:00:00+00:00"
+            env["GIT_COMMITTER_DATE"] = "2021-03-01T12:00:00+00:00"
+            (repo_path / "payload.txt").write_text("v3-rewritten\n", encoding="utf-8")
+            subprocess.run(["git", "add", "payload.txt"], cwd=repo_path, check=True, capture_output=True)
+            subprocess.run(
+                ["git", "commit", "--amend", "-m", "commit-2-rewritten"],
+                cwd=repo_path,
+                check=True,
+                capture_output=True,
+                env=env,
+            )
+            new_head = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=repo_path, check=True, capture_output=True, text=True
+            ).stdout.strip()
+
+            repo: dict = {"main_branch": "main", "previous_analysis_target_commit": second_commit}
+            _build_temporal_delta(repo, repo_path, new_head)
+
+            self.assertEqual(repo["commit_range_status"], "invalid_range")
+            self.assertEqual(repo["window_start_commit"], second_commit)
+            self.assertEqual(repo["window_end_commit"], new_head)
+            self.assertEqual(repo["commit_range"], "")
+            self.assertIn("not an ancestor", repo["temporal_delta_note"])
+
+    def test_build_temporal_delta_uses_previous_target_commit_as_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir) / "linear-repo"
+            commits = _create_git_repo_with_commits(
+                repo_path,
+                [("2021-01-01", "v1"), ("2021-02-01", "v2"), ("2021-03-01", "v3")],
+            )
+            first_commit, second_commit, third_commit = commits
+
+            repo: dict = {"main_branch": "main", "previous_analysis_target_commit": first_commit}
+            _build_temporal_delta(repo, repo_path, third_commit)
+
+            self.assertEqual(repo["commit_range_status"], "diff_collected")
+            self.assertEqual(repo["window_start_commit"], first_commit)
+            self.assertEqual(repo["window_end_commit"], third_commit)
+            self.assertEqual(repo["commit_range"], f"{first_commit}..{third_commit}")
+            self.assertIn("payload.txt", repo["changed_paths"])
 
 
 if __name__ == "__main__":

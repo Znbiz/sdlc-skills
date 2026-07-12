@@ -35,6 +35,7 @@ def print_status(progress: dict) -> None:
         f"current_step: {current_step}",
         f"current_repository: {repo_execution.get('current_repository', '')}",
         f"historical_anchor: {historical.get('anchor_repository', '')}",
+        f"historical_previous_snapshot_at: {historical.get('previous_snapshot_at', '')}",
         f"historical_snapshot_at: {historical.get('current_snapshot_at', '')}",
         "",
         "workflow:",
@@ -71,6 +72,16 @@ def print_status(progress: dict) -> None:
                     f"created_at={repo.get('created_at', '') or 'n/a'} "
                     f"target_date={repo.get('analysis_target_date', '') or 'n/a'} "
                     f"target_status={repo.get('analysis_target_commit_status', 'not_started')}"
+                )
+            if repo.get("commit_range_status", "not_started") != "not_started":
+                changed_count = len(repo.get("changed_paths") or [])
+                renamed_count = len(repo.get("renamed_paths") or [])
+                deleted_count = len(repo.get("deleted_paths") or [])
+                lines.append(
+                    "      temporal_delta: "
+                    f"range_status={repo.get('commit_range_status', 'not_started')} "
+                    f"range={repo.get('commit_range', '') or 'n/a'} "
+                    f"changed={changed_count} renamed={renamed_count} deleted={deleted_count}"
                 )
             open_items = [
                 item_id
