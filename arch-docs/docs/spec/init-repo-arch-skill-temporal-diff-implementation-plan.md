@@ -220,6 +220,17 @@
 
 **Результат этапа:** historical prep становится snapshot+diff gate, а не только snapshot gate.
 
+**Статус выполнения:** выполнено
+
+**Мини-отчёт:**
+- в `app/workflows/init_arch/domain/models.py` в `EventType` добавлены temporal-события: `TEMPORAL_RANGE_REQUESTED`, `TEMPORAL_RANGE_RESOLVED`, `TEMPORAL_DIFF_COLLECTED`, `TEMPORAL_DIFF_MISSING`, `TEMPORAL_RANGE_INVALID`;
+- в `app/workflows/init_arch/domain/operations.py` найден и закрыт реальный баг quality gate: прежний `_repository_temporal_window_is_valid()` требовал непустой `commit_range` для *любого* допустимого `commit_range_status`, из-за чего легитимный `NO_CHANGES` (start commit == end commit, range намеренно пустой) ложно проваливал gate. Теперь `NO_CHANGES` и `BASELINE_MISSING` обрабатываются как отдельные валидные состояния, а непустой `commit_range` обязателен только для `DIFF_COLLECTED`; транзитный `RANGE_RESOLVED` (диапазон построен, но diff ещё не собран) больше не проходит gate — переход к `assess_scope_and_domains`/`analyze_repositories` блокируется, пока diff не собран или окно явно не помечено `no_changes`/`baseline_missing`;
+- в `app/workflows/init_arch/historical.py` `resolve_target_commits()` теперь публикует audit-события через новый `_record_temporal_delta_event()`: `temporal_range_requested` — один раз в начале прогона окна, и per-repository `temporal_diff_collected`/`temporal_range_resolved`(no-changes)/`temporal_diff_missing`(baseline missing)/`temporal_range_invalid` — по фактическому `commit_range_status` каждого репозитория;
+- failure semantics зафиксированы кодом, а не только документом: checkout может быть выполнен успешно, но если `commit_range_status` не в `{DIFF_COLLECTED, NO_CHANGES, BASELINE_MISSING}` (например `INVALID_RANGE` после rebase/force-push), `historical_prep_is_complete()` возвращает `False` и `advance_step()` кидает `DomainOperationError`, не пропуская workflow дальше;
+- изменение затронуло `nodes.py`/`audit.py` только косвенно: `nodes.py` уже вызывал `resolve_target_commits()` и общий `_record_workflow_event`, отдельных правок не потребовалось; `audit.py` (generic `WorkflowAuditService.record()`) переиспользован как есть — новые события используют тот же transport;
+- добавлены и прогнаны тесты: `tests/workflows/init_arch/domain/test_operations.py` (новые кейсы на `NO_CHANGES`, `INVALID_RANGE`, `DIFF_COLLECTED`, и на баг с прежним строгим `bool(commit_range and ...)`), `tests/workflows/init_arch/test_historical.py` (audit-события для `baseline_missing`, `no_changes`, `diff_collected`, прямой unit-тест на `_record_temporal_delta_event` для `invalid_range`); полный прогон `tests/` — **309 passed**;
+- `ruff check` на изменённые файлы — новых замечаний не осталось (устранено `PLR0911` на `_repository_temporal_window_is_valid`, ужатое до 6 return-веток); оставшиеся warnings в тех же файлах — pre-existing, вне дельты этого этапа.
+
 ### Этап 5. Добавить обязательное подтверждение пользователя перед следующим периодом
 
 **Задача:** сделать переход между временными окнами управляемым пользователем, а не автоматическим продолжением workflow.

@@ -261,7 +261,8 @@ sequenceDiagram
 - планирует snapshot window;
 - резолвит target commits и checkout на snapshot;
 - дополнительно строит temporal-delta для окна: `resolve_temporal_baseline()`, `build_commit_range()`, `collect_diff_summary()`, `collect_changed_paths()`, `collect_commit_log_summary()` заполняют `commit_range`, `diff_stat_summary`, `commit_log_summary`, `changed_paths`/`renamed_paths`/`deleted_paths` для каждого repository-window;
-- extraction уже сделан range-aware (first-window baseline, `no_changes`, `invalid_range` обрабатываются явно), но результат пока не является обязательным quality gate перед `assess_scope_and_domains`/`analyze_repositories` — это остаётся задачей следующего этапа;
+- extraction сделан range-aware (first-window baseline, `no_changes`, `invalid_range` обрабатываются явно), и с Этапа 4 результат стал обязательным quality gate: `historical_prep_is_complete()` пропускает окно только при `DIFF_COLLECTED`, явном `NO_CHANGES` или `BASELINE_MISSING`, а `RANGE_RESOLVED`/`INVALID_RANGE` блокируют переход к `assess_scope_and_domains`/`analyze_repositories`;
+- публикует temporal audit-события (`temporal_range_requested`, `temporal_range_resolved`, `temporal_diff_collected`, `temporal_diff_missing`, `temporal_range_invalid`) для каждого repository-window;
 - подготавливает state для historical gate.
 
 ## Runtime Hardening
@@ -452,8 +453,9 @@ sequenceDiagram
 
 - `resolve_target_commits()` уже заполняет `previous_analysis_target_commit`, `window_start_commit`, `window_end_commit`, `commit_range`, `diff_stat_summary`, `commit_log_summary`, `changed_paths`, `renamed_paths`, `deleted_paths`, `temporal_delta_note`.
 - Stage 3 закрыт: `HistoricalPrepService` реализует `resolve_temporal_baseline()`, `build_commit_range()`, `collect_diff_summary()`, `collect_changed_paths()`, `collect_commit_log_summary()` и корректно обрабатывает edge-cases — first-window baseline (может деградировать в `baseline_missing`), одинаковые start/end commits (`no_changes`), invalid ancestry (`invalid_range`).
-- Stage 3 покрывает service-side extraction commit range и change metadata, но ещё не делает эту delta обязательным workflow gate для downstream analysis — это Stage 4.
-- Для `no_changes` сервис допускает вырожденное окно без diff payload, а окончательное gate-semantics для таких окон закрепляется Stage 4.
+- Stage 4 закрыт: `historical_prep_is_complete()` требует для non-first window один из статусов `DIFF_COLLECTED`, `NO_CHANGES` или `BASELINE_MISSING`; транзитный `RANGE_RESOLVED` (диапазон построен, diff ещё не собран) и `INVALID_RANGE` блокируют переход к `assess_scope_and_domains`/`analyze_repositories`.
+- Для `no_changes` сервис допускает вырожденное окно без diff payload — это первоклассный валидный статус, а не проваленный gate (до Stage 4 gate ошибочно требовал непустой `commit_range` даже для `no_changes`, это исправлено).
+- `resolve_target_commits()` публикует typed audit-события через `_record_temporal_delta_event()`: `temporal_range_requested` (старт окна), `temporal_diff_collected`, `temporal_range_resolved` (no-changes), `temporal_diff_missing` (baseline missing), `temporal_range_invalid`.
 
 ### Window Rules
 
@@ -482,7 +484,7 @@ sequenceDiagram
   - валидный `commit_range` с diff metadata;
   - явно зафиксированный `baseline_missing`;
   - явно зафиксированный `no_changes`.
-- `HistoricalPrepService` уже строит и хранит `commit_range`, `diff_stat_summary`, `changed_paths`, `commit_log_summary` (Stage 3), но `historical_prep_is_complete()` их пока не валидирует как обязательное условие готовности окна. Это осознанный implementation gap Stage 4, а не часть целевого контракта.
+- `HistoricalPrepService` строит и хранит `commit_range`, `diff_stat_summary`, `changed_paths`, `commit_log_summary` (Stage 3), и `historical_prep_is_complete()` теперь валидирует их как обязательное условие готовности окна (Stage 4).
 
 Progress file path по-прежнему прокидывается в state как compatibility artifact:
 
@@ -526,14 +528,14 @@ Resume semantics:
 
 ### Target Gate For Diff-Aware Windows
 
-Нормативно для temporal-diff режима этого недостаточно. Целевой gate должен дополнительно требовать:
+Для temporal-diff режима этого недостаточно. С Stage 4 gate дополнительно требует (реализовано в `_repository_temporal_window_is_valid()`):
 
 - вычисленный `window_end_commit`, совпадающий с `snapshot_commit`;
 - `window_start_commit` или явно зафиксированный `baseline_missing`;
-- `commit_range` либо явно помеченный `no_changes`;
-- собранные `diff_stat_summary`, `changed_paths`, `commit_log_summary` для непустого окна.
+- `commit_range` для непустого окна и собранные `diff_stat_summary`, `changed_paths`, `commit_log_summary` (статус `commit_range_status == DIFF_COLLECTED`);
+- либо явно помеченный `no_changes` (пустой `commit_range` — легитимный, а не проваленный случай).
 
-Поля уже собираются (Stage 3), но до реализации этого gate (Stage 4) сервис не должен интерпретировать checkout-only historical prep как полную готовность temporal analysis, даже если текущий guard ещё пропускает такой state.
+Транзитный `RANGE_RESOLVED` (диапазон построен, diff ещё не собран) и `INVALID_RANGE` не проходят gate: `historical_prep_is_complete()` возвращает `False`, `advance_step()` кидает `DomainOperationError`, workflow не переходит к `assess_scope_and_domains`/`analyze_repositories`, даже если checkout уже выполнен.
 
 ### Step transition checks
 
@@ -576,6 +578,11 @@ Resume semantics:
 - `user_answer_recorded`
 - `artifact_written`
 - `artifact_rejected`
+- `temporal_range_requested`
+- `temporal_range_resolved`
+- `temporal_diff_collected`
+- `temporal_diff_missing`
+- `temporal_range_invalid`
 
 Назначение событий:
 
@@ -591,6 +598,11 @@ Resume semantics:
 - `user_answer_recorded` — ответ пользователя принят сервисом и записан в session state как часть interview lifecycle.
 - `artifact_written` — сервис или worker создали/обновили knowledge artifact, и это изменение зафиксировано в artifact registry.
 - `artifact_rejected` — сервис отклонил candidate artifact или результат worker reconciliation; сейчас этот тип уже зарезервирован в модели событий, но используется ограниченно.
+- `temporal_range_requested` — `HistoricalPrepService.resolve_target_commits()` начал построение temporal-delta для окна (`snapshot_at`, число репозиториев); эмитится один раз на прогон окна.
+- `temporal_range_resolved` — для конкретного repository диапазон построен, но окно оказалось вырожденным (`commit_range_status == NO_CHANGES`): новых commit с прошлого snapshot нет.
+- `temporal_diff_collected` — для repository собран полноценный diff (`commit_range`, `diff_stat_summary`, `commit_log_summary`, `changed_paths`); `commit_range_status == DIFF_COLLECTED`.
+- `temporal_diff_missing` — baseline commit недоступен (`commit_range_status == BASELINE_MISSING`): либо это первое окно без истории, либо repository ещё не существовал на дату предыдущего snapshot, либо commit на текущую snapshot-дату вообще не найден.
+- `temporal_range_invalid` — `commit_range_status == INVALID_RANGE`: `window_start_commit` не является предком `window_end_commit` (переписанная история, force-push, rebase); окно не считается готовым.
 
 Практический смысл групп:
 
@@ -599,6 +611,7 @@ Resume semantics:
 - `llm_task_*` — граница между orchestrator и worker.
 - `user_*` — lifecycle пользовательского интервью.
 - `artifact_*` — изменения knowledge-слоя.
+- `temporal_*` — построение range/diff temporal-delta для repository-window и его gate-статус; эмитятся из `HistoricalPrepService._record_temporal_delta_event()`.
 
 События больше не ограничены только memory-backed runtime: transport читает persisted `conversation_items`, а workflow step transitions и artifact events дополнительно пишутся в специализированные таблицы.
 
@@ -647,7 +660,7 @@ Transport-level terminal states:
 
 ## Known Gaps
 
-1. Temporal historical prep уже строит `commit_range`, `diff_stat_summary`, `changed_paths` и `commit_log_summary` для окна (Stage 3), но эта delta пока не является обязательным quality gate перед content-анализом, а prompts/worker ещё не получают structured change context (Stage 4/6 остаются открытыми).
+1. Temporal historical prep строит `commit_range`, `diff_stat_summary`, `changed_paths` и `commit_log_summary` для окна и требует их как обязательный quality gate перед content-анализом (Stage 3-4 закрыты), но prompts/worker ещё не получают structured change context, и пользовательское подтверждение перед следующим окном ещё не реализовано (Stage 5-6 остаются открытыми).
 2. Workflow graph остаётся линейным; richer branching/state machine semantics ещё не вынесены за пределы conditional retry routing.
 3. `progress_file_path` ещё существует как compatibility field, хотя long-term owner состояния должен быть persisted session state.
 4. OpenAI facade пока не экспонирует submit actions для `requires_action` response и поэтому не заменяет внутренний conversation-first transport полностью.

@@ -1,8 +1,9 @@
 import datetime as dt
-from unittest.mock import MagicMock
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
+
 from app.settings import GatewaySettings
 from app.workflows.init_arch.domain import (
     AnalysisTargetCommitStatus,
@@ -109,6 +110,153 @@ async def test_resolve_target_commits_updates_statuses_and_commits() -> None:
     assert result.session.repositories[1].analysis_target_commit_status is AnalysisTargetCommitStatus.MISSING
     assert "resolved=1" in result.summary
     assert "missing=1" in result.summary
+
+
+async def test_resolve_target_commits_emits_temporal_audit_events() -> None:
+    audit_service = MagicMock()
+    service = HistoricalPrepService(audit_service=audit_service)
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="arch-docs",
+        analysis_scope="full",
+        historical_analysis={
+            "anchor_repository_name": "svc-a",
+            "anchor_created_at": dt.date(2024, 1, 10),
+            "current_snapshot_at": dt.date(2024, 4, 10),
+            "ordered_repository_names": ["svc-a", "svc-b"],
+        },
+        repositories=[
+            RepositoryExecution(
+                repository_name="svc-a",
+                created_at=dt.date(2024, 1, 10),
+                main_branch="main",
+                analysis_target_date=dt.date(2024, 4, 10),
+                analysis_target_commit_status=AnalysisTargetCommitStatus.PENDING,
+            ),
+            RepositoryExecution(
+                repository_name="svc-b",
+                created_at=dt.date(2024, 2, 15),
+                main_branch="main",
+                analysis_target_date=dt.date(2024, 4, 10),
+                analysis_target_commit_status=AnalysisTargetCommitStatus.PENDING,
+            ),
+        ],
+    )
+
+    service._resolve_commit_for_repository = MagicMock(side_effect=["abc123", ""])  # type: ignore[method-assign]
+
+    await service.resolve_target_commits(session, workspace_dir="/workspace")
+
+    recorded_events = [call.args[0] for call in audit_service.record.call_args_list]
+    event_types = [event.event_type for event in recorded_events]
+    assert event_types[0] is EventType.TEMPORAL_RANGE_REQUESTED
+    diff_missing_events = [event for event in recorded_events if event.event_type is EventType.TEMPORAL_DIFF_MISSING]
+    assert {event.payload["repository_name"] for event in diff_missing_events} == {"svc-a", "svc-b"}
+    assert all(
+        event.payload["commit_range_status"] == CommitRangeStatus.BASELINE_MISSING.value for event in diff_missing_events
+    )
+
+
+async def test_resolve_target_commits_emits_range_resolved_event_for_no_changes_window() -> None:
+    audit_service = MagicMock()
+    service = HistoricalPrepService(audit_service=audit_service)
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="arch-docs",
+        analysis_scope="full",
+        historical_analysis={
+            "anchor_repository_name": "svc-a",
+            "anchor_created_at": dt.date(2024, 1, 10),
+            "previous_snapshot_at": dt.date(2024, 3, 10),
+            "current_snapshot_at": dt.date(2024, 4, 10),
+            "ordered_repository_names": ["svc-a"],
+        },
+        repositories=[
+            RepositoryExecution(
+                repository_name="svc-a",
+                created_at=dt.date(2024, 1, 10),
+                main_branch="main",
+                analysis_target_date=dt.date(2024, 4, 10),
+                previous_analysis_target_commit="abc123",
+                analysis_target_commit_status=AnalysisTargetCommitStatus.PENDING,
+            )
+        ],
+    )
+
+    service._resolve_commit_for_repository = MagicMock(return_value="abc123")  # type: ignore[method-assign]
+    service.resolve_temporal_baseline = MagicMock(  # type: ignore[method-assign]
+        return_value=("abc123", CommitRangeStatus.RANGE_RESOLVED, "")
+    )
+    service.build_commit_range = MagicMock(return_value=("", CommitRangeStatus.NO_CHANGES, ""))  # type: ignore[method-assign]
+
+    await service.resolve_target_commits(session, workspace_dir="/workspace")
+
+    recorded_events = [call.args[0] for call in audit_service.record.call_args_list]
+    resolved_event = next(event for event in recorded_events if event.event_type is EventType.TEMPORAL_RANGE_RESOLVED)
+    assert resolved_event.payload["repository_name"] == "svc-a"
+    assert resolved_event.payload["commit_range_status"] == CommitRangeStatus.NO_CHANGES.value
+
+
+async def test_resolve_target_commits_emits_diff_collected_event_for_non_first_window() -> None:
+    audit_service = MagicMock()
+    service = HistoricalPrepService(audit_service=audit_service)
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="arch-docs",
+        analysis_scope="full",
+        historical_analysis={
+            "anchor_repository_name": "svc-a",
+            "anchor_created_at": dt.date(2024, 1, 10),
+            "previous_snapshot_at": dt.date(2024, 3, 10),
+            "current_snapshot_at": dt.date(2024, 4, 10),
+            "ordered_repository_names": ["svc-a"],
+        },
+        repositories=[
+            RepositoryExecution(
+                repository_name="svc-a",
+                created_at=dt.date(2024, 1, 10),
+                main_branch="main",
+                analysis_target_date=dt.date(2024, 4, 10),
+                previous_analysis_target_commit="abc123",
+                analysis_target_commit_status=AnalysisTargetCommitStatus.PENDING,
+            )
+        ],
+    )
+
+    service._resolve_commit_for_repository = MagicMock(return_value="def456")  # type: ignore[method-assign]
+    service.resolve_temporal_baseline = MagicMock(  # type: ignore[method-assign]
+        return_value=("abc123", CommitRangeStatus.RANGE_RESOLVED, "")
+    )
+    service.build_commit_range = MagicMock(return_value=("abc123..def456", CommitRangeStatus.RANGE_RESOLVED, ""))  # type: ignore[method-assign]
+    service.collect_diff_summary = MagicMock(return_value=" 1 file changed")  # type: ignore[method-assign]
+    service.collect_changed_paths = MagicMock(return_value=(["app/service.py"], [], []))  # type: ignore[method-assign]
+    service.collect_commit_log_summary = MagicMock(return_value="def456 feat: add temporal diff")  # type: ignore[method-assign]
+
+    await service.resolve_target_commits(session, workspace_dir="/workspace")
+
+    recorded_events = [call.args[0] for call in audit_service.record.call_args_list]
+    diff_collected_event = next(
+        event for event in recorded_events if event.event_type is EventType.TEMPORAL_DIFF_COLLECTED
+    )
+    assert diff_collected_event.payload["repository_name"] == "svc-a"
+    assert diff_collected_event.payload["commit_range_status"] == CommitRangeStatus.DIFF_COLLECTED.value
+
+
+def test_record_temporal_delta_event_maps_invalid_range_status() -> None:
+    audit_service = MagicMock()
+    service = HistoricalPrepService(audit_service=audit_service)
+    session = _make_session()
+
+    service._record_temporal_delta_event(
+        session,
+        repository_name="svc-a",
+        commit_range_status=CommitRangeStatus.INVALID_RANGE,
+    )
+
+    recorded_event = audit_service.record.call_args_list[0].args[0]
+    assert recorded_event.event_type is EventType.TEMPORAL_RANGE_INVALID
+    assert recorded_event.payload["repository_name"] == "svc-a"
+    assert recorded_event.payload["commit_range_status"] == CommitRangeStatus.INVALID_RANGE.value
 
 
 async def test_resolve_target_commits_collects_temporal_delta_for_non_first_window() -> None:

@@ -165,6 +165,12 @@ class HistoricalPrepService:
         resolved_count = 0
         missing_count = 0
         repositories: list[RepositoryExecution] = []
+        self._record_event(
+            session,
+            EventType.TEMPORAL_RANGE_REQUESTED,
+            snapshot_at=snapshot_at.isoformat(),
+            repository_count=str(len(session.repositories)),
+        )
         for repository in session.repositories:
             repo_path = self._repository_path(repository.repository_name, workspace_dir=workspace_dir)
             commit_sha = self._resolve_commit_for_repository(
@@ -204,6 +210,11 @@ class HistoricalPrepService:
                 if checkout:
                     self._checkout_commit(repo_path, commit_sha)
                 status = AnalysisTargetCommitStatus.CHECKED_OUT if checkout else AnalysisTargetCommitStatus.RESOLVED
+                self._record_temporal_delta_event(
+                    session,
+                    repository_name=repository.repository_name,
+                    commit_range_status=final_range_status,
+                )
                 repositories.append(
                     repository.model_copy(
                         update={
@@ -243,6 +254,11 @@ class HistoricalPrepService:
                             "temporal_delta_note": "No commit available for the current snapshot date.",
                         }
                     )
+                )
+                self._record_temporal_delta_event(
+                    session,
+                    repository_name=repository.repository_name,
+                    commit_range_status=CommitRangeStatus.BASELINE_MISSING,
                 )
                 missing_count += 1
 
@@ -425,6 +441,27 @@ class HistoricalPrepService:
         if not output and not allow_empty:
             raise ValueError(f"git command returned empty output for {repo_path}: {' '.join(command)}")
         return output
+
+    def _record_temporal_delta_event(
+        self,
+        session: WorkflowSessionRecord,
+        *,
+        repository_name: str,
+        commit_range_status: CommitRangeStatus,
+    ) -> None:
+        event_type_by_status = {
+            CommitRangeStatus.DIFF_COLLECTED: EventType.TEMPORAL_DIFF_COLLECTED,
+            CommitRangeStatus.NO_CHANGES: EventType.TEMPORAL_RANGE_RESOLVED,
+            CommitRangeStatus.BASELINE_MISSING: EventType.TEMPORAL_DIFF_MISSING,
+            CommitRangeStatus.INVALID_RANGE: EventType.TEMPORAL_RANGE_INVALID,
+        }
+        event_type = event_type_by_status.get(commit_range_status, EventType.TEMPORAL_RANGE_RESOLVED)
+        self._record_event(
+            session,
+            event_type,
+            repository_name=repository_name,
+            commit_range_status=commit_range_status.value,
+        )
 
     def _record_event(self, session: WorkflowSessionRecord, event_type: EventType, **payload: str) -> None:
         self._audit_service.record(

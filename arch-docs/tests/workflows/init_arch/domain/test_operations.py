@@ -228,6 +228,131 @@ def test_historical_prep_requires_window_end_to_match_target_commit() -> None:
     assert historical_prep_is_complete(session) is False
 
 
+def test_historical_prep_accepts_no_changes_for_non_first_window() -> None:
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="arch-docs",
+        analysis_scope="full",
+        historical_analysis={
+            "anchor_repository_name": "svc-a",
+            "anchor_created_at": dt.date(2024, 1, 1),
+            "previous_snapshot_at": dt.date(2024, 3, 1),
+            "current_snapshot_at": dt.date(2024, 4, 1),
+            "ordered_repository_names": ["svc-a"],
+        },
+        repositories=[
+            RepositoryExecution(
+                repository_name="svc-a",
+                created_at=dt.date(2024, 1, 1),
+                analysis_target_date=dt.date(2024, 4, 1),
+                analysis_target_commit="abc123",
+                analysis_target_commit_status=AnalysisTargetCommitStatus.RESOLVED,
+                window_start_commit="abc123",
+                window_end_commit="abc123",
+                commit_range="",
+                commit_range_status=CommitRangeStatus.NO_CHANGES,
+                temporal_delta_note="",
+            )
+        ],
+    )
+
+    assert historical_prep_is_complete(session) is True
+
+
+def test_historical_prep_rejects_range_resolved_without_diff_collection() -> None:
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="arch-docs",
+        analysis_scope="full",
+        historical_analysis={
+            "anchor_repository_name": "svc-a",
+            "anchor_created_at": dt.date(2024, 1, 1),
+            "previous_snapshot_at": dt.date(2024, 3, 1),
+            "current_snapshot_at": dt.date(2024, 4, 1),
+            "ordered_repository_names": ["svc-a"],
+        },
+        repositories=[
+            RepositoryExecution(
+                repository_name="svc-a",
+                created_at=dt.date(2024, 1, 1),
+                analysis_target_date=dt.date(2024, 4, 1),
+                analysis_target_commit="abc123",
+                analysis_target_commit_status=AnalysisTargetCommitStatus.RESOLVED,
+                window_start_commit="prev123",
+                window_end_commit="abc123",
+                commit_range="prev123..abc123",
+                commit_range_status=CommitRangeStatus.RANGE_RESOLVED,
+            )
+        ],
+    )
+
+    assert historical_prep_is_complete(session) is False
+
+
+def test_historical_prep_rejects_invalid_range() -> None:
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="arch-docs",
+        analysis_scope="full",
+        historical_analysis={
+            "anchor_repository_name": "svc-a",
+            "anchor_created_at": dt.date(2024, 1, 1),
+            "previous_snapshot_at": dt.date(2024, 3, 1),
+            "current_snapshot_at": dt.date(2024, 4, 1),
+            "ordered_repository_names": ["svc-a"],
+        },
+        repositories=[
+            RepositoryExecution(
+                repository_name="svc-a",
+                created_at=dt.date(2024, 1, 1),
+                analysis_target_date=dt.date(2024, 4, 1),
+                analysis_target_commit="abc123",
+                analysis_target_commit_status=AnalysisTargetCommitStatus.RESOLVED,
+                window_start_commit="prev123",
+                window_end_commit="abc123",
+                commit_range="",
+                commit_range_status=CommitRangeStatus.INVALID_RANGE,
+                temporal_delta_note="Window start commit is not an ancestor of the snapshot commit.",
+            )
+        ],
+    )
+
+    assert historical_prep_is_complete(session) is False
+
+
+def test_historical_prep_accepts_diff_collected_for_non_first_window() -> None:
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="arch-docs",
+        analysis_scope="full",
+        historical_analysis={
+            "anchor_repository_name": "svc-a",
+            "anchor_created_at": dt.date(2024, 1, 1),
+            "previous_snapshot_at": dt.date(2024, 3, 1),
+            "current_snapshot_at": dt.date(2024, 4, 1),
+            "ordered_repository_names": ["svc-a"],
+        },
+        repositories=[
+            RepositoryExecution(
+                repository_name="svc-a",
+                created_at=dt.date(2024, 1, 1),
+                analysis_target_date=dt.date(2024, 4, 1),
+                analysis_target_commit="abc123",
+                analysis_target_commit_status=AnalysisTargetCommitStatus.RESOLVED,
+                window_start_commit="prev123",
+                window_end_commit="abc123",
+                commit_range="prev123..abc123",
+                commit_range_status=CommitRangeStatus.DIFF_COLLECTED,
+                diff_stat_summary="1 file changed",
+                changed_paths=["README.md"],
+                commit_log_summary="abc123 update readme",
+            )
+        ],
+    )
+
+    assert historical_prep_is_complete(session) is True
+
+
 def test_historical_prep_accepts_baseline_missing_for_non_first_window() -> None:
     session = WorkflowSessionRecord(
         session_id="wf-1",

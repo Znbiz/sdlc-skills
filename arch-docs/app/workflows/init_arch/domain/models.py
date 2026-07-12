@@ -57,6 +57,11 @@ class EventType(str, enum.Enum):
     USER_ANSWER_RECORDED = "user_answer_recorded"
     ARTIFACT_WRITTEN = "artifact_written"
     ARTIFACT_REJECTED = "artifact_rejected"
+    TEMPORAL_RANGE_REQUESTED = "temporal_range_requested"
+    TEMPORAL_RANGE_RESOLVED = "temporal_range_resolved"
+    TEMPORAL_DIFF_COLLECTED = "temporal_diff_collected"
+    TEMPORAL_DIFF_MISSING = "temporal_diff_missing"
+    TEMPORAL_RANGE_INVALID = "temporal_range_invalid"
 
 
 class AnalysisTargetCommitStatus(str, enum.Enum):

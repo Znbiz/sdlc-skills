@@ -200,15 +200,12 @@ def _repository_temporal_window_is_valid(
     if historical_previous_snapshot_at is None:
         return True
 
-    if repository.commit_range_status is CommitRangeStatus.BASELINE_MISSING:
-        return True
+    status = repository.commit_range_status
+    if status in {CommitRangeStatus.BASELINE_MISSING, CommitRangeStatus.NO_CHANGES}:
+        window_end_matches = repository.window_end_commit == repository.analysis_target_commit
+        return status is CommitRangeStatus.BASELINE_MISSING or window_end_matches
 
-    allowed_range_statuses = {
-        CommitRangeStatus.RANGE_RESOLVED,
-        CommitRangeStatus.DIFF_COLLECTED,
-        CommitRangeStatus.NO_CHANGES,
-    }
-    if repository.commit_range_status not in allowed_range_statuses:
+    if status is not CommitRangeStatus.DIFF_COLLECTED:
         return False
 
     return bool(repository.commit_range and repository.window_end_commit == repository.analysis_target_commit)
