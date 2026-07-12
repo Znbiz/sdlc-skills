@@ -2,8 +2,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.workflows.init_arch import checkpointer as cp_module
 from app.workflows.init_arch.checkpointer import get_checkpointer
-from app.workflows.init_arch.domain import STEP_DEFINITIONS
-from app.workflows.init_arch.graph import _LINEAR_STEP_IDS, _route_after_node, build_graph, compile_graph
+from app.workflows.init_arch.domain import STEP_DEFINITIONS, StepId, WorkflowSessionRecord
+from app.workflows.init_arch.graph import (
+    _LINEAR_STEP_IDS,
+    _route_after_confirm_next_temporal_window,
+    _route_after_node,
+    build_graph,
+    compile_graph,
+)
 from app.workflows.init_arch.state import InitArchState
 
 
@@ -50,6 +56,7 @@ def test_build_graph_has_all_nodes():
         "build_navigation_index",
         "run_knowledge_lint",
         "validate_final",
+        "confirm_next_temporal_window",
         "finalize_progress",
         "handle_error",
     ]
@@ -92,10 +99,40 @@ def test_route_after_node_error_max_retries_goes_to_handle_error():
     assert route(state) == "handle_error"
 
 
-def test_route_after_last_node_goes_to_end():
+def test_route_after_validate_final_goes_to_confirm_next_temporal_window():
     route = _route_after_node("validate_final")
     state = _make_state(step_error=None)
-    assert route(state) == "finalize_progress"
+    assert route(state) == "confirm_next_temporal_window"
+
+
+def _make_session_state(*, current_step: StepId, **kwargs) -> InitArchState:
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="P",
+        analysis_scope="full",
+        current_step=current_step,
+    )
+    return _make_state(session=session, **kwargs)
+
+
+def test_route_after_confirm_next_temporal_window_loops_back_on_continue():
+    state = _make_session_state(current_step=StepId.REFRESH_MAIN_BRANCHES, step_error=None)
+    assert _route_after_confirm_next_temporal_window(state) == "refresh_main_branches"
+
+
+def test_route_after_confirm_next_temporal_window_finishes_when_not_continuing():
+    state = _make_session_state(current_step=StepId.FINALIZE_PROGRESS, step_error=None)
+    assert _route_after_confirm_next_temporal_window(state) == "finalize_progress"
+
+
+def test_route_after_confirm_next_temporal_window_retries_on_error():
+    state = _make_session_state(current_step=StepId.FINALIZE_PROGRESS, step_error="boom", retry_count=1)
+    assert _route_after_confirm_next_temporal_window(state) == "confirm_next_temporal_window"
+
+
+def test_route_after_confirm_next_temporal_window_handles_error_after_max_retries():
+    state = _make_session_state(current_step=StepId.FINALIZE_PROGRESS, step_error="boom", retry_count=3)
+    assert _route_after_confirm_next_temporal_window(state) == "handle_error"
 
 
 async def test_get_checkpointer_returns_cached():

@@ -21,6 +21,7 @@ class StepId(str, enum.Enum):
     BUILD_NAVIGATION_INDEX = "build_navigation_index"
     RUN_KNOWLEDGE_LINT = "run_knowledge_lint"
     VALIDATE_FINAL = "validate_final"
+    CONFIRM_NEXT_TEMPORAL_WINDOW = "confirm_next_temporal_window"
     FINALIZE_PROGRESS = "finalize_progress"
     DONE = "done"
 

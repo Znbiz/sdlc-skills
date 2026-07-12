@@ -10,6 +10,7 @@ from app.workflows.init_arch.nodes import (
     node_assess_scope_and_domains,
     node_build_navigation_index,
     node_clone_repositories,
+    node_confirm_next_temporal_window,
     node_define_scope,
     node_finalize_progress,
     node_handle_error,
@@ -25,6 +26,9 @@ from app.workflows.init_arch.nodes import (
 from app.workflows.init_arch.state import InitArchState
 
 _MAX_RETRY: typing.Final[int] = 3
+_CONFIRM_NEXT_WINDOW_NODE_NAME: typing.Final[str] = StepId.CONFIRM_NEXT_TEMPORAL_WINDOW.value
+_REFRESH_MAIN_BRANCHES_NODE_NAME: typing.Final[str] = StepId.REFRESH_MAIN_BRANCHES.value
+_FINALIZE_PROGRESS_NODE_NAME: typing.Final[str] = StepId.FINALIZE_PROGRESS.value
 
 _NODE_FUNCTIONS: typing.Final[dict[StepId, typing.Any]] = {
     StepId.DEFINE_SCOPE: node_define_scope,
@@ -40,6 +44,7 @@ _NODE_FUNCTIONS: typing.Final[dict[StepId, typing.Any]] = {
     StepId.BUILD_NAVIGATION_INDEX: node_build_navigation_index,
     StepId.RUN_KNOWLEDGE_LINT: node_run_knowledge_lint,
     StepId.VALIDATE_FINAL: node_validate_final,
+    StepId.CONFIRM_NEXT_TEMPORAL_WINDOW: node_confirm_next_temporal_window,
     StepId.FINALIZE_PROGRESS: node_finalize_progress,
 }
 
@@ -64,6 +69,16 @@ def _route_after_node(node_name: str) -> typing.Callable[[InitArchState], str]:
     return route
 
 
+def _route_after_confirm_next_temporal_window(state: InitArchState) -> str:
+    if state.get("step_error"):
+        if state.get("retry_count", 0) < _MAX_RETRY:
+            return _CONFIRM_NEXT_WINDOW_NODE_NAME
+        return "handle_error"
+    if state["session"].current_step is StepId.REFRESH_MAIN_BRANCHES:
+        return _REFRESH_MAIN_BRANCHES_NODE_NAME
+    return _FINALIZE_PROGRESS_NODE_NAME
+
+
 def build_graph() -> StateGraph:
     graph = StateGraph(InitArchState)
 
@@ -74,7 +89,10 @@ def build_graph() -> StateGraph:
     graph.add_edge(START, "define_scope")
 
     for node_name, _ in _LINEAR_NODES[:-1]:
-        graph.add_conditional_edges(node_name, _route_after_node(node_name))
+        if node_name == _CONFIRM_NEXT_WINDOW_NODE_NAME:
+            graph.add_conditional_edges(node_name, _route_after_confirm_next_temporal_window)
+        else:
+            graph.add_conditional_edges(node_name, _route_after_node(node_name))
 
     graph.add_conditional_edges(
         "finalize_progress",

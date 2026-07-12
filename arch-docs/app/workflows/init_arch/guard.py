@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import datetime as dt  # noqa: TC003
+
 import pydantic
 
 from app.workflows.init_arch.audit import WorkflowAuditService, get_workflow_audit_service
@@ -13,12 +15,15 @@ from app.workflows.init_arch.domain import (
     WorkflowSessionRecord,
     advance_step,
     close_question,
+    confirm_next_temporal_window,
     finalize_session,
     mark_checklist_item,
     open_question,
     record_answer,
     register_repository,
+    request_next_temporal_window_confirmation,
 )
+from app.workflows.init_arch.domain.operations import TemporalWindowConfirmationAction
 
 
 class GuardOperationResult(pydantic.BaseModel):
@@ -290,6 +295,60 @@ class InitArchGuardService:
         return GuardOperationResult(
             session=updated_session,
             bridge_output=f"Closed question {question_id}",
+        )
+
+    async def request_next_temporal_window(
+        self,
+        session: WorkflowSessionRecord,
+        *,
+        next_snapshot_at: dt.date,
+        progress_file_path: str,
+    ) -> GuardOperationResult:
+        updated_session = request_next_temporal_window_confirmation(session, next_snapshot_at=next_snapshot_at)
+        self._record_guard_event(
+            session,
+            EventType.GUARD_COMMAND_REQUESTED,
+            command="request_next_temporal_window",
+            next_snapshot_at=next_snapshot_at.isoformat(),
+            progress_file_path=progress_file_path,
+        )
+        self._record_guard_event(
+            updated_session,
+            EventType.GUARD_COMMAND_APPLIED,
+            command="request_next_temporal_window",
+            next_snapshot_at=next_snapshot_at.isoformat(),
+            progress_file_path=progress_file_path,
+        )
+        return GuardOperationResult(
+            session=updated_session,
+            bridge_output=f"Awaiting confirmation for next temporal window {next_snapshot_at.isoformat()}",
+        )
+
+    async def confirm_next_temporal_window(
+        self,
+        session: WorkflowSessionRecord,
+        *,
+        action: TemporalWindowConfirmationAction,
+        progress_file_path: str,
+    ) -> GuardOperationResult:
+        updated_session = confirm_next_temporal_window(session, action=action)
+        self._record_guard_event(
+            session,
+            EventType.GUARD_COMMAND_REQUESTED,
+            command="confirm_next_temporal_window",
+            action=action,
+            progress_file_path=progress_file_path,
+        )
+        self._record_guard_event(
+            updated_session,
+            EventType.GUARD_COMMAND_APPLIED,
+            command="confirm_next_temporal_window",
+            action=action,
+            progress_file_path=progress_file_path,
+        )
+        return GuardOperationResult(
+            session=updated_session,
+            bridge_output=f"Temporal window confirmation resolved: {action}",
         )
 
     async def finalize_progress(

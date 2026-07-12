@@ -280,6 +280,32 @@ class HistoricalPrepService:
             ),
         )
 
+    def compute_next_window(
+        self,
+        session: WorkflowSessionRecord,
+        *,
+        today: dt.date,
+    ) -> dt.date | None:
+        historical = session.historical_analysis
+        if historical.current_snapshot_at is None:
+            return None
+
+        if session.repositories and all(
+            repository.analysis_target_commit
+            and repository.remote_head_commit
+            and repository.analysis_target_commit == repository.remote_head_commit
+            for repository in session.repositories
+        ):
+            return None
+
+        candidate = self._add_months(
+            historical.current_snapshot_at,
+            self._settings.workflows.init.historical_window_months,
+        )
+        if candidate > today:
+            return None
+        return candidate
+
     def resolve_temporal_baseline(
         self,
         repository: RepositoryExecution,

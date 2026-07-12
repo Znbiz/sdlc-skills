@@ -262,13 +262,18 @@
 **Целевые зоны проекта:**
 - `arch-docs/app/workflows/init_arch/domain/models.py`
 - `arch-docs/app/workflows/init_arch/domain/operations.py`
-- `arch-docs/app/services/init_arch_workflow.py`
-- `arch-docs/app/api/rest/conversations.py`
-- `arch-docs/app/api/openai.py`
+- `arch-docs/app/workflows/init_arch/domain/steps.py`
+- `arch-docs/app/workflows/init_arch/historical.py`
+- `arch-docs/app/workflows/init_arch/guard.py`
+- `arch-docs/app/workflows/init_arch/nodes.py`
+- `arch-docs/app/workflows/init_arch/graph.py`
+- `arch-docs/app/services/init_arch_workflow.py` (не тронут — открытый follow-up)
+- `arch-docs/app/api/rest/conversations.py` (не тронут — открытый follow-up)
+- `arch-docs/app/api/openai.py` (не тронут — открытый follow-up)
 
 **Результат этапа:** temporal analysis превращается в пользовательски управляемую последовательность окон, где сервис явно останавливается между периодами.
 
-**Статус выполнения:** частично выполнено (domain-слой закрыт; graph loop-back и transport wiring — открытый follow-up)
+**Статус выполнения:** выполнено на уровне domain + langgraph-цикла (typed state, quality gate, реальный loop-back узел графа с interrupt-паузой); REST/OpenAI-facade transport wiring для этого interrupt-типа остаётся отдельным follow-up (см. ниже)
 
 **Мини-отчёт:**
 - в `app/workflows/init_arch/domain/models.py` добавлен `NextWindowConfirmationStatus` (`none`/`pending`/`confirmed`/`stopped`) и typed-поля `HistoricalAnalysisState`: `awaiting_window_confirmation`, `last_completed_snapshot_at`, `next_snapshot_at`, `next_window_confirmation_status`;
@@ -277,6 +282,17 @@
 - **важное ограничение, зафиксированное явно, а не скрытое:** сам langgraph-граф (`app/workflows/init_arch/graph.py`) сейчас линеен и не содержит loop-back edge для повторного прохода `refresh_main_branches -> plan_repository_order -> ... -> finalize_progress` в рамках одного запуска — `HistoricalAnalysisState.window_index`/`completed_snapshot_dates` существовали в модели ещё до этого этапа, но нигде не инкрементировались исполняемым кодом. Эта работа не была явно описана как отдельный этап плана, но является предпосылкой, без которой `confirm_next_temporal_window` некому вызывать из orchestration-слоя;
 - следствие: `services/init_arch_workflow.py`, `api/rest/conversations.py`, `api/openai.py` **не тронуты** в этом проходе — transport-контракт (dedicated interrupt-node, resume action `continue_to_next_window`/`finish_temporal_analysis`, OpenAI-facade submit action поверх того же `response_id`) остаётся открытым follow-up. Закрыт только domain-контракт (typed state + инварианты), который эти слои будут использовать;
 - также не реализовано в этом проходе: сброс per-window analysis progress (`checklist_items_completed`, `analysis_status`) при продвижении на следующее окно — `plan_repository_order()` уже сбрасывает только temporal-delta поля, но не analysis-прогресс по repositories; нужно явно решить, накопительный это прогресс между окнами или per-window, прежде чем подключать loop-back в graph.py.
+
+**Обновление (доведено до ума):**
+- добавлен новый `StepId.CONFIRM_NEXT_TEMPORAL_WINDOW` между `VALIDATE_FINAL` и `FINALIZE_PROGRESS` в `domain/models.py`/`domain/steps.py`: `FINALIZE_PROGRESS` теперь требует прохождения этого шага, а не напрямую `VALIDATE_FINAL`;
+- в `historical.py` добавлен `HistoricalPrepService.compute_next_window(session, *, today)`: возвращает `None` (terminal), если все repositories уже на `remote_head_commit`, либо если следующий кандидат окна (`current_snapshot_at + historical_window_months`) ещё в будущем относительно `today`; иначе возвращает дату следующего окна;
+- в `guard.py` добавлены `request_next_temporal_window()`/`confirm_next_temporal_window()` — typed-обёртки над domain-операциями с audit-событиями `GUARD_COMMAND_REQUESTED`/`GUARD_COMMAND_APPLIED`, по аналогии с остальными guard-методами;
+- в `nodes.py` добавлена `node_confirm_next_temporal_window()`: если `compute_next_window()` вернул `None` — сразу advance к `FINALIZE_PROGRESS` без паузы; иначе вызывает `interrupt({"interrupt_type": "temporal_window_confirmation", ...})` (пауза до explicit user action, ровно как `node_request_repository_list`/`node_interview_user`), затем на resume извлекает `action` (`continue_to_next_window`/`finish_temporal_analysis`) через `_extract_window_confirmation_action()`, вызывает `request_next_temporal_window()` -> `confirm_next_temporal_window()`; при `continue_to_next_window` дополнительно сбрасывает `checklist_items_completed`/`analysis_status` у всех repositories (per-window re-analysis, а не накопительный прогресс — осознанный выбор до появления diff-based signal routing в Этапе 7) и advance к `REFRESH_MAIN_BRANCHES` (реальный loop-back); при `finish_temporal_analysis` advance к `FINALIZE_PROGRESS`;
+- в `graph.py` узел `confirm_next_temporal_window` подключён кастомным router'ом `_route_after_confirm_next_temporal_window()` (не через generic `_route_after_node()`, так как маршрутизация не линейна): при ошибке — retry/`handle_error`, иначе — `refresh_main_branches`, если `session.current_step is REFRESH_MAIN_BRANCHES` (после confirm continue), иначе `finalize_progress`;
+- добавлены тесты: `tests/workflows/init_arch/test_historical.py` (`compute_next_window` — terminal по remote head, terminal по future date, happy path), `tests/workflows/init_arch/test_guard.py` (request+confirm round-trip с audit-событиями), `tests/workflows/init_arch/test_nodes.py` (no-more-windows path, continue path со сбросом repository progress, finish path, propagation реального interrupt через `KeyboardInterrupt` — как и для остальных pause-точек, `except Exception` в узле не глотает interrupt), `tests/workflows/init_arch/test_graph.py` (новый узел в списке графа, `_route_after_confirm_next_temporal_window` для всех веток); полный прогон `tests/` — **330 passed**; дельта по всем изменённым файлам покрыта тестами (проверено через `--cov-report=term-missing`, непокрытые строки — исключительно pre-existing код вне дельты);
+- **что осталось открытым после этого прохода:** REST (`api/rest/conversations.py`) и OpenAI-facade (`api/openai.py`) пока не знают про `interrupt_type == "temporal_window_confirmation"` — `build_resume_value()` в `services/init_arch_workflow.py` умеет резолвить только `user_input`/`user_question` и кинет `WorkflowValidationError` для нового interrupt-типа. Реальный E2E-прогон через LangGraph checkpointer (Postgres) не выполнялся — корректность replay-семантики `interrupt()` для нового узла верифицирована только на уровне unit-тестов по аналогии с уже существующими `request_repository_list`/`interview_user`, не через живой checkpointed run.
+
+### Этап 6. Передавать diff-context в worker prompts и task contracts
 
 **Задача:** сделать temporal delta обязательной частью контекста для LLM worker и всех аналитических шагов по окну.
 

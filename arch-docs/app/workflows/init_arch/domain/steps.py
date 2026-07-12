@@ -86,9 +86,16 @@ STEP_DEFINITIONS: tuple[StepDefinition, ...] = (
         uses_llm_worker=False,
     ),
     StepDefinition(
+        step_id=StepId.CONFIRM_NEXT_TEMPORAL_WINDOW,
+        title="Confirm next temporal window",
+        required_previous_steps=[StepId.VALIDATE_FINAL],
+        uses_llm_worker=False,
+        allows_user_pause=True,
+    ),
+    StepDefinition(
         step_id=StepId.FINALIZE_PROGRESS,
         title="Finalize progress",
-        required_previous_steps=[StepId.VALIDATE_FINAL],
+        required_previous_steps=[StepId.CONFIRM_NEXT_TEMPORAL_WINDOW],
         uses_llm_worker=False,
     ),
 )

@@ -496,6 +496,111 @@ async def test_node_finalize_progress_uses_guard_service() -> None:
     ]
 
 
+async def test_node_confirm_next_temporal_window_advances_when_no_more_windows() -> None:
+    state = _make_state()
+    guard_service = MagicMock()
+    historical_service = MagicMock()
+    historical_service.compute_next_window = MagicMock(return_value=None)
+    finalize_ready_session = state["session"].model_copy(update={"current_step": StepId.FINALIZE_PROGRESS})
+    guard_service.advance_step = AsyncMock(return_value=GuardOperationResult(session=finalize_ready_session))
+
+    with (
+        patch("app.workflows.init_arch.nodes.get_guard_service", return_value=guard_service),
+        patch("app.workflows.init_arch.nodes.get_historical_prep_service", return_value=historical_service),
+        patch("app.workflows.init_arch.nodes.interrupt") as mock_interrupt,
+    ):
+        result = await nodes_module.node_confirm_next_temporal_window(state)
+
+    assert result["current_step_id"] == "finalize_progress"
+    mock_interrupt.assert_not_called()
+    guard_service.advance_step.assert_awaited_once_with(
+        state["session"],
+        StepId.FINALIZE_PROGRESS,
+        progress_file_path=state["progress_file_path"],
+        note="No further temporal windows to analyze",
+    )
+
+
+async def test_node_confirm_next_temporal_window_continues_and_resets_repository_progress() -> None:
+    state = _make_state()
+    state["session"] = state["session"].model_copy(
+        update={
+            "repositories": [
+                state["session"].repositories[0].model_copy(
+                    update={"checklist_items_completed": ["repository_classification"], "analysis_status": "completed"}
+                )
+            ]
+        }
+    )
+    guard_service = MagicMock()
+    historical_service = MagicMock()
+    historical_service.compute_next_window = MagicMock(return_value=dt.date(2024, 7, 10))
+    guard_service.request_next_temporal_window = AsyncMock(return_value=GuardOperationResult(session=state["session"]))
+    guard_service.confirm_next_temporal_window = AsyncMock(return_value=GuardOperationResult(session=state["session"]))
+    refresh_ready_session = state["session"].model_copy(update={"current_step": StepId.REFRESH_MAIN_BRANCHES})
+    guard_service.advance_step = AsyncMock(return_value=GuardOperationResult(session=refresh_ready_session))
+
+    with (
+        patch("app.workflows.init_arch.nodes.get_guard_service", return_value=guard_service),
+        patch("app.workflows.init_arch.nodes.get_historical_prep_service", return_value=historical_service),
+        patch("app.workflows.init_arch.nodes.interrupt", return_value={"action": "continue_to_next_window"}),
+    ):
+        result = await nodes_module.node_confirm_next_temporal_window(state)
+
+    assert result["current_step_id"] == "refresh_main_branches"
+    guard_service.confirm_next_temporal_window.assert_awaited_once()
+    reset_session = guard_service.advance_step.call_args.args[0]
+    assert reset_session.repositories[0].checklist_items_completed == []
+    assert reset_session.repositories[0].analysis_status == "pending"
+    assert guard_service.advance_step.call_args.args[1] is StepId.REFRESH_MAIN_BRANCHES
+
+
+async def test_node_confirm_next_temporal_window_finishes_on_user_stop() -> None:
+    state = _make_state()
+    guard_service = MagicMock()
+    historical_service = MagicMock()
+    historical_service.compute_next_window = MagicMock(return_value=dt.date(2024, 7, 10))
+    guard_service.request_next_temporal_window = AsyncMock(return_value=GuardOperationResult(session=state["session"]))
+    guard_service.confirm_next_temporal_window = AsyncMock(return_value=GuardOperationResult(session=state["session"]))
+    finalize_ready_session = state["session"].model_copy(update={"current_step": StepId.FINALIZE_PROGRESS})
+    guard_service.advance_step = AsyncMock(return_value=GuardOperationResult(session=finalize_ready_session))
+
+    with (
+        patch("app.workflows.init_arch.nodes.get_guard_service", return_value=guard_service),
+        patch("app.workflows.init_arch.nodes.get_historical_prep_service", return_value=historical_service),
+        patch("app.workflows.init_arch.nodes.interrupt", return_value={"action": "finish_temporal_analysis"}),
+    ):
+        result = await nodes_module.node_confirm_next_temporal_window(state)
+
+    assert result["current_step_id"] == "finalize_progress"
+    guard_service.advance_step.assert_awaited_once_with(
+        state["session"],
+        StepId.FINALIZE_PROGRESS,
+        progress_file_path=state["progress_file_path"],
+        note="User stopped the temporal analysis loop",
+    )
+
+
+async def test_node_confirm_next_temporal_window_propagates_real_interrupt() -> None:
+    state = _make_state()
+    historical_service = MagicMock()
+    historical_service.compute_next_window = MagicMock(return_value=dt.date(2024, 7, 10))
+
+    with (
+        patch("app.workflows.init_arch.nodes.get_historical_prep_service", return_value=historical_service),
+        patch("app.workflows.init_arch.nodes.interrupt") as mock_interrupt,
+    ):
+        mock_interrupt.side_effect = KeyboardInterrupt("interrupt")
+        with pytest.raises(KeyboardInterrupt, match="interrupt"):
+            await nodes_module.node_confirm_next_temporal_window(state)
+        mock_interrupt.assert_called_once()
+
+
+def test_extract_window_confirmation_action_rejects_unknown_action() -> None:
+    with pytest.raises(ValueError, match="continue_to_next_window"):
+        nodes_module._extract_window_confirmation_action({"action": "not_a_real_action"})
+
+
 def test_extract_question_answer_validates_and_normalizes_input() -> None:
     assert nodes_module._extract_question_answer({"answer": "  REST  "}) == "REST"
 

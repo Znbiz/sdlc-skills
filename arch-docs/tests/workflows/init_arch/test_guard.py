@@ -1,8 +1,10 @@
+import datetime as dt
 from unittest.mock import MagicMock
 
 from app.workflows.init_arch.domain import (
     AuditActor,
     EventType,
+    NextWindowConfirmationStatus,
     OpenQuestionRecord,
     RepositoryExecution,
     StepId,
@@ -132,6 +134,39 @@ async def test_guard_service_finalize_progress_marks_done() -> None:
     assert result.session.current_step is StepId.DONE
     assert result.session.status is WorkflowStatus.COMPLETED
     assert result.bridge_output == "Finalized workflow session"
+
+
+async def test_guard_service_requests_and_confirms_next_temporal_window() -> None:
+    audit_service = MagicMock()
+    service = InitArchGuardService(audit_service=audit_service)
+    session = start_session(session_id="wf-1", product_name="arch-docs", analysis_scope="full")
+    session = session.model_copy(
+        update={"historical_analysis": session.historical_analysis.model_copy(update={"current_snapshot_at": dt.date(2024, 4, 10)})}
+    )
+
+    requested_result = await service.request_next_temporal_window(
+        session,
+        next_snapshot_at=dt.date(2024, 7, 10),
+        progress_file_path="/workspace/tmp/progress.yaml",
+    )
+
+    assert requested_result.session.historical_analysis.awaiting_window_confirmation is True
+    assert requested_result.session.historical_analysis.next_snapshot_at == dt.date(2024, 7, 10)
+    assert requested_result.session.status is WorkflowStatus.WAITING_FOR_USER
+
+    confirmed_result = await service.confirm_next_temporal_window(
+        requested_result.session,
+        action="continue_to_next_window",
+        progress_file_path="/workspace/tmp/progress.yaml",
+    )
+
+    assert confirmed_result.session.historical_analysis.current_snapshot_at == dt.date(2024, 7, 10)
+    assert confirmed_result.session.historical_analysis.next_window_confirmation_status is NextWindowConfirmationStatus.CONFIRMED
+    recorded_commands = [
+        call.args[0].payload.get("command") for call in audit_service.record.call_args_list if call.args[0].payload
+    ]
+    assert "request_next_temporal_window" in recorded_commands
+    assert "confirm_next_temporal_window" in recorded_commands
 
 
 async def test_guard_service_validation_is_internal_summary() -> None:

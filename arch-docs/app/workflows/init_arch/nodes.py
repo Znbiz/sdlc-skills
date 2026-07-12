@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import typing
 
 import structlog
@@ -14,6 +15,7 @@ from app.workflows.init_arch.domain import (
     StepId,
     WorkflowEventRecord,
 )
+from app.workflows.init_arch.domain.operations import TemporalWindowConfirmationAction
 from app.workflows.init_arch.guard import get_guard_service
 from app.workflows.init_arch.historical import HistoricalPrepResult, get_historical_prep_service
 from app.workflows.init_arch.knowledge import get_knowledge_artifact_service
@@ -557,7 +559,95 @@ async def node_run_knowledge_lint(state: InitArchState) -> dict[str, typing.Any]
 
 async def node_validate_final(state: InitArchState) -> dict[str, typing.Any]:
     logger.info("workflow.node.validate_final")
-    return await _simple_llm_step(state, StepId.VALIDATE_FINAL, StepId.FINALIZE_PROGRESS)
+    return await _simple_llm_step(state, StepId.VALIDATE_FINAL, StepId.CONFIRM_NEXT_TEMPORAL_WINDOW)
+
+
+def _extract_window_confirmation_action(resume_payload: typing.Any) -> TemporalWindowConfirmationAction:
+    action = resume_payload.get("action") if isinstance(resume_payload, dict) else resume_payload
+    if action not in {"continue_to_next_window", "finish_temporal_analysis"}:
+        raise ValueError(
+            "resume payload for temporal_window_confirmation must contain action "
+            "'continue_to_next_window' or 'finish_temporal_analysis'"
+        )
+    return typing.cast("TemporalWindowConfirmationAction", action)
+
+
+async def node_confirm_next_temporal_window(state: InitArchState) -> dict[str, typing.Any]:
+    logger.info("workflow.node.confirm_next_temporal_window")
+    guard_service = get_guard_service()
+    historical_service = get_historical_prep_service()
+    _record_workflow_event(state, EventType.WORKFLOW_STEP_STARTED, step_id=StepId.CONFIRM_NEXT_TEMPORAL_WINDOW)
+    try:
+        session = state["session"]
+        next_snapshot_at = historical_service.compute_next_window(session, today=dt.datetime.now(dt.UTC).date())
+
+        if next_snapshot_at is None:
+            result = await guard_service.advance_step(
+                session,
+                StepId.FINALIZE_PROGRESS,
+                progress_file_path=state["progress_file_path"],
+                note="No further temporal windows to analyze",
+            )
+        else:
+            resume_payload = interrupt(
+                {
+                    "interrupt_type": "temporal_window_confirmation",
+                    "current_snapshot_at": (
+                        session.historical_analysis.current_snapshot_at.isoformat()
+                        if session.historical_analysis.current_snapshot_at
+                        else None
+                    ),
+                    "next_snapshot_at": next_snapshot_at.isoformat(),
+                    "window_index": session.historical_analysis.window_index,
+                }
+            )
+            action = _extract_window_confirmation_action(resume_payload)
+            requested_result = await guard_service.request_next_temporal_window(
+                session,
+                next_snapshot_at=next_snapshot_at,
+                progress_file_path=state["progress_file_path"],
+            )
+            confirmed_result = await guard_service.confirm_next_temporal_window(
+                requested_result.session,
+                action=action,
+                progress_file_path=state["progress_file_path"],
+            )
+            session = confirmed_result.session
+
+            if action == "continue_to_next_window":
+                reset_repositories = [
+                    repository.model_copy(update={"checklist_items_completed": [], "analysis_status": "pending"})
+                    for repository in session.repositories
+                ]
+                session = session.model_copy(update={"repositories": reset_repositories})
+                result = await guard_service.advance_step(
+                    session,
+                    StepId.REFRESH_MAIN_BRANCHES,
+                    progress_file_path=state["progress_file_path"],
+                    note=f"Continuing temporal analysis for window {next_snapshot_at.isoformat()}",
+                )
+            else:
+                result = await guard_service.advance_step(
+                    session,
+                    StepId.FINALIZE_PROGRESS,
+                    progress_file_path=state["progress_file_path"],
+                    note="User stopped the temporal analysis loop",
+                )
+    except Exception as exc:  # noqa: BLE001
+        _record_workflow_event(
+            state,
+            EventType.WORKFLOW_STEP_FAILED,
+            step_id=StepId.CONFIRM_NEXT_TEMPORAL_WINDOW,
+            error=str(exc),
+        )
+        return {"step_error": str(exc), "retry_count": state.get("retry_count", 0) + 1}
+    _record_workflow_event(
+        state,
+        EventType.WORKFLOW_STEP_COMPLETED,
+        step_id=StepId.CONFIRM_NEXT_TEMPORAL_WINDOW,
+        next_step=result.session.current_step.value,
+    )
+    return _session_update_payload(result.session, last_guard_output=result.bridge_output)
 
 
 async def node_finalize_progress(state: InitArchState) -> dict[str, typing.Any]:

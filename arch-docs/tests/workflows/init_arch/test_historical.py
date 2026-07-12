@@ -28,6 +28,75 @@ def _make_session() -> WorkflowSessionRecord:
     )
 
 
+def test_compute_next_window_returns_none_without_resolved_snapshot() -> None:
+    service = HistoricalPrepService()
+    session = WorkflowSessionRecord(session_id="wf-1", product_name="arch-docs", analysis_scope="full")
+
+    assert service.compute_next_window(session, today=dt.date(2024, 6, 1)) is None
+
+
+def test_compute_next_window_returns_none_when_all_repos_are_at_remote_head() -> None:
+    service = HistoricalPrepService()
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="arch-docs",
+        analysis_scope="full",
+        historical_analysis={"current_snapshot_at": dt.date(2024, 4, 10)},
+        repositories=[
+            RepositoryExecution(
+                repository_name="svc-a",
+                analysis_target_commit="abc123",
+                remote_head_commit="abc123",
+            )
+        ],
+    )
+
+    assert service.compute_next_window(session, today=dt.date(2024, 6, 1)) is None
+
+
+def test_compute_next_window_returns_none_when_candidate_is_in_the_future() -> None:
+    service = HistoricalPrepService()
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="arch-docs",
+        analysis_scope="full",
+        historical_analysis={"current_snapshot_at": dt.date(2024, 4, 10)},
+        repositories=[
+            RepositoryExecution(
+                repository_name="svc-a",
+                analysis_target_commit="abc123",
+                remote_head_commit="def456",
+            )
+        ],
+    )
+
+    assert service.compute_next_window(session, today=dt.date(2024, 5, 1)) is None
+
+
+def test_compute_next_window_returns_candidate_date_when_more_history_remains() -> None:
+    service = HistoricalPrepService(
+        settings=GatewaySettings(
+            auth_secret="secret",
+            workflows={"init": {"historical_window_months": 3}},
+        )
+    )
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="arch-docs",
+        analysis_scope="full",
+        historical_analysis={"current_snapshot_at": dt.date(2024, 4, 10)},
+        repositories=[
+            RepositoryExecution(
+                repository_name="svc-a",
+                analysis_target_commit="abc123",
+                remote_head_commit="def456",
+            )
+        ],
+    )
+
+    assert service.compute_next_window(session, today=dt.date(2024, 12, 1)) == dt.date(2024, 7, 10)
+
+
 async def test_plan_repository_order_uses_window_months_from_settings() -> None:
     service = HistoricalPrepService(
         settings=GatewaySettings(
