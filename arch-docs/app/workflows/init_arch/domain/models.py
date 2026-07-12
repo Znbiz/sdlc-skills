@@ -192,6 +192,8 @@ class LlmTaskResult(pydantic.BaseModel):
     completed_actions: list[str] = pydantic.Field(default_factory=list)
     created_artifacts: list[str] = pydantic.Field(default_factory=list)
     open_questions_found: list[str] = pydantic.Field(default_factory=list)
+    diff_based_findings: list[str] = pydantic.Field(default_factory=list)
+    snapshot_based_findings: list[str] = pydantic.Field(default_factory=list)
     notes: str = ""
     raw_output: str = ""
 

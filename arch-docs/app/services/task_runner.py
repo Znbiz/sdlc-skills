@@ -9,9 +9,9 @@ import structlog
 
 from app.db.session import get_session
 from app.db.task_repo import upsert_cli_task
-from app.settings import get_gateway_settings
 from app.services.agent_pool import AgentPool, get_agent_pool
 from app.services.task_registry import CliTask, TaskRegistry, TaskStatus
+from app.settings import get_gateway_settings
 from app.workflows.init_arch.audit import WorkflowAuditService, get_workflow_audit_service
 from app.workflows.init_arch.domain import AuditActor, EventType, LlmTaskRequest, LlmTaskResult, WorkflowEventRecord
 
@@ -233,6 +233,8 @@ class LlmCliService:
             completed_actions=parsed_result.get("completed_actions", []),
             created_artifacts=parsed_result.get("created_artifacts", []),
             open_questions_found=parsed_result.get("open_questions_found", []),
+            diff_based_findings=parsed_result.get("diff_based_findings", []),
+            snapshot_based_findings=parsed_result.get("snapshot_based_findings", []),
             notes=parsed_result.get("notes", ""),
             raw_output=cli_task.task_result or "",
         )

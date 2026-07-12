@@ -300,7 +300,7 @@
 - добавлены тесты: `tests/services/test_init_arch_workflow.py` (`build_resume_value` для нового interrupt-типа, `confirm_init_arch_temporal_window` — happy path/wrong interrupt type/unsupported action, `submit_response_action_async` dispatch + guard на отсутствие `value`), `tests/api/rest/test_openai_facade.py` (новый route — happy path, 404, 422); полный прогон `tests/` — **339 passed**; `ruff check` на изменённые файлы — 0 новых замечаний (auto-fix поправил порядок импортов);
 - REST-специфичных тестов в `tests/api/rest/test_conversations.py` не добавлено осознанно: маршрут и диспетчер там уже покрыты существующими generic-тестами `submit_response_action`, а новая ветка `action_type` целиком лежит в уже протестированном `submit_response_action_async` — дублировать REST-уровень не требовалось, так как conversations.py не редактировался.
 
-### Этап 6. Передавать diff-context в worker prompts и task contracts
+### Этап 6. [x] Передавать diff-context в worker prompts и task contracts
 
 **Задача:** сделать temporal delta обязательной частью контекста для LLM worker и всех аналитических шагов по окну.
 
@@ -328,6 +328,19 @@
 - `arch-docs/app/workflows/shared_assets/init_arch/references/*.md`
 
 **Результат этапа:** worker больше не изучает временной срез “вслепую” по одному лишь checkout.
+
+**Статус выполнения:** выполнено
+
+**Мини-отчёт:**
+- в `app/workflows/init_arch/prompts.py` добавлен `_build_temporal_delta_block()`, который рендерит для активного репозитория (`analysis_status == "in_progress"`) блок `# Temporal delta текущего окна`: `snapshot date`, `snapshot commit`, `window_start_commit`/`window_end_commit`, `commit_range`, `commit_range_status`, commit log summary, diff stat summary и три списка путей (`changed_paths`/`renamed_paths`/`deleted_paths`); блок вставлен в `build_step_prompt()` между открытыми вопросами и reference-чеклистом, так что он доступен на каждом шаге, а не только на `analyze_repositories`;
+- для нетривиальных `commit_range_status` добавлены explanatory-заметки прямо в промпт: `NOT_STARTED` -> "delta ещё не построена", `NO_CHANGES` -> "изменений не было", `BASELINE_MISSING`/`INVALID_RANGE` -> явное указание не полагаться на diff и работать со snapshot state — это прямое отражение доменных инвариантов из Этапов 2-4, а не дублирующая эвристика;
+- реализовано разделение compact/expanded context, как того требовал план: `_format_path_list()` для обычных шагов обрезает списки путей до `_MAX_COMPACT_CHANGED_PATHS = 10` записей с суффиксом "... и ещё N путей", а для `analyze_repositories` (единственный шаг в `_EXPANDED_DIFF_CONTEXT_STEPS`) выводит полный список без обрезки — компромисс между шумностью промпта на обычных шагах и полнотой контекста там, где worker реально приоритизирует анализ по diff;
+- добавлена явная инструкция в секцию `# Инструкции`: сначала изучить temporal delta (commit range/log/diff stat), затем при необходимости читать итоговое состояние файлов в raw checkout-слое — воркер больше не может "начать вслепую" с checkout;
+- `LlmTaskRequest` менять не потребовалось (уже содержит нужный `prompt_text`), но `LlmTaskResult` (`app/workflows/init_arch/domain/models.py`) расширен двумя полями — `diff_based_findings: list[str]` и `snapshot_based_findings: list[str]` — чтобы worker мог явно разделить, какие выводы опираются на diff, а какие на snapshot state, как и требовал план ("при необходимости расширить LlmTaskRequest/expected schema"); JSON-контракт в промпте (`build_step_prompt`) обновлён теми же двумя полями, `app/services/task_runner.py::_parse_result`-consumer (`LlmCliService.run_task`) прокидывает их из распарсенного JSON в `LlmTaskResult`;
+- `app/workflows/init_arch/llm_worker.py` не потребовал изменений: это тонкая обёртка над `LlmCliService`, весь diff-context уже приходит через `prompt_text`, который строит `build_step_prompt()`;
+- `arch-docs/app/workflows/shared_assets/init_arch/references/*.md` не редактировались в этом проходе: reference-чеклисты описывают, что проверять по каждой категории (domain entities, contracts, integrations и т.д.), а не как читать temporal-контекст — это принадлежит общей секции промпта, а не per-checklist reference; при необходимости точечных упоминаний "изучи diff перед чтением файлов" для конкретных чеклистов это можно сделать отдельным точечным проходом, но глобальная инструкция уже покрывает это для всех шагов;
+- добавлены тесты в `tests/workflows/init_arch/test_prompts.py`: отсутствие активного репозитория, `NOT_STARTED`/`NO_CHANGES`-заметки, полный набор temporal-полей и path-списков для `DIFF_COLLECTED`, compact-обрезка на 15 путях для обычного шага и full-list без обрезки для `analyze_repositories`; и в `tests/services/test_task_runner.py` — парсинг `diff_based_findings`/`snapshot_based_findings` из JSON-ответа worker'а;
+- прогнаны `ruff check` (0 замечаний после ручного дробления длинных строк) и `pytest tests/` — **345 passed**; `--cov-report=term-missing` по `app/workflows/init_arch/prompts.py` — **100%** (56/56 строк), по `app/services/task_runner.py` — **96%**, непокрытые строки (264, 269-270, 296-298) — pre-existing код вне дельты этого этапа (fallback JSON-parse error path и module-level singleton getter).
 
 ### Этап 7. Добавить signal routing по diff внутри `init_arch`
 

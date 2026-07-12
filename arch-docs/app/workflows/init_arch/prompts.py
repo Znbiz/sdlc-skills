@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import typing
 
-from app.workflows.init_arch.domain import StepId
+from app.workflows.init_arch.domain import CommitRangeStatus, RepositoryExecution, StepId
 from app.workflows.init_arch.state import InitArchState
 from app.workflows.shared_assets import get_workflow_asset_loader
+
+_EXPANDED_DIFF_CONTEXT_STEPS: typing.Final[frozenset[str]] = frozenset({"analyze_repositories"})
+_MAX_COMPACT_CHANGED_PATHS: typing.Final[int] = 10
 
 _WORKFLOW_ASSET_NAMESPACE = "init_arch"
 _SKILL_MD_RELATIVE_PATH = "SKILL.md"
@@ -67,6 +70,70 @@ def _load_skill_md() -> str:
     return _SKILL_MD_CACHE
 
 
+def _format_path_list(paths: list[str], *, expanded: bool) -> str:
+    if not paths:
+        return "нет"
+    if expanded or len(paths) <= _MAX_COMPACT_CHANGED_PATHS:
+        return "\n".join(f"- {path}" for path in paths)
+    shown = "\n".join(f"- {path}" for path in paths[:_MAX_COMPACT_CHANGED_PATHS])
+    return f"{shown}\n- ... и ещё {len(paths) - _MAX_COMPACT_CHANGED_PATHS} путей"
+
+
+def _build_temporal_delta_block(repository: RepositoryExecution | None, *, expanded: bool) -> str:
+    if repository is None:
+        return "Нет активного репозитория в работе — temporal delta недоступна для этого шага."
+
+    if repository.commit_range_status is CommitRangeStatus.NOT_STARTED:
+        return "Temporal delta для этого репозитория ещё не построена (historical prep не выполнялся)."
+
+    status_notes: dict[CommitRangeStatus, str] = {
+        CommitRangeStatus.NO_CHANGES: (
+            "За период изменений в репозитории не было (snapshot commit совпадает с baseline)."
+        ),
+        CommitRangeStatus.BASELINE_MISSING: (
+            "Baseline недоступен (первое окно или репозиторий появился позже) — "
+            "delta не построена, доступен только snapshot state."
+        ),
+        CommitRangeStatus.INVALID_RANGE: (
+            "Commit range невалиден (переписанная история/force-push) — "
+            "не полагайся на diff, работай только со snapshot state."
+        ),
+    }
+
+    lines = [
+        f"Snapshot date: {repository.analysis_target_date or '—'}",
+        f"Snapshot commit: {repository.analysis_target_commit or '—'}",
+        f"Window start commit (baseline): {repository.window_start_commit or '—'}",
+        f"Window end commit: {repository.window_end_commit or '—'}",
+        f"Commit range: {repository.commit_range or '—'}",
+        f"Commit range status: {repository.commit_range_status.value}",
+    ]
+    note = status_notes.get(repository.commit_range_status)
+    if note:
+        lines.append(note)
+
+    lines.extend(
+        [
+            "",
+            "Commit log summary:",
+            repository.commit_log_summary or "нет",
+            "",
+            "Diff stat summary:",
+            repository.diff_stat_summary or "нет",
+            "",
+            "Изменённые пути:",
+            _format_path_list(repository.changed_paths, expanded=expanded),
+            "Переименованные пути:",
+            _format_path_list(repository.renamed_paths, expanded=expanded),
+            "Удалённые пути:",
+            _format_path_list(repository.deleted_paths, expanded=expanded),
+        ]
+    )
+    if repository.temporal_delta_note:
+        lines.extend(["", f"Заметка: {repository.temporal_delta_note}"])
+    return "\n".join(lines)
+
+
 def build_step_prompt(step_id: StepId | str, state: InitArchState, checklist_item_id: str = "") -> str:
     step_value = step_id.value if isinstance(step_id, StepId) else step_id
     skill_md = _load_skill_md()
@@ -77,9 +144,13 @@ def build_step_prompt(step_id: StepId | str, state: InitArchState, checklist_ite
     reference_text = _load_shared_asset(reference_path_rel) if reference_path_rel else ""
 
     completed = ", ".join(step.value for step in state["session"].completed_steps) or "нет"
-    current_repo = next(
-        (repo.repository_name for repo in state["session"].repositories if repo.analysis_status == "in_progress"),
-        "—",
+    current_repository = next(
+        (repo for repo in state["session"].repositories if repo.analysis_status == "in_progress"),
+        None,
+    )
+    current_repo = current_repository.repository_name if current_repository is not None else "—"
+    temporal_delta_block = _build_temporal_delta_block(
+        current_repository, expanded=step_value in _EXPANDED_DIFF_CONTEXT_STEPS
     )
     open_questions = (
         "\n".join(
@@ -112,6 +183,12 @@ Raw layer: {raw_workspace_dir}
 
 ---
 
+# Temporal delta текущего окна
+
+{temporal_delta_block}
+
+---
+
 # Reference-чеклист для этого шага
 
 {reference_text or "(нет дополнительного reference — следуй SKILL.md)"}
@@ -121,16 +198,21 @@ Raw layer: {raw_workspace_dir}
 # Инструкции
 
 Выполни шаг `{step_value}` строго по reference-чеклисту выше.
+Сначала изучи Temporal delta текущего окна выше — commit range, commit log и diff stat —
+и только затем при необходимости читай итоговое состояние файлов в raw checkout-слое.
 Работай только с файлами внутри {state["workspace_dir"]}.
 Raw checkout-слой расположен в {raw_workspace_dir}; используй его только для чтения/checkout исходников.
 Все knowledge-артефакты и synthesis-результаты пиши только в {state["arch_repo_dir"]}.
 Сервис оркестрирует workflow и сам управляет progress state.
 Если нужен progress bridge, его путь: {state["progress_file_path"]}; не используй его как источник решений.
+Разделяй выводы: какие из них опираются на temporal delta (diff), а какие — на итоговое snapshot-состояние.
 Выведи краткий структурированный JSON-отчёт о выполненных действиях в формате:
 {{
   "completed_actions": ["..."],
   "created_artifacts": ["..."],
   "open_questions_found": ["..."],
+  "diff_based_findings": ["..."],
+  "snapshot_based_findings": ["..."],
   "notes": "..."
 }}
 """

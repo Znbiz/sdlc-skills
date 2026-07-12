@@ -488,6 +488,16 @@ sequenceDiagram
   - явно зафиксированный `no_changes`.
 - `HistoricalPrepService` строит и хранит `commit_range`, `diff_stat_summary`, `changed_paths`, `commit_log_summary` (Stage 3), и `historical_prep_is_complete()` теперь валидирует их как обязательное условие готовности окна (Stage 4).
 
+### Worker Prompt Enrichment (Stage 6)
+
+Temporal delta текущего окна больше не остаётся только в domain state — она прокидывается в промпт worker'а на каждом шаге, а не только на `analyze_repositories`:
+
+- `build_step_prompt()` (`app/workflows/init_arch/prompts.py`) для активного репозитория (`analysis_status == "in_progress"`) рендерит секцию `# Temporal delta текущего окна`: `snapshot date`, `snapshot commit`, `window_start_commit`/`window_end_commit`, `commit_range`, `commit_range_status`, commit log summary, diff stat summary и списки `changed_paths`/`renamed_paths`/`deleted_paths`;
+- для нетривиальных статусов добавлена explanatory-заметка прямо в промпт: `not_started` — delta ещё не построена, `no_changes` — изменений не было, `baseline_missing`/`invalid_range` — явное указание не полагаться на diff и работать только со snapshot state;
+- context разделён на compact и expanded уровни: обычные шаги получают списки путей, обрезанные до 10 записей (`_MAX_COMPACT_CHANGED_PATHS`), `analyze_repositories` получает полный список без обрезки — там worker реально приоритизирует анализ по diff;
+- секция `# Инструкции` явно требует сначала изучить temporal delta (commit range/log/diff stat), и только затем при необходимости читать итоговое состояние файлов в raw checkout-слое;
+- `LlmTaskResult` (`app/workflows/init_arch/domain/models.py`) расширен полями `diff_based_findings: list[str]` и `snapshot_based_findings: list[str]`; JSON-контракт в промпте и парсинг в `LlmCliService.run_task()` (`app/services/task_runner.py`) обновлены симметрично, так что worker может явно разделить, какие выводы опираются на diff, а какие на snapshot state.
+
 Progress file path по-прежнему прокидывается в state как compatibility artifact:
 
 - `arch-doc/repo-initialization-progress.yaml`
@@ -686,7 +696,7 @@ Transport-level terminal states:
 
 ## Known Gaps
 
-1. Temporal historical prep строит `commit_range`, `diff_stat_summary`, `changed_paths` и `commit_log_summary` для окна и требует их как обязательный quality gate перед content-анализом (Stage 3-4 закрыты); domain-контракт, реальный graph loop-back и REST/OpenAI transport wiring для подтверждения следующего окна тоже готовы (Stage 5 полностью закрыт), но prompts/worker ещё не получают structured change context (Stage 6) — читай "Temporal Window Confirmation" в разделе Pause/Resume.
+1. Temporal historical prep строит `commit_range`, `diff_stat_summary`, `changed_paths` и `commit_log_summary` для окна и требует их как обязательный quality gate перед content-анализом (Stage 3-4 закрыты); domain-контракт, реальный graph loop-back и REST/OpenAI transport wiring для подтверждения следующего окна тоже готовы (Stage 5 полностью закрыт); prompts/worker теперь получают structured change context — compact/expanded temporal-delta блок и `diff_based_findings`/`snapshot_based_findings` в `LlmTaskResult` (Stage 6 закрыт) — читай "Worker Prompt Enrichment" и "Temporal Window Confirmation" в разделе Pause/Resume. Открыто: Stage 7 (diff-based signal routing/приоритизация глубины анализа) и Stage 8 (legacy `analysis_guard` interop tooling).
 2. Workflow graph больше не полностью линеен: `confirm_next_temporal_window` умеет зацикливаться на `refresh_main_branches` для следующего temporal-окна; richer branching/state machine semantics за пределами этого и conditional retry routing по-прежнему не реализованы.
 3. `progress_file_path` ещё существует как compatibility field, хотя long-term owner состояния должен быть persisted session state.
 4. OpenAI facade теперь экспонирует generic submit-action route (`POST /v1/responses/{response_id}/actions`, тот же `submit_response_action_async()`, что и REST), но это по-прежнему не полноценный аналог OpenAI Assistants API `submit_tool_outputs` — это custom-расширение facade, а не часть официальной OpenAI-спецификации.

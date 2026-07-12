@@ -1,7 +1,8 @@
+import datetime as dt
 from unittest.mock import patch
 
 from app.workflows.init_arch import prompts as prompts_module
-from app.workflows.init_arch.domain import RepositoryExecution, StepId, WorkflowSessionRecord
+from app.workflows.init_arch.domain import CommitRangeStatus, RepositoryExecution, StepId, WorkflowSessionRecord
 from app.workflows.init_arch.prompts import build_step_prompt
 from app.workflows.init_arch.state import InitArchState
 from app.workflows.shared_assets.loader import WorkflowAssetLoader
@@ -91,6 +92,110 @@ def test_build_step_prompt_includes_completed_steps():
         result = build_step_prompt("prepare_temp_workspace", state)
     assert "define_scope" in result
     assert "request_repository_list" in result
+
+
+def test_build_step_prompt_no_active_repository_has_no_delta():
+    state = _make_state()
+    with patch.object(prompts_module, "_load_skill_md", return_value="SKILL"):
+        result = build_step_prompt("define_scope", state)
+    assert "Нет активного репозитория в работе" in result
+
+
+def test_build_step_prompt_includes_temporal_delta_for_active_repository():
+    repo = RepositoryExecution(
+        repository_name="svc-a",
+        analysis_status="in_progress",
+        analysis_target_date=dt.date(2026, 1, 1),
+        analysis_target_commit="abc123",
+        window_start_commit="baseline000",
+        window_end_commit="abc123",
+        commit_range="baseline000..abc123",
+        commit_range_status=CommitRangeStatus.DIFF_COLLECTED,
+        commit_log_summary="abc123 fix bug",
+        diff_stat_summary="1 file changed",
+        changed_paths=["app/main.py"],
+        renamed_paths=[],
+        deleted_paths=["app/old.py"],
+        temporal_delta_note="важное замечание",
+    )
+    state = _make_state()
+    state["session"] = state["session"].model_copy(update={"repositories": [repo]})
+
+    with patch.object(prompts_module, "_load_skill_md", return_value="SKILL"):
+        result = build_step_prompt("assess_scope_and_domains", state)
+
+    assert "abc123" in result
+    assert "baseline000..abc123" in result
+    assert "diff_collected" in result
+    assert "app/main.py" in result
+    assert "app/old.py" in result
+    assert "важное замечание" in result
+    assert "Сначала изучи Temporal delta" in result
+
+
+def test_build_step_prompt_not_started_status_has_placeholder_note():
+    repo = RepositoryExecution(
+        repository_name="svc-a",
+        analysis_status="in_progress",
+        commit_range_status=CommitRangeStatus.NOT_STARTED,
+    )
+    state = _make_state()
+    state["session"] = state["session"].model_copy(update={"repositories": [repo]})
+
+    with patch.object(prompts_module, "_load_skill_md", return_value="SKILL"):
+        result = build_step_prompt("define_scope", state)
+
+    assert "ещё не построена" in result
+
+
+def test_build_step_prompt_no_changes_status_has_explanatory_note():
+    repo = RepositoryExecution(
+        repository_name="svc-a",
+        analysis_status="in_progress",
+        commit_range_status=CommitRangeStatus.NO_CHANGES,
+    )
+    state = _make_state()
+    state["session"] = state["session"].model_copy(update={"repositories": [repo]})
+
+    with patch.object(prompts_module, "_load_skill_md", return_value="SKILL"):
+        result = build_step_prompt("assess_scope_and_domains", state)
+
+    assert "изменений в репозитории не было" in result
+
+
+def test_build_step_prompt_compact_changed_paths_truncated_for_non_expanded_step():
+    repo = RepositoryExecution(
+        repository_name="svc-a",
+        analysis_status="in_progress",
+        commit_range_status=CommitRangeStatus.DIFF_COLLECTED,
+        commit_range="a..b",
+        changed_paths=[f"app/file_{i}.py" for i in range(15)],
+    )
+    state = _make_state()
+    state["session"] = state["session"].model_copy(update={"repositories": [repo]})
+
+    with patch.object(prompts_module, "_load_skill_md", return_value="SKILL"):
+        result = build_step_prompt("define_scope", state)
+
+    assert "и ещё 5 путей" in result
+
+
+def test_build_step_prompt_expanded_changed_paths_full_for_analyze_repositories():
+    repo = RepositoryExecution(
+        repository_name="svc-a",
+        analysis_status="in_progress",
+        commit_range_status=CommitRangeStatus.DIFF_COLLECTED,
+        commit_range="a..b",
+        changed_paths=[f"app/file_{i}.py" for i in range(15)],
+    )
+    state = _make_state()
+    state["session"] = state["session"].model_copy(update={"repositories": [repo]})
+
+    with patch.object(prompts_module, "_load_skill_md", return_value="SKILL"):
+        result = build_step_prompt("analyze_repositories", state)
+
+    assert "и ещё" not in result
+    assert "app/file_14.py" in result
 
 
 def test_load_skill_md_caches_result(tmp_path):

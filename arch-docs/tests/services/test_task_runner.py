@@ -385,6 +385,8 @@ class TestLlmCliService:
                 "completed_actions": ["updated scope"],
                 "created_artifacts": ["arch-doc/notes.md"],
                 "open_questions_found": [],
+                "diff_based_findings": ["новый endpoint появился в diff"],
+                "snapshot_based_findings": ["текущая структура каталогов"],
                 "notes": "ok",
             }
         )
@@ -396,6 +398,8 @@ class TestLlmCliService:
         mock_run.assert_awaited_once_with(cli_task)
         assert result.task_kind == LlmTaskKind.STEP_EXECUTION
         assert result.completed_actions == ["updated scope"]
+        assert result.diff_based_findings == ["новый endpoint появился в diff"]
+        assert result.snapshot_based_findings == ["текущая структура каталогов"]
         assert cli_task.workflow_id == "wf-1"
         assert cli_task.step_id == "define_scope"
         assert cli_task.expected_schema_name == "init_arch_v1"
