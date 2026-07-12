@@ -89,6 +89,7 @@ def build_step_prompt(step_id: StepId | str, state: InitArchState, checklist_ite
         )
         or "нет"
     )
+    raw_workspace_dir = state.get("raw_workspace_dir", f'{state["workspace_dir"]}/.temp')
 
     return f"""# Контекст навыка
 
@@ -102,6 +103,7 @@ def build_step_prompt(step_id: StepId | str, state: InitArchState, checklist_ite
 Продукт: {state["session"].product_name}
 Контур анализа: {state["session"].analysis_scope}
 Рабочий каталог: {state["workspace_dir"]}
+Raw layer: {raw_workspace_dir}
 Архитектурный репозиторий: {state["arch_repo_dir"]}
 Текущий репозиторий: {current_repo}
 Завершённые шаги: {completed}
@@ -120,7 +122,8 @@ def build_step_prompt(step_id: StepId | str, state: InitArchState, checklist_ite
 
 Выполни шаг `{step_value}` строго по reference-чеклисту выше.
 Работай только с файлами внутри {state["workspace_dir"]}.
-Все артефакты пиши в {state["arch_repo_dir"]}.
+Raw checkout-слой расположен в {raw_workspace_dir}; используй его только для чтения/checkout исходников.
+Все knowledge-артефакты и synthesis-результаты пиши только в {state["arch_repo_dir"]}.
 Сервис оркестрирует workflow и сам управляет progress state.
 Если нужен progress bridge, его путь: {state["progress_file_path"]}; не используй его как источник решений.
 Выведи краткий структурированный JSON-отчёт о выполненных действиях в формате:

@@ -115,7 +115,7 @@ analysis_progress:
 
   historical_analysis:
     mode: three_month_windows_from_oldest
-    window_months: 3
+    window_months: 3  # default init workflow window; may be overridden by runtime config
     status: <not_started|planned|commits_resolved|ready_for_analysis>
     anchor_repository: <самый-старый-репозиторий>
     anchor_created_at: <YYYY-MM-DD>

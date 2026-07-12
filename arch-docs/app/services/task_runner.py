@@ -9,6 +9,7 @@ import structlog
 
 from app.db.session import get_session
 from app.db.task_repo import upsert_cli_task
+from app.settings import get_gateway_settings
 from app.services.agent_pool import AgentPool, get_agent_pool
 from app.services.task_registry import CliTask, TaskRegistry, TaskStatus
 from app.workflows.init_arch.audit import WorkflowAuditService, get_workflow_audit_service
@@ -77,6 +78,11 @@ def _is_auth_error(engine_name: str, exit_code: int, stderr_text: str) -> bool:
     return exit_code in _CODEX_AUTH_ERROR_EXIT_CODES or (
         exit_code != 0 and "auth" in stderr_text.lower() and "error" in stderr_text.lower()
     )
+
+
+def _clamp_timeout_seconds(timeout_seconds: int) -> int:
+    max_timeout = get_gateway_settings().workflows.init.max_step_timeout_seconds
+    return max(1, min(timeout_seconds, max_timeout))
 
 
 async def _drain_stream(reader: asyncio.StreamReader, lines: list[str]) -> None:
@@ -242,7 +248,7 @@ class LlmCliService:
             repository_name=request.repository_name or None,
             domain_id=request.domain_id or None,
             expected_schema_name=request.expected_schema_name,
-            timeout_seconds=request.timeout_seconds,
+            timeout_seconds=_clamp_timeout_seconds(request.timeout_seconds),
         )
 
     def _bind_request_metadata(self, cli_task: CliTask, request: LlmTaskRequest) -> None:

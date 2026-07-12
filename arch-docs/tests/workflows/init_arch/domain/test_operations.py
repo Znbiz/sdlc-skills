@@ -4,6 +4,7 @@ import pytest
 
 from app.workflows.init_arch.domain import (
     AnalysisTargetCommitStatus,
+    CommitRangeStatus,
     DomainDefinition,
     DomainStrategy,
     OpenQuestionRecord,
@@ -18,6 +19,7 @@ from app.workflows.init_arch.domain.operations import (
     close_question,
     fail_step,
     finalize_session,
+    historical_prep_is_complete,
     mark_checklist_item,
     open_question,
     record_answer,
@@ -107,6 +109,152 @@ def test_advance_step_requires_resolved_snapshot_targets_for_historical_gate() -
 
     with pytest.raises(DomainOperationError, match="historical prep"):
         advance_step(session, StepId.ASSESS_SCOPE_AND_DOMAINS)
+
+
+def test_historical_prep_is_incomplete_when_repository_order_is_not_sorted() -> None:
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="arch-docs",
+        analysis_scope="full",
+        historical_analysis={
+            "anchor_repository_name": "svc-a",
+            "anchor_created_at": dt.date(2024, 1, 1),
+            "current_snapshot_at": dt.date(2024, 4, 1),
+            "ordered_repository_names": ["svc-b", "svc-a"],
+        },
+        repositories=[
+            RepositoryExecution(
+                repository_name="svc-a",
+                created_at=dt.date(2024, 1, 1),
+                analysis_target_date=dt.date(2024, 4, 1),
+                analysis_target_commit_status=AnalysisTargetCommitStatus.RESOLVED,
+            ),
+            RepositoryExecution(
+                repository_name="svc-b",
+                created_at=dt.date(2024, 2, 1),
+                analysis_target_date=dt.date(2024, 4, 1),
+                analysis_target_commit_status=AnalysisTargetCommitStatus.RESOLVED,
+            ),
+        ],
+    )
+
+    assert historical_prep_is_complete(session) is False
+
+
+def test_historical_prep_is_incomplete_when_snapshot_date_is_not_propagated() -> None:
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="arch-docs",
+        analysis_scope="full",
+        historical_analysis={
+            "anchor_repository_name": "svc-a",
+            "anchor_created_at": dt.date(2024, 1, 1),
+            "current_snapshot_at": dt.date(2024, 4, 1),
+            "ordered_repository_names": ["svc-a", "svc-b"],
+        },
+        repositories=[
+            RepositoryExecution(
+                repository_name="svc-a",
+                created_at=dt.date(2024, 1, 1),
+                analysis_target_date=dt.date(2024, 4, 1),
+                analysis_target_commit_status=AnalysisTargetCommitStatus.RESOLVED,
+            ),
+            RepositoryExecution(
+                repository_name="svc-b",
+                created_at=dt.date(2024, 2, 1),
+                analysis_target_date=dt.date(2024, 5, 1),
+                analysis_target_commit_status=AnalysisTargetCommitStatus.RESOLVED,
+            ),
+        ],
+    )
+
+    assert historical_prep_is_complete(session) is False
+
+
+def test_historical_prep_requires_temporal_range_for_non_first_window() -> None:
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="arch-docs",
+        analysis_scope="full",
+        historical_analysis={
+            "anchor_repository_name": "svc-a",
+            "anchor_created_at": dt.date(2024, 1, 1),
+            "previous_snapshot_at": dt.date(2024, 3, 1),
+            "current_snapshot_at": dt.date(2024, 4, 1),
+            "ordered_repository_names": ["svc-a"],
+        },
+        repositories=[
+            RepositoryExecution(
+                repository_name="svc-a",
+                created_at=dt.date(2024, 1, 1),
+                analysis_target_date=dt.date(2024, 4, 1),
+                analysis_target_commit="abc123",
+                analysis_target_commit_status=AnalysisTargetCommitStatus.RESOLVED,
+                commit_range_status=CommitRangeStatus.NOT_STARTED,
+            )
+        ],
+    )
+
+    assert historical_prep_is_complete(session) is False
+
+
+def test_historical_prep_requires_window_end_to_match_target_commit() -> None:
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="arch-docs",
+        analysis_scope="full",
+        historical_analysis={
+            "anchor_repository_name": "svc-a",
+            "anchor_created_at": dt.date(2024, 1, 1),
+            "previous_snapshot_at": dt.date(2024, 3, 1),
+            "current_snapshot_at": dt.date(2024, 4, 1),
+            "ordered_repository_names": ["svc-a"],
+        },
+        repositories=[
+            RepositoryExecution(
+                repository_name="svc-a",
+                created_at=dt.date(2024, 1, 1),
+                analysis_target_date=dt.date(2024, 4, 1),
+                analysis_target_commit="abc123",
+                analysis_target_commit_status=AnalysisTargetCommitStatus.RESOLVED,
+                window_start_commit="prev123",
+                window_end_commit="other999",
+                commit_range="prev123..abc123",
+                commit_range_status=CommitRangeStatus.RANGE_RESOLVED,
+            )
+        ],
+    )
+
+    assert historical_prep_is_complete(session) is False
+
+
+def test_historical_prep_accepts_baseline_missing_for_non_first_window() -> None:
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="arch-docs",
+        analysis_scope="full",
+        historical_analysis={
+            "anchor_repository_name": "svc-a",
+            "anchor_created_at": dt.date(2024, 1, 1),
+            "previous_snapshot_at": dt.date(2024, 3, 1),
+            "current_snapshot_at": dt.date(2024, 4, 1),
+            "ordered_repository_names": ["svc-a"],
+        },
+        repositories=[
+            RepositoryExecution(
+                repository_name="svc-a",
+                created_at=dt.date(2024, 1, 1),
+                analysis_target_date=dt.date(2024, 4, 1),
+                analysis_target_commit="abc123",
+                analysis_target_commit_status=AnalysisTargetCommitStatus.RESOLVED,
+                window_end_commit="abc123",
+                commit_range_status=CommitRangeStatus.BASELINE_MISSING,
+                temporal_delta_note="Previous snapshot commit is unavailable for this repository.",
+            )
+        ],
+    )
+
+    assert historical_prep_is_complete(session) is True
 
 
 def test_register_repository_and_mark_checklist_item() -> None:

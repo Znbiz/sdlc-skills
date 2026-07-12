@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import datetime as dt
+
 from app.workflows.init_arch.domain.models import (
     AnalysisTargetCommitStatus,
     ArtifactRecord,
+    CommitRangeStatus,
     OpenQuestionRecord,
     RepositoryExecution,
     StepId,
@@ -178,5 +181,34 @@ def historical_prep_is_complete(session: WorkflowSessionRecord) -> bool:
         repository.created_at is not None
         and repository.analysis_target_date == historical.current_snapshot_at
         and repository.analysis_target_commit_status in allowed_statuses
+        and _repository_temporal_window_is_valid(repository, historical_previous_snapshot_at=historical.previous_snapshot_at)
         for repository in repositories
     )
+
+
+def _repository_temporal_window_is_valid(
+    repository: RepositoryExecution,
+    *,
+    historical_previous_snapshot_at: dt.date | None,
+) -> bool:
+    if not repository.analysis_target_commit:
+        return repository.analysis_target_commit_status is AnalysisTargetCommitStatus.MISSING
+
+    if repository.window_end_commit and repository.window_end_commit != repository.analysis_target_commit:
+        return False
+
+    if historical_previous_snapshot_at is None:
+        return True
+
+    if repository.commit_range_status is CommitRangeStatus.BASELINE_MISSING:
+        return True
+
+    allowed_range_statuses = {
+        CommitRangeStatus.RANGE_RESOLVED,
+        CommitRangeStatus.DIFF_COLLECTED,
+        CommitRangeStatus.NO_CHANGES,
+    }
+    if repository.commit_range_status not in allowed_range_statuses:
+        return False
+
+    return bool(repository.commit_range and repository.window_end_commit == repository.analysis_target_commit)

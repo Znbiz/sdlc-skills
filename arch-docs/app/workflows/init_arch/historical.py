@@ -12,6 +12,7 @@ from app.workflows.init_arch.audit import WorkflowAuditService, get_workflow_aud
 from app.workflows.init_arch.domain import (
     AnalysisTargetCommitStatus,
     AuditActor,
+    CommitRangeStatus,
     EventType,
     RepositoryExecution,
     WorkflowEventRecord,
@@ -97,6 +98,17 @@ class HistoricalPrepService:
                     "analysis_target_date": snapshot_at,
                     "analysis_target_commit": "",
                     "analysis_target_commit_status": AnalysisTargetCommitStatus.PENDING,
+                    "previous_analysis_target_commit": "",
+                    "window_start_commit": "",
+                    "window_end_commit": "",
+                    "commit_range": "",
+                    "commit_range_status": CommitRangeStatus.NOT_STARTED,
+                    "diff_stat_summary": "",
+                    "commit_log_summary": "",
+                    "changed_paths": [],
+                    "renamed_paths": [],
+                    "deleted_paths": [],
+                    "temporal_delta_note": "",
                 }
             )
             for repository in in_scope_repositories
@@ -108,6 +120,7 @@ class HistoricalPrepService:
                     update={
                         "anchor_repository_name": anchor_repository.repository_name,
                         "anchor_created_at": anchor_created_at,
+                        "previous_snapshot_at": None,
                         "current_snapshot_at": snapshot_at,
                         "ordered_repository_names": [repository.repository_name for repository in ordered_repositories],
                         "prep_notes": (

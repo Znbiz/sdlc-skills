@@ -57,6 +57,29 @@ async def test_compile_navigation_writes_compiled_index_and_report(tmp_path: Pat
 
 
 @pytest.mark.asyncio
+async def test_valid_arch_repo_smoke_bootstrap_compile_and_lint(tmp_path: Path) -> None:
+    fixture_root = Path("/Users/aanekraso2/github.com/znbiz/sdlc/init-repo-arch-skill/tests/fixtures/valid_arch_repo")
+    arch_repo_dir = tmp_path / "arch-repo"
+    shutil.copytree(fixture_root, arch_repo_dir)
+    service = KnowledgeArtifactService()
+
+    session = _make_session()
+    bootstrapped = await service.bootstrap_arch_repo(session, arch_repo_dir=str(arch_repo_dir))
+    compiled = await service.compile_navigation(bootstrapped.session, arch_repo_dir=str(arch_repo_dir))
+    linted = await service.lint_knowledge(compiled.session, arch_repo_dir=str(arch_repo_dir))
+
+    index_text = (arch_repo_dir / "wiki" / "index.md").read_text(encoding="utf-8")
+    log_text = (arch_repo_dir / "wiki" / "log.md").read_text(encoding="utf-8")
+    report_text = (arch_repo_dir / "wiki" / "maps" / "compile-report.md").read_text(encoding="utf-8")
+    assert "[Реестр фич](../features-index.md)" in index_text
+    assert "## Запись:" in log_text
+    assert "## Coverage" in report_text
+    assert "Frontmatter coverage: `6/6` (100%)" in report_text
+    assert linted.summary.startswith("Knowledge lint passed with ")
+    assert not any(issue.startswith("ERROR:") for issue in linted.lint_issues)
+
+
+@pytest.mark.asyncio
 async def test_lint_knowledge_raises_on_blocking_issues(tmp_path: Path) -> None:
     service = KnowledgeArtifactService()
     arch_repo_dir = tmp_path / "arch-repo"

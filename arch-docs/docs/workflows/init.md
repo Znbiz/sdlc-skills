@@ -260,7 +260,52 @@ sequenceDiagram
 - собирает repository facts;
 - планирует snapshot window;
 - резолвит target commits и checkout на snapshot;
+- в текущей реализации готовит snapshot-state, а целевой temporal contract дополнительно требует range/diff context для каждого окна;
 - подготавливает state для historical gate.
+
+## Runtime Hardening
+
+### Timeout и parallelism policy
+
+- `LlmCliService` больше не доверяет безусловно входному `timeout_seconds`: для `init_arch` worker-задач runtime применяет `min(request.timeout_seconds, WORKFLOWS__INIT__MAX_STEP_TIMEOUT_SECONDS)`;
+- дефолтный hard cap для шага — `900` секунд; значение можно изменить через `WORKFLOWS__INIT__MAX_STEP_TIMEOUT_SECONDS`;
+- параллелизм CLI-агентов по-прежнему ограничивается общим `AgentPool`, который настраивается через `AGENT_POOL_SIZE`; именно этот semaphore является продуктовым bulkhead для тяжёлых analysis/synthesis шагов;
+- это означает, что даже при нескольких одновременных `conversation`-запусках сервис держит bounded число внешних Codex/Claude subprocess.
+
+### Workspace layout
+
+- `workspace_dir` остаётся корнем mounted product workspace;
+- raw-layer по умолчанию находится в `WORKFLOWS__INIT__RAW_WORKSPACE_SUBDIR=.temp`;
+- knowledge/synthesis layer по умолчанию находится в `WORKFLOWS__INIT__ARCH_REPO_DIRNAME=arch-doc`;
+- при старте `init_arch` backend валидирует layout и отклоняет конфигурацию, где `arch_repo_dir` попадает внутрь raw-layer;
+- prompt для worker теперь явно разводит raw checkout layer и knowledge output layer: `.temp` разрешён только для чтения/checkout, `arch-doc` — только для synthesis-артефактов.
+
+### Audit retention и masking
+
+- persisted `cli_tasks.prompt_text` ограничивается `AUDIT__MAX_PROMPT_CHARS` (default `12000`);
+- persisted `task_result` и `stdout_output` ограничиваются `AUDIT__MAX_OUTPUT_CHARS` (default `16000`);
+- persisted `task_error` и `stderr_output` ограничиваются `AUDIT__MAX_ERROR_CHARS` (default `8000`);
+- перед записью в БД runtime маскирует bearer tokens и inline-секреты вида `*_TOKEN=...`, `*_SECRET=...`, `*_PASSWORD=...`, `*_API_KEY=...`;
+- усечение применяется уже после masking, с сохранением целого маркера `[REDACTED]`, чтобы forensic trail оставался читаемым.
+
+## Deployment Notes
+
+### Docker Compose env vars
+
+`arch-docs/docker-compose.yml` теперь публикует и документирует минимальный hardening-набор:
+
+- `AGENT_POOL_SIZE` — верхняя граница параллельных CLI worker subprocess;
+- `INIT_ARCH_MAX_STEP_TIMEOUT_SECONDS` — hard cap для отдельных шагов `init_arch`;
+- `INIT_ARCH_RAW_WORKSPACE_SUBDIR` — имя raw-layer каталога внутри workspace;
+- `INIT_ARCH_ARCH_REPO_DIRNAME` — имя synthesis/knowledge каталога внутри workspace;
+- `AUDIT_MAX_PROMPT_CHARS`, `AUDIT_MAX_OUTPUT_CHARS`, `AUDIT_MAX_ERROR_CHARS` — лимиты persisted audit payload.
+
+### Volume layout
+
+- `workspace:/workspace` — общий volume с исходным продуктовым repo и generated `arch-doc/`;
+- `codex-auth:/home/appuser/.codex` и `claude-auth:/home/appuser/.claude` — отдельные volumes под auth state CLI-агентов;
+- `./skills:/app/skills:ro` — read-only skill bundle, не смешанный с runtime workspace;
+- PostgreSQL хранит execution dialog и task/workflow metadata независимо от volumes с checkout-данными.
 
 Код: [historical.py](../../app/workflows/init_arch/historical.py)
 
@@ -328,8 +373,8 @@ sequenceDiagram
 
 - `InitArchState` — transport/runtime envelope для конкретного прогона `langgraph`: хранит `session`, пути workspace/arch-repo, engine, timeout, retry state и последние результаты guard/worker вызовов.
 - `WorkflowSessionRecord` — canonical service-owned состояние workflow: текущий шаг, завершённые шаги, список репозиториев, historical context, knowledge artifacts и open questions.
-- `RepositoryExecution` — состояние анализа одного репозитория: его metadata, выбранный snapshot commit, strategy/domain breakdown и progress по checklist item-ам.
-- `HistoricalAnalysisState` — общий temporal context workflow: anchor repo, snapshot date и порядок обхода репозиториев.
+- `RepositoryExecution` — состояние анализа одного репозитория: его metadata, выбранный snapshot commit, strategy/domain breakdown и progress по checklist item-ам; target contract для следующих этапов добавляет сюда temporal delta текущего окна.
+- `HistoricalAnalysisState` — общий temporal context workflow: anchor repo, snapshot date и порядок обхода репозиториев; target contract расширяет его до range-aware timeline state.
 - `OpenQuestionRecord` — один вопрос, который сервис держит в interview loop, включая статус, связанные репозитории, target artifacts и ответ пользователя.
 - `ArtifactRecord` — запись об артефакте knowledge-слоя с типом, трассировкой источников и последним шагом, который его обновлял.
 
@@ -343,7 +388,19 @@ sequenceDiagram
 - `repositories[*].analysis_target_date`
 - `repositories[*].analysis_target_commit`
 - `repositories[*].analysis_target_commit_status`
+- `repositories[*].previous_analysis_target_commit`
+- `repositories[*].window_start_commit`
+- `repositories[*].window_end_commit`
+- `repositories[*].commit_range`
+- `repositories[*].commit_range_status`
+- `repositories[*].diff_stat_summary`
+- `repositories[*].commit_log_summary`
+- `repositories[*].changed_paths`
+- `repositories[*].renamed_paths`
+- `repositories[*].deleted_paths`
+- `repositories[*].temporal_delta_note`
 - `historical_analysis.anchor_repository_name`
+- `historical_analysis.previous_snapshot_at`
 - `historical_analysis.current_snapshot_at`
 - `historical_analysis.ordered_repository_names`
 - `artifacts[*].artifact_path`
@@ -355,8 +412,63 @@ sequenceDiagram
 
 - `current_step` и `completed_steps` определяют, где именно находится orchestrator и какие transition checks уже можно проходить без повторного выполнения шагов.
 - `repositories[*].created_at`, `main_branch`, `remote_head_commit`, `analysis_target_date`, `analysis_target_commit`, `analysis_target_commit_status` нужны для historical prep и для доказуемого выбора snapshot состояния каждого repo.
-- `historical_analysis.anchor_repository_name`, `current_snapshot_at`, `ordered_repository_names` фиксируют общий temporal baseline, от которого зависит порядок анализа и quality gate перед domain/scope шагами.
+- `repositories[*].previous_analysis_target_commit`, `window_start_commit`, `window_end_commit`, `commit_range`, `commit_range_status`, `diff_stat_summary`, `commit_log_summary`, `changed_paths`, `renamed_paths`, `deleted_paths`, `temporal_delta_note` образуют typed temporal-delta слой для конкретного repository-window и дают workflow возможность валидировать range-aware prep до запуска содержательного анализа.
+- `historical_analysis.anchor_repository_name`, `previous_snapshot_at`, `current_snapshot_at`, `ordered_repository_names` фиксируют общий temporal baseline, от которого зависит порядок анализа и quality gate перед domain/scope шагами.
 - `artifacts[*].artifact_path`, `artifact_kind`, `source_refs`, `last_updated_step` образуют artifact registry: сервис знает, какие knowledge-документы уже были созданы, чем они являются и из какого шага/источника появились.
+
+### Commit Range Status
+
+- `not_started` — temporal delta для окна ещё не строилась; допустимо только до range-aware prep.
+- `baseline_missing` — snapshot commit найден, но baseline предыдущего окна явно отсутствует и это зафиксировано как допустимый special-case.
+- `range_resolved` — start/end commits и `commit_range` определены, но diff summaries ещё не собраны.
+- `diff_collected` — range и основные summaries (`diff_stat_summary`, `commit_log_summary`, path lists) уже собраны.
+- `no_changes` — диапазон окна вырожденный, новых commit нет, но temporal prep выполнен осознанно.
+- `invalid_range` — сервис определил inconsistent или unusable range; downstream historical gate не должен пропускать такой repo.
+
+## Temporal Contract
+
+Ниже зафиксирован нормативный contract для diff-aware temporal analysis, который обязателен для следующих этапов развития `init_arch`, даже если текущая backend-реализация ещё не закрывает его полностью.
+
+### Glossary
+
+- `snapshot_date` — дата текущего временного окна, для которой строится состояние кода.
+- `snapshot_commit` — commit конкретного репозитория, выбранный не позже `snapshot_date`.
+- `previous_snapshot_commit` — commit того же репозитория из предыдущего завершённого окна.
+- `window_start_commit` — baseline commit текущего окна; обычно совпадает с `previous_snapshot_commit`.
+- `window_end_commit` — верхняя граница окна; должен совпадать с `snapshot_commit`.
+- `commit_range` — нормализованное представление интервала изменений между `window_start_commit` и `window_end_commit`.
+- `diff_stat_summary` — summary `git diff --stat` для текущего окна.
+- `changed_paths` — нормализованный список путей из `git diff --name-status`, включая rename/delete semantics.
+- `commit_log_summary` — summary commit history по `git log` для текущего окна.
+
+### Window Rules
+
+- Любое temporal окно после первого рассматривается как пара: `state at snapshot` плюс `changes since previous snapshot`.
+- Для первого окна допустим special-case baseline:
+  - либо `repo created_at baseline`;
+  - либо первый доступный commit в истории;
+  - этот случай должен быть отражён явно, а не скрыт пустым range.
+- Репозиторий может не иметь новых commit внутри текущего окна. Это не ошибка:
+  - `snapshot_commit` всё равно выбирается как последний commit не позже `snapshot_date`;
+  - если он совпадает с `previous_snapshot_commit`, temporal delta для окна должна маркироваться как `no_changes`;
+  - такой repo остаётся валидным участником общего product snapshot даже если другие repos менялись недавно.
+- Репозиторий может также временно не иметь commit на раннем окне, если он появился позже общего `snapshot_date`; это должно давать явный `missing`/`baseline_missing` статус для этого repo, но не должно ломать весь workflow.
+- Если история неполная, baseline недоступен или ancestry не строится корректно, workflow обязан зафиксировать это как отдельный статус temporal delta, а не считать prep успешным молча.
+- Empty/degenerate delta допустима только как явно помеченный случай:
+  - `window_start_commit == window_end_commit`;
+  - либо `baseline missing` для первого окна;
+  - либо подтверждённый `no changes`.
+
+### Downstream Contract
+
+- `assess_scope_and_domains` и `analyze_repositories` не должны считать historical prep завершённым, если подготовлен только checkout на дату без delta-context.
+- Checkout snapshot-state остаётся обязательным, но сам по себе он недостаточен для diff-aware temporal reasoning.
+- Отсутствие новых commit в отдельном репозитории внутри окна не должно считаться failure condition: для такого repo допустим stable snapshot с `no_changes`.
+- Target quality gate для окна должен подтверждать не только `snapshot_commit`, но и наличие одного из состояний:
+  - валидный `commit_range` с diff metadata;
+  - явно зафиксированный `baseline_missing`;
+  - явно зафиксированный `no_changes`.
+- Текущая реализация backend ещё snapshot-only: `HistoricalPrepService` и `historical_prep_is_complete()` пока не хранят и не валидируют `commit_range`, `diff_stat_summary`, `changed_paths`, `commit_log_summary`. Это осознанный implementation gap, а не часть целевого контракта.
 
 Progress file path по-прежнему прокидывается в state как compatibility artifact:
 
@@ -397,6 +509,17 @@ Resume semantics:
 - все target commit statuses входят в `{resolved, checked_out, missing}`.
 
 Код: [operations.py](../../app/workflows/init_arch/domain/operations.py)
+
+### Target Gate For Diff-Aware Windows
+
+Нормативно для temporal-diff режима этого недостаточно. Целевой gate должен дополнительно требовать:
+
+- вычисленный `window_end_commit`, совпадающий с `snapshot_commit`;
+- `window_start_commit` или явно зафиксированный `baseline_missing`;
+- `commit_range` либо явно помеченный `no_changes`;
+- собранные `diff_stat_summary`, `changed_paths`, `commit_log_summary` для непустого окна.
+
+До реализации этих полей сервис не должен интерпретировать checkout-only historical prep как полную готовность temporal analysis, даже если текущий guard ещё пропускает такой state.
 
 ### Step transition checks
 
@@ -495,14 +618,26 @@ Transport-level terminal states:
 Не реализовано:
 
 - facade-level actions для long-running OpenAI clients (`resume`, `answer_question`, `cancel`);
-- полный parity с `init-repo-arch-skill` по knowledge bootstrap/index/lint/compile.
+- полноценный OpenAI-shaped action loop для `requires_action` поверх всех long-running workflow.
+
+## Regression Coverage
+
+На июль 2026 workflow покрыт не только node/unit тестами, но и несколькими service-level parity/regression срезами:
+
+- `tests/services/test_init_arch_workflow.py` проверяет `run_workflow` на happy path, interrupt path и failure path, включая persistence промежуточных step updates и terminal status;
+- `tests/workflows/init_arch/domain/test_operations.py` отдельно фиксирует historical gate invariants: порядок `ordered_repository_names` должен совпадать с сортировкой по `created_at`, а `current_snapshot_at` обязан быть распространён на все in-scope repositories;
+- `tests/workflows/init_arch/test_knowledge.py` содержит smoke на реальном fixture `valid_arch_repo` и прогоняет service-owned knowledge pipeline `bootstrap -> compile -> lint`;
+- `tests/api/rest/test_conversations.py`, `tests/mcp/test_mcp_server.py` и `tests/db/test_workflow_repo.py` страхуют conversation-first transport, MCP entrypoint и persisted execution dialog/read-model.
+
+Это не означает, что transport уже полностью эквивалентен всем будущим OpenAI-compatible action semantics, но означает, что текущий service-owned workflow, historical prep, knowledge pipeline и transport/persistence regressions ловятся тестами до реального запуска.
 
 ## Known Gaps
 
-1. Workflow graph остаётся линейным; richer branching/state machine semantics ещё не вынесены за пределы conditional retry routing.
-2. `progress_file_path` ещё существует как compatibility field, хотя long-term owner состояния должен быть persisted session state.
-3. OpenAI facade пока не экспонирует submit actions для `requires_action` response и поэтому не заменяет внутренний conversation-first transport полностью.
-4. `chat/completions` специально ограничен `arch-docs-query` и не должен использоваться как псевдо-чат для `init_arch`/`update_arch`.
+1. Temporal historical prep пока snapshot-only: сервис резолвит `snapshot_commit`, но ещё не строит `commit_range`, `diff_stat_summary`, `changed_paths` и `commit_log_summary` для окна.
+2. Workflow graph остаётся линейным; richer branching/state machine semantics ещё не вынесены за пределы conditional retry routing.
+3. `progress_file_path` ещё существует как compatibility field, хотя long-term owner состояния должен быть persisted session state.
+4. OpenAI facade пока не экспонирует submit actions для `requires_action` response и поэтому не заменяет внутренний conversation-first transport полностью.
+5. `chat/completions` специально ограничен `arch-docs-query` и не должен использоваться как псевдо-чат для `init_arch`/`update_arch`.
 
 ## Связанные Документы
 

@@ -9,6 +9,7 @@ class InitArchState(typing.TypedDict):
     session_id: str
     session: WorkflowSessionRecord
     workspace_dir: str
+    raw_workspace_dir: str
     arch_repo_dir: str
     engine_name: str
     timeout_seconds: int

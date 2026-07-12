@@ -56,11 +56,44 @@ Markdown/YAML артефакты, создаваемые в архитектур
 1. Зарегистрировать все репозитории с `created_at`.
 2. Зафиксировать `main_branch` и доступный `remote_head_commit`.
 3. Найти самый старый репозиторий.
-4. Вычислить первый `snapshot date` как `created_at + 3 месяца`.
-5. Для каждого репозитория найти commit не позже общего `snapshot date`.
-6. Только после этого переходить к `assess_scope_and_domains` и `analyze_repositories`.
+4. Вычислить первый `snapshot date` как `created_at + historical_window_months` для workflow `init` (`3` месяца по умолчанию, но параметр конфигурируется).
+5. Для каждого репозитория найти `snapshot commit` не позже общего `snapshot date`.
+6. Для каждого репозитория подготовить temporal delta текущего окна: baseline, `commit_range`, `git log`, `git diff --stat`, `git diff --name-status`.
+7. Только после этого переходить к `assess_scope_and_domains` и `analyze_repositories`.
 
 Это не дополнительный режим и не optional prep-ветка. Для `init-repo-arch-skill` это обязательная линейная часть стандартного workflow.
+
+## Temporal contract
+
+Для `init-repo-arch-skill` temporal analysis всегда трактуется как пара:
+
+- `snapshot-state` — код в состоянии на `snapshot date`;
+- `temporal-delta` — изменения, которые привели систему к этому состоянию с прошлого окна.
+
+Обязательный glossary:
+
+- `snapshot_date`
+- `snapshot_commit`
+- `previous_snapshot_commit`
+- `window_start_commit`
+- `window_end_commit`
+- `commit_range`
+- `diff_stat_summary`
+- `changed_paths`
+- `commit_log_summary`
+
+Правила окна:
+
+- Для любого окна после первого `window_start_commit` обычно совпадает с `previous_snapshot_commit`, а `window_end_commit` должен совпадать с `snapshot_commit`.
+- Для первого окна допустим special-case: baseline берётся от `created_at`/первого доступного commit и помечается явно, а не скрывается пустым diff.
+- Репозиторий не обязан иметь коммиты внутри каждого окна. Если его последний доступный commit старше текущего окна, workflow всё равно должен отработать:
+  - `snapshot_commit` выбирается как последний commit не позже `snapshot_date`;
+  - если в предыдущем окне уже был выбран тот же commit, delta текущего окна фиксируется как `no_changes`;
+  - это нормальный сценарий для редко меняющихся или временно неактивных репозиториев, а не ошибка historical prep.
+- Если на дату окна репозиторий ещё не существовал или для него вообще нет commit не позже `snapshot_date`, это отдельный случай `baseline_missing` / `missing`, но он не должен ломать весь `init` workflow.
+- Если история неполная, ancestry не строится или baseline отсутствует, это нужно фиксировать отдельным статусом temporal delta, а не считать historical prep завершённым автоматически.
+- Empty/degenerate delta допустима только как явно помеченный случай: `no_changes`, `baseline_missing` или `window_start_commit == window_end_commit`.
+- Downstream analysis не должен считать historical prep завершённым, если подготовлен только checkout на дату без delta-context.
 
 Рекомендуемый CLI минимален. По умолчанию агент должен использовать только 5 команд:
 
@@ -104,11 +137,13 @@ status → загрузить reference → выполнить один шаг �
 Для `init-repo-arch-skill` исторический анализ по временным срезам включён всегда. Это и есть стандартный путь выполнения:
 
 1. Найти репозиторий с самой ранней `created_at`.
-2. Взять дату этого репозитория и прибавить `3` месяца.
+2. Взять дату этого репозитория и прибавить `historical_window_months` workflow `init` (`3` месяца по умолчанию).
 3. Использовать эту дату как общий `snapshot date` для всех in-scope репозиториев.
-4. Для каждого репозитория попытаться найти commit не позже `snapshot date`.
-5. Анализировать репозитории в порядке `created_at` от старых к новым.
-6. После завершения прохода по всем репозиториям на текущем срезе перевести окно на следующие `3` месяца и повторить цикл.
+4. Для каждого репозитория попытаться найти `snapshot commit` не позже `snapshot date`.
+5. Для каждого репозитория построить temporal delta от предыдущего окна: `commit_range`, commit log, `diff --stat`, `name-status`.
+   Если commit не менялся с прошлого окна, зафиксировать `no_changes` и продолжить анализ без ошибки.
+6. Анализировать репозитории в порядке `created_at` от старых к новым, опираясь и на snapshot-state, и на delta текущего окна.
+7. После завершения прохода по всем репозиториям на текущем срезе перевести окно на следующий шаг `historical_window_months` workflow `init` (`3` месяца по умолчанию) и повторить цикл.
 
 Historical prep и его результаты должны фиксироваться в progress-файле через `historical_analysis` и поля репозитория, а не только в заметках агента.
 
@@ -204,7 +239,8 @@ plan_repository_order
   → timeline --progress <path> --resolve-local --checkout
   → проверить, что ordered_repository_names отсортирован по created_at
   → проверить, что у каждого repo заполнены analysis_target_date и analysis_target_commit_status
-  → advance --note "historical snapshot YYYY-MM-DD подготовлен"
+  → проверить, что для текущего окна подготовлены snapshot-state и temporal-delta либо явно зафиксирован baseline_missing/no_changes
+  → advance --note "historical snapshot YYYY-MM-DD и temporal delta подготовлены"
 ```
 
 **Для шага `analyze_repositories`** — вложенная петля, форма зависит от стратегии:

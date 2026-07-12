@@ -344,15 +344,19 @@
 
 **Результат этапа:** регрессии ловятся тестами раньше, чем в рабочих запусках.
 
-**Статус выполнения:** частично выполнено
+**Статус выполнения:** выполнено
 
 **Мини-отчёт:**
 - добавлены regression tests на persistence LLM-call metadata и causal link в audit trail: `tests/services/test_task_runner.py`, `tests/db/test_task_repo.py`, `tests/workflows/init_arch/test_llm_worker.py`, `tests/db/test_workflow_repo.py`;
 - red-green цикл зафиксировал новую гарантию: `LlmCliService` обязан привязывать `workflow_id/step_id/expected_schema_name` к persisted `cli_task` и публиковать `llm_call_id` в workflow events независимо от реализации `_build_cli_task`;
 - добавлены regression tests на отдельную persistence шагов и knowledge-artifacts: `tests/db/test_workflow_repo.py` теперь проверяет запись `WorkflowStepTransitionModel` и `ArtifactEventModel`, а заодно поймал и зафиксировал корректный storage format для `EventType/AuditActor` (`.value`, а не `EnumName.MEMBER`);
-- verification: `39 passed` в targeted red/green (`tests/services/test_task_runner.py`, `tests/db/test_task_repo.py`), затем `45 passed` в расширенном соседнем срезе с worker/audit (`tests/workflows/init_arch/test_llm_worker.py`, `tests/db/test_workflow_repo.py`, `tests/services/test_task_runner.py`, `tests/db/test_task_repo.py`).
+- добавлены service-level workflow regression tests для `run_workflow`: happy path, interrupt path и failure path теперь проверяют, что orchestrator сам двигает шаги, персистит промежуточные состояния и корректно выставляет terminal status без делегирования этого решения worker-у;
+- добавлены parity tests на historical gate: несортированный `ordered_repository_names` и непропагированный `current_snapshot_at` теперь отдельно ловятся как invalid historical prep state на уровне domain-операций;
+- добавлен smoke test на реальном fixture `init-repo-arch-skill/tests/fixtures/valid_arch_repo`, который прогоняет service-owned knowledge pipeline `bootstrap -> compile -> lint` и подтверждает отсутствие blocking `ERROR:` в knowledge lint;
+- transport/read-model regression дополнительно перепроверен на текущем conversation-first контуре: REST conversation API, MCP facade и DB persistence проходят зелёный срез вместе с новыми workflow tests;
+- verification: `40 passed` в targeted workflow/domain/knowledge срезе (`tests/services/test_init_arch_workflow.py`, `tests/workflows/init_arch/domain/test_operations.py`, `tests/workflows/init_arch/test_knowledge.py`) и ещё `40 passed` в transport/db срезе (`tests/api/rest/test_conversations.py`, `tests/mcp/test_mcp_server.py`, `tests/db/test_workflow_repo.py`).
 
-### Этап 12. Hardening и вывод в эксплуатацию
+### Этап 12. [x] Hardening и вывод в эксплуатацию
 
 **Задача:** подготовить реализацию к реальному использованию в контейнере с Codex/Claude.
 
@@ -364,6 +368,16 @@
 - обновить пользовательскую документацию проекта.
 
 **Результат этапа:** `init_arch` можно запускать как штатную capability gateway-сервиса.
+
+**Статус выполнения:** выполнено
+
+**Мини-отчёт:**
+- введены typed hardening-настройки в `GatewaySettings`: `WORKFLOWS__INIT__MAX_STEP_TIMEOUT_SECONDS`, `WORKFLOWS__INIT__RAW_WORKSPACE_SUBDIR`, `WORKFLOWS__INIT__ARCH_REPO_DIRNAME`, а также audit-limits `AUDIT__MAX_PROMPT_CHARS`, `AUDIT__MAX_OUTPUT_CHARS`, `AUDIT__MAX_ERROR_CHARS`;
+- `LlmCliService` теперь жёстко ограничивает timeout для `init_arch` worker-задач через workflow-level cap, а `start_init_arch_workflow()` валидирует runtime layout и запрещает класть `arch_repo_dir` внутрь raw-layer;
+- runtime prompt разделяет raw `.temp` layer и synthesis `arch-doc` layer, что устраняет двусмысленность для Codex/Claude при тяжёлых analysis шагах;
+- persisted audit trail для `cli_tasks` теперь маскирует bearer tokens / inline secrets и ограничивает размер prompt/stdout/stderr/error payload before DB write;
+- `docker-compose.yml` обновлён новыми env vars hardening-контура, а пользовательская документация расширена в [docs/workflows/init.md](/Users/aanekraso2/github.com/znbiz/sdlc/arch-docs/docs/workflows/init.md);
+- verification: `66 passed` в focused hardening-срезе (`tests/test_settings.py`, `tests/services/test_task_runner.py`, `tests/services/test_init_arch_workflow.py`, `tests/db/test_task_repo.py`) и `185 passed` в расширенном regression-срезе workflow/transport/db.
 
 ## 6. Рекомендуемая последовательность выполнения
 

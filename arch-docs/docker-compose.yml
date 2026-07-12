@@ -24,6 +24,12 @@ services:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-arch_docs}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-arch_docs}
       - AGENT_POOL_SIZE=${AGENT_POOL_SIZE:-4}
       - SKILL_ROOT_DIR=/app/skills
+      - WORKFLOWS__INIT__MAX_STEP_TIMEOUT_SECONDS=${INIT_ARCH_MAX_STEP_TIMEOUT_SECONDS:-900}
+      - WORKFLOWS__INIT__RAW_WORKSPACE_SUBDIR=${INIT_ARCH_RAW_WORKSPACE_SUBDIR:-.temp}
+      - WORKFLOWS__INIT__ARCH_REPO_DIRNAME=${INIT_ARCH_ARCH_REPO_DIRNAME:-arch-doc}
+      - AUDIT__MAX_PROMPT_CHARS=${AUDIT_MAX_PROMPT_CHARS:-12000}
+      - AUDIT__MAX_OUTPUT_CHARS=${AUDIT_MAX_OUTPUT_CHARS:-16000}
+      - AUDIT__MAX_ERROR_CHARS=${AUDIT_MAX_ERROR_CHARS:-8000}
     volumes:
       - codex-auth:/home/appuser/.codex
       - claude-auth:/home/appuser/.claude

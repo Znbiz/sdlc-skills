@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import types
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -317,6 +318,200 @@ async def test_start_init_arch_workflow_registers_record_and_schedules_task(monk
     assert created_tasks
     for task in created_tasks:
         task.cancel()
+
+
+async def test_start_init_arch_workflow_rejects_arch_repo_inside_raw_workspace(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.init_arch_workflow.get_gateway_settings",
+        lambda: workflow_module.GatewaySettings(
+            auth_secret="secret",
+            workflows={"init": {"raw_workspace_subdir": ".raw"}},
+        ),
+    )
+
+    with pytest.raises(workflow_module.WorkflowValidationError, match="must not live inside raw workspace"):
+        await workflow_module.start_init_arch_workflow(
+            product_name="svc",
+            analysis_scope="full",
+            workspace_dir="/workspace",
+            arch_repo_dir="/workspace/.raw/arch-doc",
+            repo_list=["repo-a"],
+            engine_name="claude",
+            timeout_seconds=30,
+            conversation_id="conv-start",
+        )
+
+
+async def test_run_workflow_happy_path_persists_node_progress_and_terminal_success(monkeypatch):
+    initial_session = WorkflowSessionRecord(
+        session_id="wf-happy",
+        product_name="arch-docs",
+        analysis_scope="full",
+    )
+    advanced_session = initial_session.model_copy(
+        update={
+            "current_step": StepId.REQUEST_REPOSITORY_LIST,
+            "completed_steps": [StepId.DEFINE_SCOPE],
+        }
+    )
+    final_session = advanced_session.model_copy(
+        update={
+            "current_step": StepId.DONE,
+            "completed_steps": [StepId.DEFINE_SCOPE, StepId.REQUEST_REPOSITORY_LIST],
+        }
+    )
+    record = WorkflowRecord(workflow_id="wf-happy", conversation_id="conv-happy", session=initial_session)
+    persisted_states: list[tuple[str, WorkflowStatus]] = []
+
+    class _Graph:
+        async def astream(self, _state, *, config):
+            assert config == {"configurable": {"thread_id": "wf-happy"}}
+            yield {
+                "define_scope": {
+                    "session": advanced_session,
+                    "current_step_id": "request_repository_list",
+                    "last_cli_output": "scope done",
+                }
+            }
+            yield {
+                "finalize_progress": {
+                    "session": final_session,
+                    "current_step_id": "done",
+                }
+            }
+
+    async def _fake_persist(current: WorkflowRecord) -> None:
+        persisted_states.append((current.current_step_id, current.workflow_status))
+
+    monkeypatch.setattr("app.services.init_arch_workflow.get_checkpointer", AsyncMock(return_value="checkpoint"))
+    monkeypatch.setattr("app.services.init_arch_workflow.compile_graph", lambda checkpointer: _Graph())
+    monkeypatch.setattr("app.services.init_arch_workflow.persist_workflow_record", _fake_persist)
+
+    await workflow_module.run_workflow(
+        record,
+        workflow_module.InitArchState(
+            session_id=initial_session.session_id,
+            session=initial_session,
+            workspace_dir="/workspace",
+            arch_repo_dir="/workspace/arch-doc",
+            engine_name="claude",
+            timeout_seconds=60,
+            progress_file_path="/workspace/arch-doc/progress.yaml",
+            last_llm_result=None,
+            last_guard_output="",
+            step_error=None,
+            retry_count=0,
+        ),
+    )
+
+    assert record.workflow_status is WorkflowStatus.SUCCESS
+    assert record.current_step_id == "done"
+    assert record.completed_steps == ["define_scope", "request_repository_list"]
+    assert record.last_cli_output_snippet == "scope done"
+    assert persisted_states == [
+        ("request_repository_list", WorkflowStatus.RUNNING),
+        ("done", WorkflowStatus.RUNNING),
+        ("done", WorkflowStatus.SUCCESS),
+    ]
+
+
+async def test_run_workflow_interrupt_persists_pending_question(monkeypatch):
+    session = WorkflowSessionRecord(
+        session_id="wf-interrupt",
+        product_name="arch-docs",
+        analysis_scope="full",
+        current_step=StepId.INTERVIEW_USER,
+    )
+    record = WorkflowRecord(workflow_id="wf-interrupt", conversation_id="conv-interrupt", session=session)
+    persisted_statuses: list[WorkflowStatus] = []
+
+    class _Graph:
+        async def astream(self, _state, *, config):
+            assert config == {"configurable": {"thread_id": "wf-interrupt"}}
+            yield {
+                "__interrupt__": [
+                    types.SimpleNamespace(
+                        value={
+                            "interrupt_type": "user_question",
+                            "question_id": "Q-1",
+                            "question": "What transport?",
+                        }
+                    )
+                ]
+            }
+
+    async def _fake_persist(current: WorkflowRecord) -> None:
+        persisted_statuses.append(current.workflow_status)
+
+    monkeypatch.setattr("app.services.init_arch_workflow.get_checkpointer", AsyncMock(return_value="checkpoint"))
+    monkeypatch.setattr("app.services.init_arch_workflow.compile_graph", lambda checkpointer: _Graph())
+    monkeypatch.setattr("app.services.init_arch_workflow.persist_workflow_record", _fake_persist)
+
+    await workflow_module.run_workflow(
+        record,
+        workflow_module.InitArchState(
+            session_id=session.session_id,
+            session=session,
+            workspace_dir="/workspace",
+            arch_repo_dir="/workspace/arch-doc",
+            engine_name="claude",
+            timeout_seconds=60,
+            progress_file_path="/workspace/arch-doc/progress.yaml",
+            last_llm_result=None,
+            last_guard_output="",
+            step_error=None,
+            retry_count=0,
+        ),
+    )
+
+    assert record.workflow_status is WorkflowStatus.INTERRUPTED
+    assert record.pending_interrupt == {
+        "interrupt_type": "user_question",
+        "question_id": "Q-1",
+        "question": "What transport?",
+    }
+    assert persisted_statuses == [WorkflowStatus.INTERRUPTED]
+
+
+async def test_run_workflow_failure_marks_record_failed(monkeypatch):
+    session = WorkflowSessionRecord(session_id="wf-failed", product_name="arch-docs", analysis_scope="full")
+    record = WorkflowRecord(workflow_id="wf-failed", conversation_id="conv-failed", session=session)
+    persisted_statuses: list[WorkflowStatus] = []
+
+    class _Graph:
+        async def astream(self, _state, *, config):
+            assert config == {"configurable": {"thread_id": "wf-failed"}}
+            if False:
+                yield {}
+            raise ValueError("graph boom")
+
+    async def _fake_persist(current: WorkflowRecord) -> None:
+        persisted_statuses.append(current.workflow_status)
+
+    monkeypatch.setattr("app.services.init_arch_workflow.get_checkpointer", AsyncMock(return_value="checkpoint"))
+    monkeypatch.setattr("app.services.init_arch_workflow.compile_graph", lambda checkpointer: _Graph())
+    monkeypatch.setattr("app.services.init_arch_workflow.persist_workflow_record", _fake_persist)
+
+    await workflow_module.run_workflow(
+        record,
+        workflow_module.InitArchState(
+            session_id=session.session_id,
+            session=session,
+            workspace_dir="/workspace",
+            arch_repo_dir="/workspace/arch-doc",
+            engine_name="claude",
+            timeout_seconds=60,
+            progress_file_path="/workspace/arch-doc/progress.yaml",
+            last_llm_result=None,
+            last_guard_output="",
+            step_error=None,
+            retry_count=0,
+        ),
+    )
+
+    assert record.workflow_status is WorkflowStatus.FAILED
+    assert record.error_message == "graph boom"
+    assert persisted_statuses == [WorkflowStatus.FAILED]
 
 
 async def test_resume_and_answer_require_interrupted_workflow():

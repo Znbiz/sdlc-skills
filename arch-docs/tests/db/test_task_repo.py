@@ -96,3 +96,39 @@ async def test_mark_running_tasks_failed(mock_session):
     count = await mark_running_tasks_failed(mock_session)
     assert count == 2
     mock_session.commit.assert_called_once()
+
+
+async def test_upsert_masks_and_truncates_persisted_audit_payloads(mock_session, monkeypatch):
+    from app.settings import GatewaySettings
+
+    monkeypatch.setattr(
+        "app.db.task_repo.get_gateway_settings",
+        lambda: GatewaySettings(
+            auth_secret="secret",
+            audit={
+                "max_prompt_chars": 40,
+                "max_output_chars": 40,
+                "max_error_chars": 32,
+            },
+        ),
+    )
+    cli_task = _make_cli_task(
+        prompt_text="prefix AUTH_TOKEN=abcdef1234567890 suffix trailing words",
+        task_result="Authorization: Bearer secret-token suffix trailing words",
+        task_error="DB_PASSWORD=supersecret suffix trailing words",
+    )
+    cli_task.stdout_lines = ["Authorization: Bearer secret-token suffix trailing words"]
+    cli_task.stderr_lines = ["prefix API_KEY=abcdef1234567890 suffix"]
+
+    await upsert_cli_task(mock_session, cli_task)
+
+    added = mock_session.add.call_args[0][0]
+    assert "[REDACTED]" in added.prompt_text
+    assert added.prompt_text.endswith("...[truncated]")
+    assert "[REDACTED]" in added.task_result
+    assert added.task_result.endswith("...[truncated]")
+    assert "[REDACTED]" in added.task_error
+    assert added.task_error.endswith("...[truncated]")
+    assert "[REDACTED]" in added.stdout_output
+    assert added.stdout_output.endswith("...[truncated]")
+    assert "[REDACTED]" in added.stderr_output

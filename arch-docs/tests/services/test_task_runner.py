@@ -341,6 +341,31 @@ class TestDbPersistence:
 
 
 class TestLlmCliService:
+    def test_build_cli_task_caps_timeout_to_workflow_limit(self, monkeypatch) -> None:
+        from app.settings import GatewaySettings
+
+        monkeypatch.setattr(
+            "app.services.task_runner.get_gateway_settings",
+            lambda: GatewaySettings(
+                auth_secret="secret",
+                workflows={"init": {"max_step_timeout_seconds": 45}},
+            ),
+        )
+        service = LlmCliService()
+        request = LlmTaskRequest(
+            task_kind=LlmTaskKind.STEP_EXECUTION,
+            step_id=StepId.ANALYZE_REPOSITORIES,
+            prompt_text="analyze",
+            workspace_dir="/workspace",
+            timeout_seconds=120,
+            expected_schema_name="init_arch_v1",
+            session_id="wf-1",
+        )
+
+        cli_task = service._build_cli_task(request, engine_name="claude")
+
+        assert cli_task.timeout_seconds == 45
+
     async def test_run_task_parses_structured_result(self) -> None:
         audit_service = unittest.mock.MagicMock()
         service = LlmCliService(audit_service=audit_service)

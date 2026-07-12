@@ -1,27 +1,69 @@
 from __future__ import annotations
 
 import datetime
+import re
 import uuid
 
 import sqlalchemy as sa
 import sqlalchemy.ext.asyncio as async_sa
 
 from app.db.models import CliTaskModel
+from app.settings import get_gateway_settings
 from app.services.task_registry import CliTask, TaskStatus
+
+_TRUNCATION_MARKER = "...[truncated]"
+_SENSITIVE_INLINE_PATTERNS = (
+    re.compile(r"(?i)\b(authorization:\s*bearer\s+)(\S+)"),
+    re.compile(r"(?i)\b([A-Z0-9_]*(?:token|secret|password|api[_-]?key)[A-Z0-9_]*=)(\S+)"),
+)
+
+
+def _mask_sensitive_text(value: str) -> str:
+    masked = value
+    for pattern in _SENSITIVE_INLINE_PATTERNS:
+        masked = pattern.sub(r"\1[REDACTED]", masked)
+    return masked
+
+
+def _truncate_text(value: str, *, max_chars: int) -> str:
+    if len(value) <= max_chars:
+        return value
+    cutoff = max(0, max_chars - len(_TRUNCATION_MARKER))
+    redacted_start = value.find("[REDACTED]")
+    redacted_end = redacted_start + len("[REDACTED]") if redacted_start >= 0 else -1
+    if redacted_start >= 0 and redacted_start < cutoff < redacted_end:
+        cutoff = redacted_end
+    return value[:cutoff] + _TRUNCATION_MARKER
+
+
+def _sanitize_text(value: str | None, *, max_chars: int) -> str | None:
+    if value is None:
+        return None
+    return _truncate_text(_mask_sensitive_text(value), max_chars=max_chars)
 
 
 async def upsert_cli_task(session: async_sa.AsyncSession, cli_task: CliTask) -> None:
     task_uuid = uuid.UUID(cli_task.task_id)
     existing = await session.get(CliTaskModel, task_uuid)
-    stdout_text = "\n".join(cli_task.stdout_lines) if cli_task.stdout_lines else None
-    stderr_text = "\n".join(cli_task.stderr_lines) if cli_task.stderr_lines else None
+    settings = get_gateway_settings()
+    stdout_text = _sanitize_text(
+        "\n".join(cli_task.stdout_lines) if cli_task.stdout_lines else None,
+        max_chars=settings.audit.max_output_chars,
+    )
+    stderr_text = _sanitize_text(
+        "\n".join(cli_task.stderr_lines) if cli_task.stderr_lines else None,
+        max_chars=settings.audit.max_error_chars,
+    )
+    prompt_text = _sanitize_text(cli_task.prompt_text, max_chars=settings.audit.max_prompt_chars) or ""
+    task_result = _sanitize_text(cli_task.task_result, max_chars=settings.audit.max_output_chars)
+    task_error = _sanitize_text(cli_task.task_error, max_chars=settings.audit.max_error_chars)
 
     if existing is None:
         record = CliTaskModel(
             task_id=task_uuid,
             engine_name=cli_task.engine_name,
             task_status=str(cli_task.task_status),
-            prompt_text=cli_task.prompt_text,
+            prompt_text=prompt_text,
             workspace_dir=cli_task.workspace_dir,
             session_id=cli_task.session_id,
             conversation_id=cli_task.conversation_id,
@@ -31,8 +73,8 @@ async def upsert_cli_task(session: async_sa.AsyncSession, cli_task: CliTask) -> 
             repository_name=cli_task.repository_name,
             domain_id=cli_task.domain_id,
             expected_schema_name=cli_task.expected_schema_name,
-            task_result=cli_task.task_result,
-            task_error=cli_task.task_error,
+            task_result=task_result,
+            task_error=task_error,
             stdout_output=stdout_text,
             stderr_output=stderr_text,
             exit_code=cli_task.exit_code,
@@ -50,8 +92,9 @@ async def upsert_cli_task(session: async_sa.AsyncSession, cli_task: CliTask) -> 
         existing.repository_name = cli_task.repository_name
         existing.domain_id = cli_task.domain_id
         existing.expected_schema_name = cli_task.expected_schema_name
-        existing.task_result = cli_task.task_result
-        existing.task_error = cli_task.task_error
+        existing.task_result = task_result
+        existing.task_error = task_error
+        existing.prompt_text = prompt_text
         existing.stdout_output = stdout_text
         existing.stderr_output = stderr_text
         existing.exit_code = cli_task.exit_code

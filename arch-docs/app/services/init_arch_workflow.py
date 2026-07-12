@@ -20,6 +20,7 @@ from app.db.workflow_repo import (
     list_workflow_runs_for_conversation,
     upsert_workflow_run,
 )
+from app.settings import GatewaySettings, get_gateway_settings
 from app.services.agent_pool import get_agent_pool
 from app.services.task_registry import CliTask, TaskStatus
 from app.services.task_registry import get_registry as get_task_registry
@@ -780,6 +781,29 @@ def build_resume_value(*, interrupt_type: str, field: str | None, value: typing.
     raise WorkflowValidationError("Invalid resume payload for interrupt type")
 
 
+def _resolve_init_arch_paths(
+    *,
+    workspace_dir: str,
+    arch_repo_dir: str,
+    settings: GatewaySettings | None = None,
+) -> tuple[str, str, str]:
+    resolved_settings = settings or get_gateway_settings()
+    workspace_path = pathlib.Path(workspace_dir).expanduser().resolve()
+    raw_workspace_path = (workspace_path / resolved_settings.workflows.init.raw_workspace_subdir).resolve()
+    arch_repo_path = (
+        pathlib.Path(arch_repo_dir).expanduser().resolve()
+        if arch_repo_dir
+        else (workspace_path / resolved_settings.workflows.init.arch_repo_dirname).resolve()
+    )
+
+    if raw_workspace_path == arch_repo_path or raw_workspace_path in arch_repo_path.parents:
+        raise WorkflowValidationError("arch_repo_dir must not live inside raw workspace")
+    if arch_repo_path not in workspace_path.parents and arch_repo_path != workspace_path and workspace_path not in arch_repo_path.parents:
+        raise WorkflowValidationError("arch_repo_dir must live inside workspace_dir")
+
+    return str(workspace_path), str(arch_repo_path), str(raw_workspace_path)
+
+
 async def start_init_arch_workflow(
     *,
     product_name: str,
@@ -791,8 +815,12 @@ async def start_init_arch_workflow(
     timeout_seconds: int,
     conversation_id: str | None = None,
 ) -> WorkflowRecord:
+    resolved_workspace_dir, resolved_arch_repo_dir, resolved_raw_workspace_dir = _resolve_init_arch_paths(
+        workspace_dir=workspace_dir,
+        arch_repo_dir=arch_repo_dir,
+    )
     workflow_id = str(uuid.uuid4())
-    progress_file_path = f"{arch_repo_dir}/repo-initialization-progress.yaml"
+    progress_file_path = f"{resolved_arch_repo_dir}/repo-initialization-progress.yaml"
     session = WorkflowSessionRecord(
         session_id=workflow_id,
         product_name=product_name,
@@ -812,8 +840,9 @@ async def start_init_arch_workflow(
     initial_state = InitArchState(
         session_id=session.session_id,
         session=session,
-        workspace_dir=workspace_dir,
-        arch_repo_dir=arch_repo_dir,
+        workspace_dir=resolved_workspace_dir,
+        raw_workspace_dir=resolved_raw_workspace_dir,
+        arch_repo_dir=resolved_arch_repo_dir,
         engine_name=engine_name,
         timeout_seconds=timeout_seconds,
         progress_file_path=progress_file_path,

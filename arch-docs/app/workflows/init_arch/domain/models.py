@@ -66,6 +66,15 @@ class AnalysisTargetCommitStatus(str, enum.Enum):
     CHECKED_OUT = "checked_out"
 
 
+class CommitRangeStatus(str, enum.Enum):
+    NOT_STARTED = "not_started"
+    BASELINE_MISSING = "baseline_missing"
+    RANGE_RESOLVED = "range_resolved"
+    DIFF_COLLECTED = "diff_collected"
+    NO_CHANGES = "no_changes"
+    INVALID_RANGE = "invalid_range"
+
+
 class LlmTaskKind(str, enum.Enum):
     STEP_EXECUTION = "step_execution"
     REPOSITORY_CHECKLIST_ITEM = "repository_checklist_item"
@@ -91,6 +100,17 @@ class RepositoryExecution(pydantic.BaseModel):
     analysis_target_date: dt.date | None = None
     analysis_target_commit: str = ""
     analysis_target_commit_status: AnalysisTargetCommitStatus = AnalysisTargetCommitStatus.PENDING
+    previous_analysis_target_commit: str = ""
+    window_start_commit: str = ""
+    window_end_commit: str = ""
+    commit_range: str = ""
+    commit_range_status: CommitRangeStatus = CommitRangeStatus.NOT_STARTED
+    diff_stat_summary: str = ""
+    commit_log_summary: str = ""
+    changed_paths: list[str] = pydantic.Field(default_factory=list)
+    renamed_paths: list[str] = pydantic.Field(default_factory=list)
+    deleted_paths: list[str] = pydantic.Field(default_factory=list)
+    temporal_delta_note: str = ""
     domain_strategy: DomainStrategy | None = None
     domains: list[DomainDefinition] = pydantic.Field(default_factory=list)
     checklist_items_completed: list[str] = pydantic.Field(default_factory=list)
@@ -100,6 +120,7 @@ class RepositoryExecution(pydantic.BaseModel):
 class HistoricalAnalysisState(pydantic.BaseModel):
     anchor_repository_name: str = ""
     anchor_created_at: dt.date | None = None
+    previous_snapshot_at: dt.date | None = None
     current_snapshot_at: dt.date | None = None
     ordered_repository_names: list[str] = pydantic.Field(default_factory=list)
     completed_snapshot_dates: list[dt.date] = pydantic.Field(default_factory=list)

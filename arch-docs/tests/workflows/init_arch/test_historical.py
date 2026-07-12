@@ -7,6 +7,7 @@ from app.settings import GatewaySettings
 from app.workflows.init_arch.domain import (
     AnalysisTargetCommitStatus,
     AuditActor,
+    CommitRangeStatus,
     EventType,
     RepositoryExecution,
     WorkflowSessionRecord,
@@ -56,6 +57,8 @@ async def test_plan_repository_order_sets_anchor_snapshot_and_repository_order()
     assert all(
         repo.analysis_target_commit_status is AnalysisTargetCommitStatus.PENDING for repo in result.session.repositories
     )
+    assert all(repo.commit_range_status is CommitRangeStatus.NOT_STARTED for repo in result.session.repositories)
+    assert result.session.historical_analysis.previous_snapshot_at is None
     recorded_events = [call.args[0] for call in audit_service.record.call_args_list]
     assert [event.event_type for event in recorded_events] == [
         EventType.GUARD_COMMAND_REQUESTED,
