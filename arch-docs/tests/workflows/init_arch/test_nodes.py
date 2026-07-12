@@ -293,6 +293,65 @@ async def test_node_analyze_repositories_uses_typed_services() -> None:
     knowledge_service.sync_open_questions.assert_awaited_once()
 
 
+async def test_node_analyze_repositories_routes_reduced_checklist_for_no_changes_window() -> None:
+    from app.workflows.init_arch.domain import CommitRangeStatus
+
+    repository = RepositoryExecution(
+        repository_name="svc-a",
+        analysis_target_commit_status=AnalysisTargetCommitStatus.CHECKED_OUT,
+        commit_range_status=CommitRangeStatus.NO_CHANGES,
+    )
+    session = WorkflowSessionRecord(
+        session_id="wf-1", product_name="Prod", analysis_scope="full", repositories=[repository]
+    )
+    state = _make_state(session=session)
+    guard_service = MagicMock()
+    knowledge_service = MagicMock()
+    llm_service = MagicMock()
+    audit_service = MagicMock()
+
+    running_session = session.model_copy(update={"current_step": StepId.ANALYZE_REPOSITORIES})
+    completed_repo_session = running_session.model_copy()
+    next_session = running_session.model_copy(
+        update={"current_step": StepId.INTERVIEW_USER, "completed_steps": [StepId.ANALYZE_REPOSITORIES]}
+    )
+    guard_service.start_repository = AsyncMock(return_value=GuardOperationResult(session=running_session))
+    guard_service.complete_repository_item = AsyncMock(
+        return_value=GuardOperationResult(session=completed_repo_session)
+    )
+    guard_service.complete_repository = AsyncMock(return_value=GuardOperationResult(session=completed_repo_session))
+    guard_service.advance_step = AsyncMock(return_value=GuardOperationResult(session=next_session))
+    llm_service.run_task = AsyncMock(
+        return_value=LlmTaskResult(task_kind=LlmTaskKind.REPOSITORY_CHECKLIST_ITEM, step_id=StepId.ANALYZE_REPOSITORIES)
+    )
+
+    with (
+        patch("app.workflows.init_arch.nodes.get_guard_service", return_value=guard_service),
+        patch("app.workflows.init_arch.nodes.get_knowledge_artifact_service", return_value=knowledge_service),
+        patch("app.workflows.init_arch.nodes.get_llm_worker_service", return_value=llm_service),
+        patch("app.workflows.init_arch.nodes.get_workflow_audit_service", return_value=audit_service),
+    ):
+        result = await nodes_module.node_analyze_repositories(state)
+
+    assert result["current_step_id"] == "interview_user"
+    assert llm_service.run_task.await_count == 1
+    guard_service.complete_repository_item.assert_awaited_once_with(
+        running_session,
+        repository_name="svc-a",
+        item_id="repository_consistency_review",
+        progress_file_path=state["progress_file_path"],
+    )
+    routed_events = [
+        call.args[0]
+        for call in audit_service.record.call_args_list
+        if call.args[0].event_type is EventType.DIFF_SIGNAL_ROUTED
+    ]
+    assert len(routed_events) == 1
+    assert routed_events[0].repository_name == "svc-a"
+    assert routed_events[0].payload["diff_severity"] == "no_signal"
+    assert routed_events[0].payload["routed_items"] == "1"
+
+
 async def test_node_interview_user_interrupts_on_open_question() -> None:
     session = WorkflowSessionRecord(
         session_id="wf-1",

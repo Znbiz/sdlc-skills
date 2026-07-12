@@ -14,6 +14,8 @@ from app.workflows.init_arch.domain import (
     LlmTaskRequest,
     StepId,
     WorkflowEventRecord,
+    classify_diff_severity,
+    route_checklist_items,
 )
 from app.workflows.init_arch.domain.operations import TemporalWindowConfirmationAction
 from app.workflows.init_arch.guard import get_guard_service
@@ -91,13 +93,21 @@ async def _run_step_worker(
     return await worker_service.run_task(request, engine_name=state["engine_name"])
 
 
-def _record_workflow_event(state: InitArchState, event_type: EventType, *, step_id: StepId, **payload: str) -> None:
+def _record_workflow_event(
+    state: InitArchState,
+    event_type: EventType,
+    *,
+    step_id: StepId,
+    repository_name: str = "",
+    **payload: str,
+) -> None:
     get_workflow_audit_service().record(
         WorkflowEventRecord(
             event_type=event_type,
             actor=AuditActor.SERVICE,
             session_id=state["session"].session_id,
             step_id=step_id,
+            repository_name=repository_name,
             payload=payload,
         )
     )
@@ -302,7 +312,20 @@ async def node_analyze_repositories(state: InitArchState) -> dict[str, typing.An
             )
             session = start_result.session
 
-            for item_id in CHECKLIST_ITEM_TO_REFERENCE:
+            routed_item_ids = route_checklist_items(
+                repository, all_checklist_item_ids=list(CHECKLIST_ITEM_TO_REFERENCE)
+            )
+            _record_workflow_event(
+                state,
+                EventType.DIFF_SIGNAL_ROUTED,
+                step_id=StepId.ANALYZE_REPOSITORIES,
+                repository_name=repository.repository_name,
+                diff_severity=classify_diff_severity(repository).value,
+                routed_items=str(len(routed_item_ids)),
+                total_items=str(len(CHECKLIST_ITEM_TO_REFERENCE)),
+            )
+
+            for item_id in routed_item_ids:
                 llm_result = await _run_step_worker(
                     {**state, "session": session},
                     StepId.ANALYZE_REPOSITORIES,

@@ -63,6 +63,7 @@ class EventType(str, enum.Enum):
     TEMPORAL_DIFF_COLLECTED = "temporal_diff_collected"
     TEMPORAL_DIFF_MISSING = "temporal_diff_missing"
     TEMPORAL_RANGE_INVALID = "temporal_range_invalid"
+    DIFF_SIGNAL_ROUTED = "diff_signal_routed"
 
 
 class AnalysisTargetCommitStatus(str, enum.Enum):

@@ -34,6 +34,7 @@ from app.workflows.init_arch.domain.operations import (
     request_next_temporal_window_confirmation,
     start_session,
 )
+from app.workflows.init_arch.domain.signal_routing import DiffSeverity, classify_diff_severity, route_checklist_items
 from app.workflows.init_arch.domain.steps import STEP_DEFINITION_BY_ID, STEP_DEFINITIONS, StepDefinition
 
 __all__ = [
@@ -43,6 +44,7 @@ __all__ = [
     "ArtifactRecord",
     "AuditActor",
     "CommitRangeStatus",
+    "DiffSeverity",
     "DomainDefinition",
     "DomainOperationError",
     "DomainStrategy",
@@ -60,6 +62,7 @@ __all__ = [
     "WorkflowSessionRecord",
     "WorkflowStatus",
     "advance_step",
+    "classify_diff_severity",
     "close_question",
     "confirm_next_temporal_window",
     "fail_step",
@@ -71,5 +74,6 @@ __all__ = [
     "register_artifact",
     "register_repository",
     "request_next_temporal_window_confirmation",
+    "route_checklist_items",
     "start_session",
 ]

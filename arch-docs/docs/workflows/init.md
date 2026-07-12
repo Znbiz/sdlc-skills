@@ -498,6 +498,22 @@ Temporal delta текущего окна больше не остаётся то
 - секция `# Инструкции` явно требует сначала изучить temporal delta (commit range/log/diff stat), и только затем при необходимости читать итоговое состояние файлов в raw checkout-слое;
 - `LlmTaskResult` (`app/workflows/init_arch/domain/models.py`) расширен полями `diff_based_findings: list[str]` и `snapshot_based_findings: list[str]`; JSON-контракт в промпте и парсинг в `LlmCliService.run_task()` (`app/services/task_runner.py`) обновлены симметрично, так что worker может явно разделить, какие выводы опираются на diff, а какие на snapshot state.
 
+### Diff Signal Routing (Stage 7)
+
+Temporal delta теперь не только видна worker'у (Stage 6), но и используется сервисом для приоритизации глубины анализа внутри `analyze_repositories`. Реализовано в новом domain-модуле `app/workflows/init_arch/domain/signal_routing.py` (без зависимости от `prompts.py` — presentation-слой не нужен pure business-логике маршрутизации):
+
+- `classify_diff_severity(repository) -> DiffSeverity` классифицирует repository-window по уже существующим typed-полям (Stage 2-4), не вводя новый источник фактов:
+  - `not_started` / `baseline_missing` / `invalid_range` -> `full_required` — недостаточно сигнала, чтобы сузить анализ;
+  - `no_changes`, либо `diff_collected` с пустым `changed_paths`/`renamed_paths`/`deleted_paths` -> `no_signal`;
+  - иначе считается число уникальных top-level директорий по объединению `changed_paths`+`renamed_paths`+`deleted_paths`: до 3 включительно -> `local`, больше -> `broad`.
+- `route_checklist_items(repository, *, all_checklist_item_ids) -> list[str]` — три ветки:
+  - `full_required`/`broad` -> полный чеклист без исключений (temporal diff не заменяет целостный анализ);
+  - `no_signal` -> единственный routed item `repository_consistency_review` — analysis сведён к подтверждению отсутствия изменений;
+  - `local` -> категории из lightweight glob-таблицы `_PATH_SIGNAL_CATEGORIES` (адаптация fallback-таблицы `update-repo-arch-skill/references/checklist-signal-routing.md`: `api/`/`routers/`/`controllers/` -> `entrypoints_and_interfaces`, `serializers/`/`schemas/`/`dto/` -> `contracts_and_schemas`, `migrations/`/`models/` -> `data_and_storage`, `auth/`/`rbac/` -> `roles_and_permissions_updates`+`security_and_auth_updates` и т.д.), плюс всегда включённые `architecture_artifact_updates` и `repository_consistency_review`; порядок результата совпадает с порядком `all_checklist_item_ids`.
+- `nodes.py::node_analyze_repositories` вызывает `route_checklist_items()` перед циклом по чеклисту репозитория и итерирует только по routed-подмножеству вместо всех 20 категорий безусловно; per-repository routing-решение публикуется как аудит-событие `diff_signal_routed` (`diff_severity`, `routed_items`, `total_items`).
+- Инвариант "temporal diff не заменяет целостный анализ" закреплён кодом: `historical_prep_is_complete()` (Stage 4) по-прежнему блокирует переход к `analyze_repositories` без построенной delta, а `guard_service.complete_repository()` не требует полноты `checklist_items_completed` — сокращённый routing не может тихо пометить репозиторий "полностью проанализированным".
+- Обратная совместимость: default `commit_range_status = NOT_STARTED` маппится в `full_required` -> полный чеклист, поэтому существующие сценарии без построенной temporal-delta не меняют поведение.
+
 Progress file path по-прежнему прокидывается в state как compatibility artifact:
 
 - `arch-doc/repo-initialization-progress.yaml`
@@ -619,6 +635,7 @@ Transport-контракт для этого подтверждения полн
 - `temporal_diff_collected`
 - `temporal_diff_missing`
 - `temporal_range_invalid`
+- `diff_signal_routed`
 
 Назначение событий:
 
@@ -639,6 +656,7 @@ Transport-контракт для этого подтверждения полн
 - `temporal_diff_collected` — для repository собран полноценный diff (`commit_range`, `diff_stat_summary`, `commit_log_summary`, `changed_paths`); `commit_range_status == DIFF_COLLECTED`.
 - `temporal_diff_missing` — baseline commit недоступен (`commit_range_status == BASELINE_MISSING`): либо это первое окно без истории, либо repository ещё не существовал на дату предыдущего snapshot, либо commit на текущую snapshot-дату вообще не найден.
 - `temporal_range_invalid` — `commit_range_status == INVALID_RANGE`: `window_start_commit` не является предком `window_end_commit` (переписанная история, force-push, rebase); окно не считается готовым.
+- `diff_signal_routed` — для repository внутри `analyze_repositories` зафиксировано routing-решение по `DiffSeverity` (`diff_severity`, `routed_items`, `total_items` в payload); эмитится один раз на repository-window перед циклом по чеклисту, из `nodes.py::node_analyze_repositories`.
 
 Практический смысл групп:
 
@@ -648,6 +666,7 @@ Transport-контракт для этого подтверждения полн
 - `user_*` — lifecycle пользовательского интервью.
 - `artifact_*` — изменения knowledge-слоя.
 - `temporal_*` — построение range/diff temporal-delta для repository-window и его gate-статус; эмитятся из `HistoricalPrepService._record_temporal_delta_event()`.
+- `diff_signal_routed` — приоритизация глубины анализа внутри `analyze_repositories` по diff severity (Stage 7).
 
 События больше не ограничены только memory-backed runtime: transport читает persisted `conversation_items`, а workflow step transitions и artifact events дополнительно пишутся в специализированные таблицы.
 
@@ -696,7 +715,7 @@ Transport-level terminal states:
 
 ## Known Gaps
 
-1. Temporal historical prep строит `commit_range`, `diff_stat_summary`, `changed_paths` и `commit_log_summary` для окна и требует их как обязательный quality gate перед content-анализом (Stage 3-4 закрыты); domain-контракт, реальный graph loop-back и REST/OpenAI transport wiring для подтверждения следующего окна тоже готовы (Stage 5 полностью закрыт); prompts/worker теперь получают structured change context — compact/expanded temporal-delta блок и `diff_based_findings`/`snapshot_based_findings` в `LlmTaskResult` (Stage 6 закрыт) — читай "Worker Prompt Enrichment" и "Temporal Window Confirmation" в разделе Pause/Resume. Открыто: Stage 7 (diff-based signal routing/приоритизация глубины анализа) и Stage 8 (legacy `analysis_guard` interop tooling).
+1. Temporal historical prep строит `commit_range`, `diff_stat_summary`, `changed_paths` и `commit_log_summary` для окна и требует их как обязательный quality gate перед content-анализом (Stage 3-4 закрыты); domain-контракт, реальный graph loop-back и REST/OpenAI transport wiring для подтверждения следующего окна тоже готовы (Stage 5 полностью закрыт); prompts/worker получают structured change context — compact/expanded temporal-delta блок и `diff_based_findings`/`snapshot_based_findings` в `LlmTaskResult` (Stage 6 закрыт); diff теперь ещё и приоритизирует глубину анализа внутри `analyze_repositories` через `DiffSeverity`/`route_checklist_items()` (Stage 7 закрыт) — читай "Worker Prompt Enrichment", "Diff Signal Routing" и "Temporal Window Confirmation" в разделе Pause/Resume. Открыто: Stage 8 (синхронизация нового contract с legacy `analysis_guard` interop tooling — progress template, `status`/`validate` выводы).
 2. Workflow graph больше не полностью линеен: `confirm_next_temporal_window` умеет зацикливаться на `refresh_main_branches` для следующего temporal-окна; richer branching/state machine semantics за пределами этого и conditional retry routing по-прежнему не реализованы.
 3. `progress_file_path` ещё существует как compatibility field, хотя long-term owner состояния должен быть persisted session state.
 4. OpenAI facade теперь экспонирует generic submit-action route (`POST /v1/responses/{response_id}/actions`, тот же `submit_response_action_async()`, что и REST), но это по-прежнему не полноценный аналог OpenAI Assistants API `submit_tool_outputs` — это custom-расширение facade, а не часть официальной OpenAI-спецификации.
