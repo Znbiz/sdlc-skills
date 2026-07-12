@@ -17,6 +17,7 @@ from app.services.init_arch_workflow import (
     create_response_async,
     get_response_async,
     stream_response_events_async,
+    submit_response_action_async,
 )
 
 router = fastapi.APIRouter()
@@ -54,6 +55,14 @@ class OpenAIChatCompletionsRequest(pydantic.BaseModel, frozen=True):
     messages: list[OpenAIChatMessage]
     metadata: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
     stream: bool = False
+
+
+class OpenAIResponseActionRequest(pydantic.BaseModel, frozen=True):
+    action_type: str
+    question_id: str | None = None
+    answer: str | None = None
+    field: str | None = None
+    value: typing.Any = None
 
 
 def _raise_validation_error(message: str) -> typing.NoReturn:
@@ -406,6 +415,26 @@ async def get_openai_response(response_id: str, model: str) -> dict[str, typing.
         response_payload = await get_response_async(response_id)
     except WorkflowNotFoundError as exc:
         raise fastapi.HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    return _build_openai_response_payload(response_payload, model=model)
+
+
+@router.post("/v1/responses/{response_id}/actions")
+async def submit_openai_response_action(
+    response_id: str, request: OpenAIResponseActionRequest, model: str
+) -> dict[str, typing.Any]:
+    try:
+        response_payload = await submit_response_action_async(
+            response_id,
+            action_type=request.action_type,
+            question_id=request.question_id,
+            answer=request.answer,
+            field=request.field,
+            value=request.value,
+        )
+    except WorkflowNotFoundError as exc:
+        raise fastapi.HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except WorkflowValidationError as exc:
+        _raise_validation_error(str(exc))
     return _build_openai_response_payload(response_payload, model=model)
 
 

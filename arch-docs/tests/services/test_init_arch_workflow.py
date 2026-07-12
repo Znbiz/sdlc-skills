@@ -10,7 +10,7 @@ import pytest
 from app.services import init_arch_workflow as workflow_module
 from app.services.task_registry import CliTask, TaskStatus
 from app.services.workflow_registry import WorkflowRecord, WorkflowStatus, reset_workflow_registry
-from app.workflows.init_arch.domain import OpenQuestionRecord, RepositoryExecution, StepId, WorkflowSessionRecord
+from app.workflows.init_arch.domain import OpenQuestionRecord, StepId, WorkflowSessionRecord
 
 
 @pytest.fixture(autouse=True)
@@ -84,6 +84,95 @@ async def test_answer_init_arch_question_loads_interrupted_record_from_db():
     mock_schedule_resume.assert_called_once_with(record, resume_value={"answer": "REST"})
     mock_persist.assert_awaited_once_with(record)
     assert workflow_module.get_workflow_registry()["wf-db-question"] is record
+
+
+async def test_confirm_init_arch_temporal_window_schedules_resume():
+    record = WorkflowRecord(
+        workflow_id="wf-window",
+        conversation_id="conv-window",
+        workflow_status=WorkflowStatus.INTERRUPTED,
+        current_step_id="confirm_next_temporal_window",
+        pending_interrupt={
+            "interrupt_type": "temporal_window_confirmation",
+            "next_snapshot_at": "2024-07-10",
+        },
+    )
+    workflow_module.get_workflow_registry()["wf-window"] = record
+
+    with (
+        patch("app.services.init_arch_workflow.schedule_resume") as mock_schedule_resume,
+        patch("app.services.init_arch_workflow.persist_workflow_record", new=AsyncMock()) as mock_persist,
+    ):
+        resolved = await workflow_module.confirm_init_arch_temporal_window(
+            "wf-window", action="continue_to_next_window"
+        )
+
+    assert resolved.workflow_id == "wf-window"
+    mock_schedule_resume.assert_called_once_with(record, resume_value={"action": "continue_to_next_window"})
+    mock_persist.assert_awaited_once_with(record)
+
+
+async def test_confirm_init_arch_temporal_window_rejects_wrong_interrupt_type():
+    record = WorkflowRecord(
+        workflow_id="wf-wrong-interrupt",
+        workflow_status=WorkflowStatus.INTERRUPTED,
+        pending_interrupt={"interrupt_type": "user_question", "question_id": "Q-1"},
+    )
+    workflow_module.get_workflow_registry()["wf-wrong-interrupt"] = record
+
+    with pytest.raises(workflow_module.WorkflowConflictError, match="not waiting for a temporal window confirmation"):
+        await workflow_module.confirm_init_arch_temporal_window("wf-wrong-interrupt", action="continue_to_next_window")
+
+
+async def test_confirm_init_arch_temporal_window_rejects_unsupported_action():
+    record = WorkflowRecord(
+        workflow_id="wf-bad-action",
+        workflow_status=WorkflowStatus.INTERRUPTED,
+        pending_interrupt={"interrupt_type": "temporal_window_confirmation"},
+    )
+    workflow_module.get_workflow_registry()["wf-bad-action"] = record
+
+    with pytest.raises(workflow_module.WorkflowValidationError, match="Unsupported temporal window confirmation action"):
+        await workflow_module.confirm_init_arch_temporal_window("wf-bad-action", action="not_a_real_action")
+
+
+def test_build_resume_value_supports_temporal_window_confirmation():
+    resume_value = workflow_module.build_resume_value(
+        interrupt_type="temporal_window_confirmation",
+        field=None,
+        value="finish_temporal_analysis",
+        answer=None,
+    )
+
+    assert resume_value == {"action": "finish_temporal_analysis"}
+
+
+async def test_submit_response_action_async_dispatches_confirm_temporal_window():
+    record = WorkflowRecord(
+        workflow_id="wf-dispatch",
+        workflow_status=WorkflowStatus.INTERRUPTED,
+        pending_interrupt={"interrupt_type": "temporal_window_confirmation"},
+    )
+    workflow_module.get_workflow_registry()["wf-dispatch"] = record
+
+    with (
+        patch("app.services.init_arch_workflow.confirm_init_arch_temporal_window", new=AsyncMock()) as mock_confirm,
+        patch("app.services.init_arch_workflow.get_response_async", new=AsyncMock(return_value={"ok": True})),
+    ):
+        result = await workflow_module.submit_response_action_async(
+            "wf-dispatch", action_type="confirm_temporal_window", value="continue_to_next_window"
+        )
+
+    mock_confirm.assert_awaited_once_with("wf-dispatch", action="continue_to_next_window")
+    assert result == {"ok": True}
+
+
+async def test_submit_response_action_async_requires_value_for_confirm_temporal_window():
+    record = WorkflowRecord(workflow_id="wf-no-value", workflow_status=WorkflowStatus.INTERRUPTED)
+    workflow_module.get_workflow_registry()["wf-no-value"] = record
+
+    with pytest.raises(workflow_module.WorkflowValidationError, match="confirm_temporal_window requires a value"):
+        await workflow_module.submit_response_action_async("wf-no-value", action_type="confirm_temporal_window")
 
 
 async def test_list_workflow_events_async_reads_persisted_conversation_items():

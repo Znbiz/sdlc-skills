@@ -20,12 +20,12 @@ from app.db.workflow_repo import (
     list_workflow_runs_for_conversation,
     upsert_workflow_run,
 )
-from app.settings import GatewaySettings, get_gateway_settings
 from app.services.agent_pool import get_agent_pool
 from app.services.task_registry import CliTask, TaskStatus
 from app.services.task_registry import get_registry as get_task_registry
 from app.services.task_runner import cancel_cli_task, run_cli_task
 from app.services.workflow_registry import WorkflowRecord, WorkflowStatus, get_workflow_registry
+from app.settings import GatewaySettings, get_gateway_settings
 from app.workflows.init_arch.checkpointer import get_checkpointer
 from app.workflows.init_arch.domain import RepositoryExecution, WorkflowSessionRecord
 from app.workflows.init_arch.graph import compile_graph
@@ -551,6 +551,10 @@ async def submit_response_action_async(
         await answer_init_arch_question(response_id, question_id=question_id, answer=answer)
     elif action_type == "resume":
         await resume_init_arch_workflow(response_id, field=field, value=value, answer=answer)
+    elif action_type == "confirm_temporal_window":
+        if value is None:
+            raise WorkflowValidationError("confirm_temporal_window requires a value")
+        await confirm_init_arch_temporal_window(response_id, action=str(value))
     else:
         raise WorkflowValidationError(f"Unsupported action_type: {action_type}")
     return await get_response_async(response_id)
@@ -778,6 +782,8 @@ def build_resume_value(*, interrupt_type: str, field: str | None, value: typing.
         return {field: value}
     if interrupt_type == "user_question" and answer is not None:
         return {"answer": answer}
+    if interrupt_type == "temporal_window_confirmation" and value is not None:
+        return {"action": value}
     raise WorkflowValidationError("Invalid resume payload for interrupt type")
 
 
@@ -894,6 +900,23 @@ async def answer_init_arch_question(workflow_id: str, *, question_id: str, answe
     schedule_resume(record, resume_value={"answer": answer})
     await persist_workflow_record(record)
     logger.info("workflow.question.answered", workflow_id=workflow_id, question_id=question_id)
+    return record
+
+
+async def confirm_init_arch_temporal_window(workflow_id: str, *, action: str) -> WorkflowRecord:
+    record = await get_workflow_record_async(workflow_id)
+    if record.workflow_status != WorkflowStatus.INTERRUPTED:
+        raise WorkflowConflictError(f"Workflow is not interrupted (status: {record.workflow_status})")
+
+    pending_interrupt = record.pending_interrupt or {}
+    if pending_interrupt.get("interrupt_type") != "temporal_window_confirmation":
+        raise WorkflowConflictError("Workflow is not waiting for a temporal window confirmation")
+    if action not in {"continue_to_next_window", "finish_temporal_analysis"}:
+        raise WorkflowValidationError(f"Unsupported temporal window confirmation action: {action}")
+
+    schedule_resume(record, resume_value={"action": action})
+    await persist_workflow_record(record)
+    logger.info("workflow.temporal_window.confirmed", workflow_id=workflow_id, action=action)
     return record
 
 

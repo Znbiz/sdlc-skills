@@ -26,6 +26,7 @@
 - `GET /v1/models` публикует facade-models `arch-docs-init_arch`, `arch-docs-update_arch`, `arch-docs-query`;
 - `POST /v1/responses` запускает те же backend runs через model-to-workflow mapping;
 - `GET /v1/responses/{response_id}` возвращает OpenAI-shaped read-model поверх того же runtime;
+- `POST /v1/responses/{response_id}/actions` — custom submit-action route (не часть официального OpenAI API) поверх того же `submit_response_action_async()`, что и REST `conversations.py`: поддерживает `cancel`/`answer_question`/`resume`/`confirm_temporal_window` над тем же `response_id`, без отдельного обходного механизма;
 - `POST /v1/chat/completions` сейчас покрывает query-only сценарий для OpenAI-compatible chat clients;
 - streaming facade не меняет source of truth: conversation timeline и persisted execution dialog остаются внутренними.
 
@@ -524,9 +525,16 @@ Resume semantics:
 - при `continue_to_next_window` per-window analysis progress (`checklist_items_completed`, `analysis_status`) у всех repositories сбрасывается перед advance к `REFRESH_MAIN_BRANCHES` — осознанное решение: полный re-run checklist на новое окно, а не накопительный прогресс, до появления diff-based signal routing (Stage 7);
 - граф (`app/workflows/init_arch/graph.py`) маршрутизирует `confirm_next_temporal_window` кастомным `_route_after_confirm_next_temporal_window()` (не generic `_route_after_node()`): loop-back на `refresh_main_branches` при `continue`, иначе на `finalize_progress`.
 
+Transport-контракт для этого подтверждения полностью подключён:
+
+- `build_resume_value()` в `services/init_arch_workflow.py` резолвит `interrupt_type == "temporal_window_confirmation"` в `{"action": value}`, симметрично `user_input`/`user_question`;
+- `confirm_init_arch_temporal_window(workflow_id, *, action)` — dedicated service-функция (mirror `answer_init_arch_question()`): проверяет `workflow_status is INTERRUPTED` и `pending_interrupt.interrupt_type == "temporal_window_confirmation"`, валидирует `action`, планирует `schedule_resume(...)`;
+- `submit_response_action_async()` получил ветку `action_type == "confirm_temporal_window"` (требует `value`) — тот же generic dispatcher, которым уже пользуются `cancel`/`answer_question`/`resume`;
+- REST `POST /responses/{response_id}/actions/` в `api/rest/conversations.py` требует нуля правок — `ResponseActionRequest` уже был достаточно generic (`action_type`, `question_id`, `answer`, `field`, `value`), новое действие проходит через существующий pass-through;
+- `api/openai.py` получил новый route `POST /v1/responses/{response_id}/actions` (`OpenAIResponseActionRequest`, то же generic-поле множество) поверх того же `submit_response_action_async()` — то самое "действие над тем же `response_id`/workflow-run, без отдельного обходного механизма" из требований этапа. Побочный эффект: закрывает Known Gap "OpenAI facade не экспонирует submit actions" для *всех* interrupt-типов, а не только для temporal-окон.
+
 Открытый gap (не закрыт этим этапом):
 
-- transport-контракт подтверждения не реализован: `build_resume_value()` в `services/init_arch_workflow.py` умеет резолвить только `interrupt_type in {"user_input", "user_question"}` и кинет `WorkflowValidationError` для `temporal_window_confirmation` — REST `conversations.py` и `api/openai.py` не знают про это действие;
 - реальный E2E-прогон через LangGraph checkpointer (Postgres) не выполнялся; interrupt/resume-семантика нового узла проверена только unit-тестами по аналогии с уже существующими паттернами, не через живой checkpointed run.
 
 ## Quality Gates
@@ -678,10 +686,10 @@ Transport-level terminal states:
 
 ## Known Gaps
 
-1. Temporal historical prep строит `commit_range`, `diff_stat_summary`, `changed_paths` и `commit_log_summary` для окна и требует их как обязательный quality gate перед content-анализом (Stage 3-4 закрыты); domain-контракт и реальный graph loop-back для подтверждения следующего окна тоже готовы (`confirm_next_temporal_window` StepId + узел + `_route_after_confirm_next_temporal_window`, Stage 5), но prompts/worker ещё не получают structured change context (Stage 6), а REST/OpenAI transport не умеет резолвить `interrupt_type == "temporal_window_confirmation"` — читай "Temporal Window Confirmation" в разделе Pause/Resume.
+1. Temporal historical prep строит `commit_range`, `diff_stat_summary`, `changed_paths` и `commit_log_summary` для окна и требует их как обязательный quality gate перед content-анализом (Stage 3-4 закрыты); domain-контракт, реальный graph loop-back и REST/OpenAI transport wiring для подтверждения следующего окна тоже готовы (Stage 5 полностью закрыт), но prompts/worker ещё не получают structured change context (Stage 6) — читай "Temporal Window Confirmation" в разделе Pause/Resume.
 2. Workflow graph больше не полностью линеен: `confirm_next_temporal_window` умеет зацикливаться на `refresh_main_branches` для следующего temporal-окна; richer branching/state machine semantics за пределами этого и conditional retry routing по-прежнему не реализованы.
 3. `progress_file_path` ещё существует как compatibility field, хотя long-term owner состояния должен быть persisted session state.
-4. OpenAI facade пока не экспонирует submit actions для `requires_action` response и поэтому не заменяет внутренний conversation-first transport полностью.
+4. OpenAI facade теперь экспонирует generic submit-action route (`POST /v1/responses/{response_id}/actions`, тот же `submit_response_action_async()`, что и REST), но это по-прежнему не полноценный аналог OpenAI Assistants API `submit_tool_outputs` — это custom-расширение facade, а не часть официальной OpenAI-спецификации.
 5. `chat/completions` специально ограничен `arch-docs-query` и не должен использоваться как псевдо-чат для `init_arch`/`update_arch`.
 
 ## Связанные Документы

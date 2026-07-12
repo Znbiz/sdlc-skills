@@ -168,8 +168,6 @@ async def test_chat_completions_stream_returns_openai_sse(async_client, auth_hea
     assert response.headers["content-type"].startswith("text/event-stream")
     assert "chat.completion.chunk" in response.text
     assert "[DONE]" in response.text
-import asyncio
-import json
 from unittest.mock import AsyncMock
 
 import fastapi
@@ -446,3 +444,70 @@ async def test_chat_completions_rejects_non_query_model(async_client, auth_heade
 
     assert response.status_code == 422
     assert "supports only the arch-docs-query model" in response.json()["detail"]
+
+
+async def test_submit_openai_response_action_confirms_temporal_window(async_client, auth_headers, monkeypatch):
+    captured: dict[str, object] = {}
+
+    async def _fake_submit_response_action_async(response_id: str, **kwargs):
+        captured["response_id"] = response_id
+        captured.update(kwargs)
+        return {
+            "response_id": response_id,
+            "conversation_id": "conv-window",
+            "workflow_type": "init_arch",
+            "response_status": "running",
+            "current_step_id": "refresh_main_branches",
+            "current_repo_name": "",
+            "completed_steps": [],
+            "required_actions": [],
+            "created_at": "2026-07-09T10:00:00+00:00",
+            "updated_at": "2026-07-09T10:00:00+00:00",
+            "terminal_result": None,
+        }
+
+    monkeypatch.setattr("app.api.openai.submit_response_action_async", _fake_submit_response_action_async)
+
+    response = await async_client.post(
+        "/v1/responses/wf-window/actions?model=arch-docs-init_arch",
+        json={"action_type": "confirm_temporal_window", "value": "continue_to_next_window"},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    assert captured["response_id"] == "wf-window"
+    assert captured["action_type"] == "confirm_temporal_window"
+    assert captured["value"] == "continue_to_next_window"
+    assert response.json()["metadata"]["current_step_id"] == "refresh_main_branches"
+
+
+async def test_submit_openai_response_action_returns_404_when_response_missing(async_client, auth_headers, monkeypatch):
+    monkeypatch.setattr(
+        "app.api.openai.submit_response_action_async",
+        AsyncMock(side_effect=openai_module.WorkflowNotFoundError("missing response")),
+    )
+
+    response = await async_client.post(
+        "/v1/responses/missing/actions?model=arch-docs-query",
+        json={"action_type": "cancel"},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "missing response"
+
+
+async def test_submit_openai_response_action_returns_422_on_validation_error(async_client, auth_headers, monkeypatch):
+    monkeypatch.setattr(
+        "app.api.openai.submit_response_action_async",
+        AsyncMock(side_effect=openai_module.WorkflowValidationError("confirm_temporal_window requires a value")),
+    )
+
+    response = await async_client.post(
+        "/v1/responses/wf-bad/actions?model=arch-docs-init_arch",
+        json={"action_type": "confirm_temporal_window"},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "confirm_temporal_window requires a value"
