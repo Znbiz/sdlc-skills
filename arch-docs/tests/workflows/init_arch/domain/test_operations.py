@@ -1,4 +1,5 @@
 import datetime as dt
+import typing
 
 import pytest
 
@@ -7,6 +8,7 @@ from app.workflows.init_arch.domain import (
     CommitRangeStatus,
     DomainDefinition,
     DomainStrategy,
+    NextWindowConfirmationStatus,
     OpenQuestionRecord,
     RepositoryExecution,
     StepId,
@@ -17,6 +19,7 @@ from app.workflows.init_arch.domain.operations import (
     DomainOperationError,
     advance_step,
     close_question,
+    confirm_next_temporal_window,
     fail_step,
     finalize_session,
     historical_prep_is_complete,
@@ -24,6 +27,7 @@ from app.workflows.init_arch.domain.operations import (
     open_question,
     record_answer,
     register_repository,
+    request_next_temporal_window_confirmation,
     start_session,
 )
 
@@ -399,6 +403,108 @@ def test_register_repository_and_mark_checklist_item() -> None:
 
     assert session.repositories[0].repository_name == "svc-a"
     assert session.repositories[0].checklist_items_completed == ["repository_classification"]
+
+
+def test_request_next_temporal_window_confirmation_marks_session_waiting() -> None:
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="arch-docs",
+        analysis_scope="full",
+        historical_analysis={"current_snapshot_at": dt.date(2024, 4, 10)},
+    )
+
+    updated = request_next_temporal_window_confirmation(session, next_snapshot_at=dt.date(2024, 7, 10))
+
+    assert updated.status is WorkflowStatus.WAITING_FOR_USER
+    assert updated.historical_analysis.awaiting_window_confirmation is True
+    assert updated.historical_analysis.last_completed_snapshot_at == dt.date(2024, 4, 10)
+    assert updated.historical_analysis.next_snapshot_at == dt.date(2024, 7, 10)
+    assert updated.historical_analysis.next_window_confirmation_status is NextWindowConfirmationStatus.PENDING
+
+
+def test_request_next_temporal_window_confirmation_requires_resolved_snapshot() -> None:
+    session = start_session(session_id="wf-1", product_name="arch-docs", analysis_scope="full")
+
+    with pytest.raises(DomainOperationError, match="snapshot window is resolved"):
+        request_next_temporal_window_confirmation(session, next_snapshot_at=dt.date(2024, 7, 10))
+
+
+def test_confirm_next_temporal_window_requires_pending_confirmation() -> None:
+    session = start_session(session_id="wf-1", product_name="arch-docs", analysis_scope="full")
+
+    with pytest.raises(DomainOperationError, match="no pending temporal window confirmation"):
+        confirm_next_temporal_window(session, action="continue_to_next_window")
+
+
+def test_confirm_next_temporal_window_continue_advances_window() -> None:
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="arch-docs",
+        analysis_scope="full",
+        historical_analysis={
+            "current_snapshot_at": dt.date(2024, 4, 10),
+            "window_index": 0,
+        },
+    )
+    session = request_next_temporal_window_confirmation(session, next_snapshot_at=dt.date(2024, 7, 10))
+
+    updated = confirm_next_temporal_window(session, action="continue_to_next_window")
+
+    assert updated.status is WorkflowStatus.IN_PROGRESS
+    assert updated.historical_analysis.awaiting_window_confirmation is False
+    assert updated.historical_analysis.previous_snapshot_at == dt.date(2024, 4, 10)
+    assert updated.historical_analysis.current_snapshot_at == dt.date(2024, 7, 10)
+    assert updated.historical_analysis.next_snapshot_at is None
+    assert updated.historical_analysis.completed_snapshot_dates == [dt.date(2024, 4, 10)]
+    assert updated.historical_analysis.window_index == 1
+    assert updated.historical_analysis.next_window_confirmation_status is NextWindowConfirmationStatus.CONFIRMED
+
+
+def test_confirm_next_temporal_window_continue_requires_next_snapshot_at() -> None:
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="arch-docs",
+        analysis_scope="full",
+        historical_analysis={
+            "current_snapshot_at": dt.date(2024, 4, 10),
+            "awaiting_window_confirmation": True,
+        },
+    )
+
+    with pytest.raises(DomainOperationError, match="next_snapshot_at is not set"):
+        confirm_next_temporal_window(session, action="continue_to_next_window")
+
+
+def test_confirm_next_temporal_window_rejects_unsupported_action() -> None:
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="arch-docs",
+        analysis_scope="full",
+        historical_analysis={
+            "current_snapshot_at": dt.date(2024, 4, 10),
+            "awaiting_window_confirmation": True,
+        },
+    )
+
+    with pytest.raises(DomainOperationError, match="unsupported temporal window confirmation action"):
+        confirm_next_temporal_window(session, action=typing.cast("typing.Any", "unknown_action"))
+
+
+def test_confirm_next_temporal_window_finish_stops_without_advancing() -> None:
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="arch-docs",
+        analysis_scope="full",
+        historical_analysis={"current_snapshot_at": dt.date(2024, 4, 10)},
+    )
+    session = request_next_temporal_window_confirmation(session, next_snapshot_at=dt.date(2024, 7, 10))
+
+    updated = confirm_next_temporal_window(session, action="finish_temporal_analysis")
+
+    assert updated.status is WorkflowStatus.IN_PROGRESS
+    assert updated.historical_analysis.awaiting_window_confirmation is False
+    assert updated.historical_analysis.current_snapshot_at == dt.date(2024, 4, 10)
+    assert updated.historical_analysis.next_window_confirmation_status is NextWindowConfirmationStatus.STOPPED
 
 
 def test_open_question_and_record_answer_update_session_status() -> None:

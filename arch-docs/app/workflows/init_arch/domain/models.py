@@ -122,6 +122,13 @@ class RepositoryExecution(pydantic.BaseModel):
     analysis_status: Literal["pending", "in_progress", "completed"] = "pending"
 
 
+class NextWindowConfirmationStatus(str, enum.Enum):
+    NONE = "none"
+    PENDING = "pending"
+    CONFIRMED = "confirmed"
+    STOPPED = "stopped"
+
+
 class HistoricalAnalysisState(pydantic.BaseModel):
     anchor_repository_name: str = ""
     anchor_created_at: dt.date | None = None
@@ -131,6 +138,10 @@ class HistoricalAnalysisState(pydantic.BaseModel):
     completed_snapshot_dates: list[dt.date] = pydantic.Field(default_factory=list)
     prep_notes: str = ""
     window_index: int = 0
+    awaiting_window_confirmation: bool = False
+    last_completed_snapshot_at: dt.date | None = None
+    next_snapshot_at: dt.date | None = None
+    next_window_confirmation_status: NextWindowConfirmationStatus = NextWindowConfirmationStatus.NONE
 
 
 class ArtifactRecord(pydantic.BaseModel):

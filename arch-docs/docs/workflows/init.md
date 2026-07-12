@@ -511,6 +511,20 @@ Resume semantics:
 
 - open-question lifecycle уже персистится в `required_actions`, но полноценная conversation-first dialogue model с несколькими runs на один conversation ещё не собрана.
 
+### Temporal Window Confirmation (domain-контракт, Stage 5)
+
+Domain-слой уже поддерживает третий вид паузы — обязательное подтверждение пользователя перед переходом к следующему temporal-окну, отдельно от `request_repository_list`/`interview_user`:
+
+- `NextWindowConfirmationStatus` (`none`/`pending`/`confirmed`/`stopped`) и поля `HistoricalAnalysisState.awaiting_window_confirmation`, `last_completed_snapshot_at`, `next_snapshot_at`, `next_window_confirmation_status` фиксируют состояние ожидания;
+- `request_next_temporal_window_confirmation(session, *, next_snapshot_at)` переводит `session.status` в `WAITING_FOR_USER` и помечает `next_window_confirmation_status = pending`;
+- `confirm_next_temporal_window(session, *, action)` принимает `continue_to_next_window` (продвигает `previous_snapshot_at`/`current_snapshot_at`/`window_index`, пополняет `completed_snapshot_dates`, статус `confirmed`) или `finish_temporal_analysis` (снимает флаг ожидания без продвижения окна, статус `stopped`); вызов без активного pending-подтверждения — `DomainOperationError`.
+
+Открытый gap (не закрыт этим этапом):
+
+- `app/workflows/init_arch/graph.py` линеен и не содержит loop-back edge для повторного окна: `window_index`/`completed_snapshot_dates` существуют в модели, но ни один executable node их не инкрементирует и не вызывает `confirm_next_temporal_window`;
+- transport-контракт подтверждения (dedicated interrupt-node, resume action через REST `conversations.py`, submit action через `api/openai.py` поверх того же `response_id`) не реализован;
+- сброс per-window analysis progress (`checklist_items_completed`, `analysis_status`) при продвижении на следующее окно не определён: `plan_repository_order()` сбрасывает только temporal-delta поля.
+
 ## Quality Gates
 
 ### Before `assess_scope_and_domains`
@@ -660,8 +674,8 @@ Transport-level terminal states:
 
 ## Known Gaps
 
-1. Temporal historical prep строит `commit_range`, `diff_stat_summary`, `changed_paths` и `commit_log_summary` для окна и требует их как обязательный quality gate перед content-анализом (Stage 3-4 закрыты), но prompts/worker ещё не получают structured change context, и пользовательское подтверждение перед следующим окном ещё не реализовано (Stage 5-6 остаются открытыми).
-2. Workflow graph остаётся линейным; richer branching/state machine semantics ещё не вынесены за пределы conditional retry routing.
+1. Temporal historical prep строит `commit_range`, `diff_stat_summary`, `changed_paths` и `commit_log_summary` для окна и требует их как обязательный quality gate перед content-анализом (Stage 3-4 закрыты); domain-контракт подтверждения следующего окна тоже готов (`request_next_temporal_window_confirmation`/`confirm_next_temporal_window`, Stage 5), но prompts/worker ещё не получают structured change context (Stage 6), а сам граф не умеет реально зацикливаться на следующее окно и не подключён ни к одному transport-слою (REST/OpenAI) — читай "Temporal Window Confirmation" в разделе Pause/Resume.
+2. Workflow graph остаётся линейным; richer branching/state machine semantics, включая loop-back для temporal-окон, ещё не вынесены за пределы conditional retry routing.
 3. `progress_file_path` ещё существует как compatibility field, хотя long-term owner состояния должен быть persisted session state.
 4. OpenAI facade пока не экспонирует submit actions для `requires_action` response и поэтому не заменяет внутренний conversation-first transport полностью.
 5. `chat/completions` специально ограничен `arch-docs-query` и не должен использоваться как псевдо-чат для `init_arch`/`update_arch`.

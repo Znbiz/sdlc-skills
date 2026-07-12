@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import datetime as dt
+import typing
 
 from app.workflows.init_arch.domain.models import (
     AnalysisTargetCommitStatus,
     ArtifactRecord,
     CommitRangeStatus,
+    NextWindowConfirmationStatus,
     OpenQuestionRecord,
     RepositoryExecution,
     StepId,
@@ -13,6 +15,8 @@ from app.workflows.init_arch.domain.models import (
     WorkflowStatus,
 )
 from app.workflows.init_arch.domain.steps import STEP_DEFINITION_BY_ID
+
+TemporalWindowConfirmationAction = typing.Literal["continue_to_next_window", "finish_temporal_analysis"]
 
 
 class DomainOperationError(ValueError):
@@ -144,6 +148,75 @@ def finalize_session(session: WorkflowSessionRecord) -> WorkflowSessionRecord:
             "status": WorkflowStatus.COMPLETED,
         }
     )
+
+
+def request_next_temporal_window_confirmation(
+    session: WorkflowSessionRecord,
+    *,
+    next_snapshot_at: dt.date,
+) -> WorkflowSessionRecord:
+    historical = session.historical_analysis
+    if historical.current_snapshot_at is None:
+        raise DomainOperationError("cannot request next window confirmation before a snapshot window is resolved")
+
+    updated_historical = historical.model_copy(
+        update={
+            "awaiting_window_confirmation": True,
+            "last_completed_snapshot_at": historical.current_snapshot_at,
+            "next_snapshot_at": next_snapshot_at,
+            "next_window_confirmation_status": NextWindowConfirmationStatus.PENDING,
+        }
+    )
+    return session.model_copy(
+        update={"status": WorkflowStatus.WAITING_FOR_USER, "historical_analysis": updated_historical}
+    )
+
+
+def confirm_next_temporal_window(
+    session: WorkflowSessionRecord,
+    *,
+    action: TemporalWindowConfirmationAction,
+) -> WorkflowSessionRecord:
+    historical = session.historical_analysis
+    if not historical.awaiting_window_confirmation:
+        raise DomainOperationError("no pending temporal window confirmation for this session")
+
+    if action == "finish_temporal_analysis":
+        updated_historical = historical.model_copy(
+            update={
+                "awaiting_window_confirmation": False,
+                "next_window_confirmation_status": NextWindowConfirmationStatus.STOPPED,
+            }
+        )
+        return session.model_copy(
+            update={"status": WorkflowStatus.IN_PROGRESS, "historical_analysis": updated_historical}
+        )
+
+    if action == "continue_to_next_window":
+        if historical.next_snapshot_at is None:
+            raise DomainOperationError("next_snapshot_at is not set for this session")
+
+        completed_snapshot_dates = list(historical.completed_snapshot_dates)
+        completed_snapshot_at = historical.current_snapshot_at
+        if completed_snapshot_at is not None and completed_snapshot_at not in completed_snapshot_dates:
+            completed_snapshot_dates.append(completed_snapshot_at)
+
+        updated_historical = historical.model_copy(
+            update={
+                "previous_snapshot_at": historical.current_snapshot_at,
+                "current_snapshot_at": historical.next_snapshot_at,
+                "next_snapshot_at": None,
+                "completed_snapshot_dates": completed_snapshot_dates,
+                "window_index": historical.window_index + 1,
+                "awaiting_window_confirmation": False,
+                "next_window_confirmation_status": NextWindowConfirmationStatus.CONFIRMED,
+            }
+        )
+        return session.model_copy(
+            update={"status": WorkflowStatus.IN_PROGRESS, "historical_analysis": updated_historical}
+        )
+
+    raise DomainOperationError(f"unsupported temporal window confirmation action: {action}")
 
 
 def historical_prep_is_complete(session: WorkflowSessionRecord) -> bool:

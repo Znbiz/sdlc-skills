@@ -10,6 +10,7 @@ from app.workflows.init_arch.domain.models import (
     LlmTaskKind,
     LlmTaskRequest,
     LlmTaskResult,
+    NextWindowConfirmationStatus,
     OpenQuestionRecord,
     RepositoryExecution,
     StepId,
@@ -21,6 +22,7 @@ from app.workflows.init_arch.domain.operations import (
     DomainOperationError,
     advance_step,
     close_question,
+    confirm_next_temporal_window,
     fail_step,
     finalize_session,
     historical_prep_is_complete,
@@ -29,6 +31,7 @@ from app.workflows.init_arch.domain.operations import (
     record_answer,
     register_artifact,
     register_repository,
+    request_next_temporal_window_confirmation,
     start_session,
 )
 from app.workflows.init_arch.domain.steps import STEP_DEFINITION_BY_ID, STEP_DEFINITIONS, StepDefinition
@@ -48,6 +51,7 @@ __all__ = [
     "LlmTaskKind",
     "LlmTaskRequest",
     "LlmTaskResult",
+    "NextWindowConfirmationStatus",
     "OpenQuestionRecord",
     "RepositoryExecution",
     "StepDefinition",
@@ -57,6 +61,7 @@ __all__ = [
     "WorkflowStatus",
     "advance_step",
     "close_question",
+    "confirm_next_temporal_window",
     "fail_step",
     "finalize_session",
     "historical_prep_is_complete",
@@ -65,5 +70,6 @@ __all__ = [
     "record_answer",
     "register_artifact",
     "register_repository",
+    "request_next_temporal_window_confirmation",
     "start_session",
 ]

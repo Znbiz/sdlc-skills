@@ -268,7 +268,15 @@
 
 **Результат этапа:** temporal analysis превращается в пользовательски управляемую последовательность окон, где сервис явно останавливается между периодами.
 
-### Этап 6. Передавать diff-context в worker prompts и task contracts
+**Статус выполнения:** частично выполнено (domain-слой закрыт; graph loop-back и transport wiring — открытый follow-up)
+
+**Мини-отчёт:**
+- в `app/workflows/init_arch/domain/models.py` добавлен `NextWindowConfirmationStatus` (`none`/`pending`/`confirmed`/`stopped`) и typed-поля `HistoricalAnalysisState`: `awaiting_window_confirmation`, `last_completed_snapshot_at`, `next_snapshot_at`, `next_window_confirmation_status`;
+- в `app/workflows/init_arch/domain/operations.py` добавлены две typed-операции: `request_next_temporal_window_confirmation(session, *, next_snapshot_at)` переводит session в `WAITING_FOR_USER` и фиксирует pending-подтверждение; `confirm_next_temporal_window(session, *, action)` принимает `continue_to_next_window` (продвигает `previous_snapshot_at`/`current_snapshot_at`/`window_index`, пополняет `completed_snapshot_dates`) или `finish_temporal_analysis` (снимает флаг ожидания, помечает `STOPPED`, не продвигает окно); вызов без активного pending-подтверждения кидает `DomainOperationError`;
+- добавлены и прогнаны тесты в `tests/workflows/init_arch/domain/test_operations.py` (happy path для обоих действий, guard на отсутствие pending-подтверждения, guard на отсутствие `next_snapshot_at`, unreachable-по-типам ветка `unsupported action`); полный прогон `tests/` — **316 passed**; дельта по `operations.py`/`models.py` полностью покрыта тестами;
+- **важное ограничение, зафиксированное явно, а не скрытое:** сам langgraph-граф (`app/workflows/init_arch/graph.py`) сейчас линеен и не содержит loop-back edge для повторного прохода `refresh_main_branches -> plan_repository_order -> ... -> finalize_progress` в рамках одного запуска — `HistoricalAnalysisState.window_index`/`completed_snapshot_dates` существовали в модели ещё до этого этапа, но нигде не инкрементировались исполняемым кодом. Эта работа не была явно описана как отдельный этап плана, но является предпосылкой, без которой `confirm_next_temporal_window` некому вызывать из orchestration-слоя;
+- следствие: `services/init_arch_workflow.py`, `api/rest/conversations.py`, `api/openai.py` **не тронуты** в этом проходе — transport-контракт (dedicated interrupt-node, resume action `continue_to_next_window`/`finish_temporal_analysis`, OpenAI-facade submit action поверх того же `response_id`) остаётся открытым follow-up. Закрыт только domain-контракт (typed state + инварианты), который эти слои будут использовать;
+- также не реализовано в этом проходе: сброс per-window analysis progress (`checklist_items_completed`, `analysis_status`) при продвижении на следующее окно — `plan_repository_order()` уже сбрасывает только temporal-delta поля, но не analysis-прогресс по repositories; нужно явно решить, накопительный это прогресс между окнами или per-window, прежде чем подключать loop-back в graph.py.
 
 **Задача:** сделать temporal delta обязательной частью контекста для LLM worker и всех аналитических шагов по окну.
 
