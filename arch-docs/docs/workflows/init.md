@@ -260,7 +260,8 @@ sequenceDiagram
 - собирает repository facts;
 - планирует snapshot window;
 - резолвит target commits и checkout на snapshot;
-- в текущей реализации готовит snapshot-state, а целевой temporal contract дополнительно требует range/diff context для каждого окна;
+- дополнительно строит temporal-delta для окна: `resolve_temporal_baseline()`, `build_commit_range()`, `collect_diff_summary()`, `collect_changed_paths()`, `collect_commit_log_summary()` заполняют `commit_range`, `diff_stat_summary`, `commit_log_summary`, `changed_paths`/`renamed_paths`/`deleted_paths` для каждого repository-window;
+- extraction уже сделан range-aware (first-window baseline, `no_changes`, `invalid_range` обрабатываются явно), но результат пока не является обязательным quality gate перед `assess_scope_and_domains`/`analyze_repositories` — это остаётся задачей следующего этапа;
 - подготавливает state для historical gate.
 
 ## Runtime Hardening
@@ -373,8 +374,8 @@ sequenceDiagram
 
 - `InitArchState` — transport/runtime envelope для конкретного прогона `langgraph`: хранит `session`, пути workspace/arch-repo, engine, timeout, retry state и последние результаты guard/worker вызовов.
 - `WorkflowSessionRecord` — canonical service-owned состояние workflow: текущий шаг, завершённые шаги, список репозиториев, historical context, knowledge artifacts и open questions.
-- `RepositoryExecution` — состояние анализа одного репозитория: его metadata, выбранный snapshot commit, strategy/domain breakdown и progress по checklist item-ам; target contract для следующих этапов добавляет сюда temporal delta текущего окна.
-- `HistoricalAnalysisState` — общий temporal context workflow: anchor repo, snapshot date и порядок обхода репозиториев; target contract расширяет его до range-aware timeline state.
+- `RepositoryExecution` — состояние анализа одного репозитория: его metadata, выбранный snapshot commit, strategy/domain breakdown, progress по checklist item-ам и (с этапа 2-3) typed temporal-delta текущего окна.
+- `HistoricalAnalysisState` — общий temporal context workflow: anchor repo, snapshot date, порядок обхода репозиториев и (с этапа 2) previous snapshot baseline для range-aware timeline.
 - `OpenQuestionRecord` — один вопрос, который сервис держит в interview loop, включая статус, связанные репозитории, target artifacts и ответ пользователя.
 - `ArtifactRecord` — запись об артефакте knowledge-слоя с типом, трассировкой источников и последним шагом, который его обновлял.
 
@@ -450,8 +451,9 @@ sequenceDiagram
 ### Current Backend Coverage
 
 - `resolve_target_commits()` уже заполняет `previous_analysis_target_commit`, `window_start_commit`, `window_end_commit`, `commit_range`, `diff_stat_summary`, `commit_log_summary`, `changed_paths`, `renamed_paths`, `deleted_paths`, `temporal_delta_note`.
-- Stage 3 покрывает service-side extraction commit range и change metadata, но ещё не делает эту delta обязательным workflow gate для downstream analysis.
-- Для `no_changes` сервис допускает вырожденное окно без diff payload, а окончательное gate-semantics для таких окон закрепляется следующим этапом.
+- Stage 3 закрыт: `HistoricalPrepService` реализует `resolve_temporal_baseline()`, `build_commit_range()`, `collect_diff_summary()`, `collect_changed_paths()`, `collect_commit_log_summary()` и корректно обрабатывает edge-cases — first-window baseline (может деградировать в `baseline_missing`), одинаковые start/end commits (`no_changes`), invalid ancestry (`invalid_range`).
+- Stage 3 покрывает service-side extraction commit range и change metadata, но ещё не делает эту delta обязательным workflow gate для downstream analysis — это Stage 4.
+- Для `no_changes` сервис допускает вырожденное окно без diff payload, а окончательное gate-semantics для таких окон закрепляется Stage 4.
 
 ### Window Rules
 
@@ -480,7 +482,7 @@ sequenceDiagram
   - валидный `commit_range` с diff metadata;
   - явно зафиксированный `baseline_missing`;
   - явно зафиксированный `no_changes`.
-- Текущая реализация backend ещё snapshot-only: `HistoricalPrepService` и `historical_prep_is_complete()` пока не хранят и не валидируют `commit_range`, `diff_stat_summary`, `changed_paths`, `commit_log_summary`. Это осознанный implementation gap, а не часть целевого контракта.
+- `HistoricalPrepService` уже строит и хранит `commit_range`, `diff_stat_summary`, `changed_paths`, `commit_log_summary` (Stage 3), но `historical_prep_is_complete()` их пока не валидирует как обязательное условие готовности окна. Это осознанный implementation gap Stage 4, а не часть целевого контракта.
 
 Progress file path по-прежнему прокидывается в state как compatibility artifact:
 
@@ -531,7 +533,7 @@ Resume semantics:
 - `commit_range` либо явно помеченный `no_changes`;
 - собранные `diff_stat_summary`, `changed_paths`, `commit_log_summary` для непустого окна.
 
-До реализации этих полей сервис не должен интерпретировать checkout-only historical prep как полную готовность temporal analysis, даже если текущий guard ещё пропускает такой state.
+Поля уже собираются (Stage 3), но до реализации этого gate (Stage 4) сервис не должен интерпретировать checkout-only historical prep как полную готовность temporal analysis, даже если текущий guard ещё пропускает такой state.
 
 ### Step transition checks
 
@@ -645,7 +647,7 @@ Transport-level terminal states:
 
 ## Known Gaps
 
-1. Temporal historical prep пока snapshot-only: сервис резолвит `snapshot_commit`, но ещё не строит `commit_range`, `diff_stat_summary`, `changed_paths` и `commit_log_summary` для окна.
+1. Temporal historical prep уже строит `commit_range`, `diff_stat_summary`, `changed_paths` и `commit_log_summary` для окна (Stage 3), но эта delta пока не является обязательным quality gate перед content-анализом, а prompts/worker ещё не получают structured change context (Stage 4/6 остаются открытыми).
 2. Workflow graph остаётся линейным; richer branching/state machine semantics ещё не вынесены за пределы conditional retry routing.
 3. `progress_file_path` ещё существует как compatibility field, хотя long-term owner состояния должен быть persisted session state.
 4. OpenAI facade пока не экспонирует submit actions для `requires_action` response и поэтому не заменяет внутренний conversation-first transport полностью.

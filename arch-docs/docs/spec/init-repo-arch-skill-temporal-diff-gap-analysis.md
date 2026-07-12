@@ -47,3 +47,11 @@ Temporal analysis для `init_arch` должен считаться завер�
 - правило first-window / intermediate-window / missing-history;
 - запрет считать checkout-only prep достаточным для downstream analysis;
 - явное расхождение между текущей реализацией и target contract.
+
+## Обновление после этапов 2-3
+
+Раздел "Что считается разрывом" описывает состояние на момент Этапа 1 (до реализации). После Этапов 2-3:
+
+- `RepositoryExecution`/`HistoricalAnalysisState` уже хранят все перечисленные поля как typed state (Этап 2);
+- `HistoricalPrepService` уже строит и заполняет их через `resolve_temporal_baseline()`, `build_commit_range()`, `collect_diff_summary()`, `collect_changed_paths()`, `collect_commit_log_summary()` (Этап 3);
+- остающийся разрыв сузился до одного пункта: `historical_prep_is_complete()` пока не требует эти поля как обязательное условие готовности окна перед `assess_scope_and_domains`/`analyze_repositories` — это предмет Этапа 4.
