@@ -111,6 +111,128 @@ async def test_resolve_target_commits_updates_statuses_and_commits() -> None:
     assert "missing=1" in result.summary
 
 
+async def test_resolve_target_commits_collects_temporal_delta_for_non_first_window() -> None:
+    service = HistoricalPrepService()
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="arch-docs",
+        analysis_scope="full",
+        historical_analysis={
+            "anchor_repository_name": "svc-a",
+            "anchor_created_at": dt.date(2024, 1, 10),
+            "previous_snapshot_at": dt.date(2024, 3, 10),
+            "current_snapshot_at": dt.date(2024, 4, 10),
+            "ordered_repository_names": ["svc-a"],
+        },
+        repositories=[
+            RepositoryExecution(
+                repository_name="svc-a",
+                created_at=dt.date(2024, 1, 10),
+                main_branch="main",
+                analysis_target_date=dt.date(2024, 4, 10),
+                previous_analysis_target_commit="abc123",
+                analysis_target_commit_status=AnalysisTargetCommitStatus.PENDING,
+            )
+        ],
+    )
+
+    service._resolve_commit_for_repository = MagicMock(return_value="def456")  # type: ignore[method-assign]
+    service.resolve_temporal_baseline = MagicMock(  # type: ignore[method-assign]
+        return_value=("abc123", CommitRangeStatus.RANGE_RESOLVED, "")
+    )
+    service.build_commit_range = MagicMock(return_value=("abc123..def456", CommitRangeStatus.RANGE_RESOLVED, ""))  # type: ignore[method-assign]
+    service.collect_diff_summary = MagicMock(return_value=" 1 file changed, 2 insertions(+)")  # type: ignore[method-assign]
+    service.collect_changed_paths = MagicMock(  # type: ignore[method-assign]
+        return_value=(["app/service.py"], ["old.py -> new.py"], ["legacy.py"])
+    )
+    service.collect_commit_log_summary = MagicMock(  # type: ignore[method-assign]
+        return_value="def456 feat: add temporal diff"
+    )
+
+    result = await service.resolve_target_commits(session, workspace_dir="/workspace")
+
+    repository = result.session.repositories[0]
+    assert repository.analysis_target_commit == "def456"
+    assert repository.window_start_commit == "abc123"
+    assert repository.window_end_commit == "def456"
+    assert repository.commit_range == "abc123..def456"
+    assert repository.commit_range_status is CommitRangeStatus.DIFF_COLLECTED
+    assert repository.diff_stat_summary == " 1 file changed, 2 insertions(+)"
+    assert repository.commit_log_summary == "def456 feat: add temporal diff"
+    assert repository.changed_paths == ["app/service.py"]
+    assert repository.renamed_paths == ["old.py -> new.py"]
+    assert repository.deleted_paths == ["legacy.py"]
+
+
+def test_resolve_temporal_baseline_uses_previous_commit_for_non_first_window() -> None:
+    service = HistoricalPrepService()
+    repository = RepositoryExecution(
+        repository_name="svc-a",
+        created_at=dt.date(2024, 1, 10),
+        main_branch="main",
+        previous_analysis_target_commit="abc123",
+    )
+
+    baseline, status, note = service.resolve_temporal_baseline(
+        repository,
+        workspace_dir="/workspace",
+        snapshot_at=dt.date(2024, 4, 10),
+        previous_snapshot_at=dt.date(2024, 3, 10),
+    )
+
+    assert baseline == "abc123"
+    assert status is CommitRangeStatus.RANGE_RESOLVED
+    assert note == ""
+
+
+def test_resolve_temporal_baseline_uses_first_commit_for_first_window() -> None:
+    service = HistoricalPrepService()
+    repository = RepositoryExecution(repository_name="svc-a", created_at=dt.date(2024, 1, 10), main_branch="main")
+    service._read_first_commit = MagicMock(return_value="first111")  # type: ignore[method-assign]
+
+    baseline, status, note = service.resolve_temporal_baseline(
+        repository,
+        workspace_dir="/workspace",
+        snapshot_at=dt.date(2024, 4, 10),
+        previous_snapshot_at=None,
+    )
+
+    assert baseline == "first111"
+    assert status is CommitRangeStatus.RANGE_RESOLVED
+    assert note == ""
+
+
+def test_build_commit_range_marks_invalid_when_history_is_rewritten() -> None:
+    service = HistoricalPrepService()
+    service._git_is_ancestor = MagicMock(return_value=False)  # type: ignore[method-assign]
+
+    commit_range, status, note = service.build_commit_range(
+        repo_path=Path("/workspace/.temp/svc-a"),
+        window_start_commit="abc123",
+        window_end_commit="def456",
+    )
+
+    assert commit_range == ""
+    assert status is CommitRangeStatus.INVALID_RANGE
+    assert "not an ancestor" in note
+
+
+def test_collect_changed_paths_parses_name_status_output() -> None:
+    service = HistoricalPrepService()
+    service._run_git_command = MagicMock(  # type: ignore[method-assign]
+        return_value="M\tapp/service.py\nR100\told.py\tnew.py\nD\tlegacy.py\nA\tnew_feature.py"
+    )
+
+    changed_paths, renamed_paths, deleted_paths = service.collect_changed_paths(
+        Path("/workspace/.temp/svc-a"),
+        "abc123..def456",
+    )
+
+    assert changed_paths == ["app/service.py", "new.py", "new_feature.py"]
+    assert renamed_paths == ["old.py -> new.py"]
+    assert deleted_paths == ["legacy.py"]
+
+
 async def test_resolve_target_commits_can_checkout_snapshot_commit() -> None:
     service = HistoricalPrepService()
     session = WorkflowSessionRecord(

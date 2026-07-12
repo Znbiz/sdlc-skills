@@ -173,6 +173,34 @@ class HistoricalPrepService:
                 snapshot_at=snapshot_at,
             )
             if commit_sha:
+                baseline_commit, baseline_status, baseline_note = self.resolve_temporal_baseline(
+                    repository,
+                    workspace_dir=workspace_dir,
+                    snapshot_at=snapshot_at,
+                    previous_snapshot_at=session.historical_analysis.previous_snapshot_at,
+                )
+                commit_range, range_status, range_note = self.build_commit_range(
+                    repo_path=repo_path,
+                    window_start_commit=baseline_commit,
+                    window_end_commit=commit_sha,
+                )
+                diff_stat_summary = ""
+                changed_paths: list[str] = []
+                renamed_paths: list[str] = []
+                deleted_paths: list[str] = []
+                commit_log_summary = ""
+                temporal_note = baseline_note or range_note
+                final_range_status = range_status if baseline_status is not CommitRangeStatus.BASELINE_MISSING else baseline_status
+
+                if final_range_status in {
+                    CommitRangeStatus.RANGE_RESOLVED,
+                    CommitRangeStatus.NO_CHANGES,
+                }:
+                    diff_stat_summary = self.collect_diff_summary(repo_path, commit_range)
+                    changed_paths, renamed_paths, deleted_paths = self.collect_changed_paths(repo_path, commit_range)
+                    commit_log_summary = self.collect_commit_log_summary(repo_path, commit_range)
+                    final_range_status = CommitRangeStatus.DIFF_COLLECTED if commit_range else CommitRangeStatus.NO_CHANGES
+
                 if checkout:
                     self._checkout_commit(repo_path, commit_sha)
                 status = AnalysisTargetCommitStatus.CHECKED_OUT if checkout else AnalysisTargetCommitStatus.RESOLVED
@@ -182,6 +210,17 @@ class HistoricalPrepService:
                             "analysis_target_date": snapshot_at,
                             "analysis_target_commit": commit_sha,
                             "analysis_target_commit_status": status,
+                            "previous_analysis_target_commit": baseline_commit,
+                            "window_start_commit": baseline_commit,
+                            "window_end_commit": commit_sha,
+                            "commit_range": commit_range,
+                            "commit_range_status": final_range_status,
+                            "diff_stat_summary": diff_stat_summary,
+                            "commit_log_summary": commit_log_summary,
+                            "changed_paths": changed_paths,
+                            "renamed_paths": renamed_paths,
+                            "deleted_paths": deleted_paths,
+                            "temporal_delta_note": temporal_note,
                         }
                     )
                 )
@@ -193,6 +232,15 @@ class HistoricalPrepService:
                             "analysis_target_date": snapshot_at,
                             "analysis_target_commit": "",
                             "analysis_target_commit_status": AnalysisTargetCommitStatus.MISSING,
+                            "window_end_commit": "",
+                            "commit_range": "",
+                            "commit_range_status": CommitRangeStatus.BASELINE_MISSING,
+                            "diff_stat_summary": "",
+                            "commit_log_summary": "",
+                            "changed_paths": [],
+                            "renamed_paths": [],
+                            "deleted_paths": [],
+                            "temporal_delta_note": "No commit available for the current snapshot date.",
                         }
                     )
                 )
@@ -214,6 +262,92 @@ class HistoricalPrepService:
                 f"Resolved historical commits for snapshot {snapshot_at.isoformat()}: "
                 f"resolved={resolved_count}, missing={missing_count}"
             ),
+        )
+
+    def resolve_temporal_baseline(
+        self,
+        repository: RepositoryExecution,
+        *,
+        workspace_dir: str,
+        snapshot_at: dt.date,
+        previous_snapshot_at: dt.date | None,
+    ) -> tuple[str, CommitRangeStatus, str]:
+        del snapshot_at
+
+        if previous_snapshot_at is not None:
+            if repository.previous_analysis_target_commit:
+                return repository.previous_analysis_target_commit, CommitRangeStatus.RANGE_RESOLVED, ""
+            return "", CommitRangeStatus.BASELINE_MISSING, "Previous snapshot commit is unavailable for this repository."
+
+        try:
+            first_commit = self._read_first_commit(repository, workspace_dir=workspace_dir)
+        except (ValueError, FileNotFoundError):
+            return "", CommitRangeStatus.BASELINE_MISSING, "First repository commit is unavailable for this repository."
+        if not first_commit:
+            return "", CommitRangeStatus.BASELINE_MISSING, "First repository commit is unavailable for this repository."
+        return first_commit, CommitRangeStatus.RANGE_RESOLVED, ""
+
+    def build_commit_range(
+        self,
+        *,
+        repo_path: pathlib.Path,
+        window_start_commit: str,
+        window_end_commit: str,
+    ) -> tuple[str, CommitRangeStatus, str]:
+        if not window_end_commit:
+            return "", CommitRangeStatus.BASELINE_MISSING, "Window end commit is unavailable."
+        if not window_start_commit:
+            return "", CommitRangeStatus.BASELINE_MISSING, "Temporal baseline commit is unavailable."
+        if window_start_commit == window_end_commit:
+            return "", CommitRangeStatus.NO_CHANGES, ""
+        if not self._git_is_ancestor(repo_path, window_start_commit, window_end_commit):
+            return "", CommitRangeStatus.INVALID_RANGE, "Window start commit is not an ancestor of the snapshot commit."
+        return f"{window_start_commit}..{window_end_commit}", CommitRangeStatus.RANGE_RESOLVED, ""
+
+    def collect_diff_summary(self, repo_path: pathlib.Path, commit_range: str) -> str:
+        if not commit_range:
+            return ""
+        return self._run_git_command(
+            repo_path,
+            ["git", "diff", "--stat", commit_range],
+            allow_empty=True,
+        )
+
+    def collect_changed_paths(self, repo_path: pathlib.Path, commit_range: str) -> tuple[list[str], list[str], list[str]]:
+        if not commit_range:
+            return [], [], []
+
+        output = self._run_git_command(
+            repo_path,
+            ["git", "diff", "--name-status", commit_range],
+            allow_empty=True,
+        )
+        changed_paths: list[str] = []
+        renamed_paths: list[str] = []
+        deleted_paths: list[str] = []
+        for raw_line in output.splitlines():
+            if not raw_line.strip():
+                continue
+            parts = raw_line.split("\t")
+            status = parts[0]
+            if status.startswith("R") and len(parts) >= 3:
+                renamed_paths.append(f"{parts[1]} -> {parts[2]}")
+                changed_paths.append(parts[2])
+                continue
+            if status == "D" and len(parts) >= 2:
+                deleted_paths.append(parts[1])
+                continue
+            if len(parts) >= 2:
+                changed_paths.append(parts[1])
+        return changed_paths, renamed_paths, deleted_paths
+
+    def collect_commit_log_summary(self, repo_path: pathlib.Path, commit_range: str) -> str:
+        if not commit_range:
+            return ""
+        return self._run_git_command(
+            repo_path,
+            ["git", "log", "--oneline", commit_range],
+            allow_empty=True,
         )
 
     def _read_repository_facts(self, repository_name: str, *, workspace_dir: str) -> dict[str, dt.date | str]:
@@ -247,6 +381,25 @@ class HistoricalPrepService:
             ["git", "rev-list", "-1", f"--before={before_value}", repository.main_branch or "HEAD"],
             allow_empty=True,
         )
+
+    def _read_first_commit(self, repository: RepositoryExecution, *, workspace_dir: str) -> str:
+        repo_path = self._repository_path(repository.repository_name, workspace_dir=workspace_dir)
+        first_commits = self._run_git_command(
+            repo_path,
+            ["git", "rev-list", "--max-parents=0", repository.main_branch or "HEAD"],
+            allow_empty=True,
+        )
+        return first_commits.splitlines()[0] if first_commits else ""
+
+    def _git_is_ancestor(self, repo_path: pathlib.Path, start_commit: str, end_commit: str) -> bool:
+        completed = subprocess.run(  # noqa: S603
+            ["git", "merge-base", "--is-ancestor", start_commit, end_commit],
+            cwd=repo_path,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        return completed.returncode == 0
 
     def _checkout_commit(self, repo_path: pathlib.Path, commit_sha: str) -> None:
         self._run_git_command(repo_path, ["git", "checkout", commit_sha])

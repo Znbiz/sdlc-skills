@@ -378,6 +378,12 @@ sequenceDiagram
 - `OpenQuestionRecord` — один вопрос, который сервис держит в interview loop, включая статус, связанные репозитории, target artifacts и ответ пользователя.
 - `ArtifactRecord` — запись об артефакте knowledge-слоя с типом, трассировкой источников и последним шагом, который его обновлял.
 
+Текущее состояние backend после этапов 2-3:
+
+- `HistoricalPrepService.resolve_target_commits()` уже совмещает snapshot resolution и первичный temporal-delta сбор: для каждого repository-window сервис пытается определить baseline commit, построить `commit_range` и собрать summaries/path lists.
+- Для first window baseline сначала ищется как первый commit репозитория; если git-history локально недоступна, состояние фиксируется как явный `baseline_missing`, а не как неявный пустой range.
+- Для subsequent windows baseline берётся из `previous_analysis_target_commit`; при переписанной истории или разрыве ancestry сервис помечает окно как `invalid_range`.
+
 Ключевые поля session state:
 
 - `current_step`
@@ -440,6 +446,12 @@ sequenceDiagram
 - `diff_stat_summary` — summary `git diff --stat` для текущего окна.
 - `changed_paths` — нормализованный список путей из `git diff --name-status`, включая rename/delete semantics.
 - `commit_log_summary` — summary commit history по `git log` для текущего окна.
+
+### Current Backend Coverage
+
+- `resolve_target_commits()` уже заполняет `previous_analysis_target_commit`, `window_start_commit`, `window_end_commit`, `commit_range`, `diff_stat_summary`, `commit_log_summary`, `changed_paths`, `renamed_paths`, `deleted_paths`, `temporal_delta_note`.
+- Stage 3 покрывает service-side extraction commit range и change metadata, но ещё не делает эту delta обязательным workflow gate для downstream analysis.
+- Для `no_changes` сервис допускает вырожденное окно без diff payload, а окончательное gate-semantics для таких окон закрепляется следующим этапом.
 
 ### Window Rules
 

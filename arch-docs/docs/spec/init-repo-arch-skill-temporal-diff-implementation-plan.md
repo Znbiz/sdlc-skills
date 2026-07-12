@@ -184,6 +184,16 @@
 
 **Результат этапа:** service-side historical prep строит воспроизводимую temporal delta для каждого окна.
 
+**Статус выполнения:** выполнено
+
+**Мини-отчёт:**
+- в `app/workflows/init_arch/historical.py` добавлены stage-3 методы `resolve_temporal_baseline()`, `build_commit_range()`, `collect_diff_summary()`, `collect_changed_paths()` и `collect_commit_log_summary()`;
+- `resolve_target_commits()` теперь не только находит `analysis_target_commit`, но и собирает typed temporal delta: baseline commit, `commit_range`, summaries по `git log --oneline` и `git diff --stat`, а также нормализованные `changed_paths`/`renamed_paths`/`deleted_paths`;
+- обработаны edge-cases для первого окна и проблемной истории: first-window baseline может деградировать в явный `baseline_missing`, одинаковые start/end commits маркируются как `no_changes`, а invalid ancestry помечается как `invalid_range`;
+- diff parsing нормализует rename/delete semantics в состоянии workflow, чтобы downstream analysis мог приоритизировать изменившиеся зоны кода без повторного raw git parsing;
+- legacy `init-repo-arch-skill/scripts/analysis_guard/{commands,validation}.py` в этом репозитории отсутствуют, поэтому parity на этом этапе реализована на service-side `arch-docs`, а перенос CLI-поведения остаётся следующей миграционной задачей;
+- добавлены и прогнаны тесты в `tests/workflows/init_arch/test_historical.py`, затем подтверждён регрессионный прогон всего `tests/workflows/init_arch`.
+
 ### Этап 4. Сделать temporal delta обязательным quality gate
 
 **Задача:** запретить переход к содержательному анализу, если delta текущего окна не подготовлена.
