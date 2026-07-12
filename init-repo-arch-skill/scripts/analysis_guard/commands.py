@@ -129,6 +129,7 @@ def _parse_name_status(name_status_output: str) -> tuple[list[str], list[str], l
         status = parts[0]
         if status.startswith("R") and len(parts) >= 3:
             renamed.append(f"{parts[1]} -> {parts[2]}")
+            changed.append(parts[2])
         elif status.startswith("D") and len(parts) >= 2:
             deleted.append(parts[1])
         elif len(parts) >= 2:

@@ -1,4 +1,5 @@
 import datetime as dt
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -14,6 +15,24 @@ from app.workflows.init_arch.domain import (
     WorkflowSessionRecord,
 )
 from app.workflows.init_arch.historical import HistoricalPrepService
+
+
+def _git(repo_path: Path, *args: str) -> str:
+    result = subprocess.run(  # noqa: S603
+        ["git", *args],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
+def _init_real_git_repo(repo_path: Path) -> None:
+    repo_path.mkdir(parents=True, exist_ok=True)
+    _git(repo_path, "init", "-b", "main")
+    _git(repo_path, "config", "user.name", "Temporal Diff Test")
+    _git(repo_path, "config", "user.email", "temporal-diff-test@example.com")
 
 
 def _make_session() -> WorkflowSessionRecord:
@@ -448,6 +467,61 @@ def test_collect_changed_paths_parses_name_status_output() -> None:
     assert changed_paths == ["app/service.py", "new.py", "new_feature.py"]
     assert renamed_paths == ["old.py -> new.py"]
     assert deleted_paths == ["legacy.py"]
+
+
+def test_temporal_delta_pipeline_against_real_git_repo_with_multi_commit_rename_and_delete(tmp_path: Path) -> None:
+    """End-to-end test against a real git repo, not mocked subprocess output.
+
+    Exercises multiple commits inside one window, a real rename (git mv) and a real
+    delete (git rm) in the same range, and asserts the parsed changed/renamed/deleted
+    paths, diff stat, and commit log summary against actual `git` output.
+    """
+    repo_path = tmp_path / "svc-a"
+    _init_real_git_repo(repo_path)
+
+    (repo_path / "file_a.py").write_text("a = 1\n", encoding="utf-8")
+    (repo_path / "file_b.py").write_text("b = 1\n", encoding="utf-8")
+    _git(repo_path, "add", "file_a.py", "file_b.py")
+    _git(repo_path, "commit", "-m", "commit-1: baseline")
+    window_start_commit = _git(repo_path, "rev-parse", "HEAD")
+
+    (repo_path / "file_a.py").write_text("a = 2\n", encoding="utf-8")
+    _git(repo_path, "commit", "-am", "commit-2: modify file_a")
+
+    _git(repo_path, "mv", "file_b.py", "file_b_renamed.py")
+    _git(repo_path, "commit", "-am", "commit-3: rename file_b")
+
+    _git(repo_path, "rm", "file_a.py")
+    _git(repo_path, "commit", "-am", "commit-4: delete file_a")
+    window_end_commit = _git(repo_path, "rev-parse", "HEAD")
+
+    service = HistoricalPrepService()
+
+    commit_range, status, note = service.build_commit_range(
+        repo_path=repo_path,
+        window_start_commit=window_start_commit,
+        window_end_commit=window_end_commit,
+    )
+    assert status is CommitRangeStatus.RANGE_RESOLVED
+    assert commit_range == f"{window_start_commit}..{window_end_commit}"
+    assert note == ""
+
+    changed_paths, renamed_paths, deleted_paths = service.collect_changed_paths(repo_path, commit_range)
+    assert changed_paths == ["file_b_renamed.py"]
+    assert renamed_paths == ["file_b.py -> file_b_renamed.py"]
+    assert deleted_paths == ["file_a.py"]
+
+    diff_stat_summary = service.collect_diff_summary(repo_path, commit_range)
+    assert "file_a.py" in diff_stat_summary
+    assert "file_b_renamed.py" in diff_stat_summary or "file_b.py" in diff_stat_summary
+
+    commit_log_summary = service.collect_commit_log_summary(repo_path, commit_range)
+    log_lines = [line for line in commit_log_summary.splitlines() if line.strip()]
+    assert len(log_lines) == 3
+    assert any("commit-4" in line for line in log_lines)
+    assert any("commit-3" in line for line in log_lines)
+    assert any("commit-2" in line for line in log_lines)
+    assert not any("commit-1" in line for line in log_lines)
 
 
 async def test_resolve_target_commits_can_checkout_snapshot_commit() -> None:

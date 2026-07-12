@@ -65,7 +65,7 @@ done                     -> terminal state
 
 ## Sequence Diagram
 
-Ниже зафиксированы три ключевых service-driven участка, уже реализованных в workflow: historical prep, knowledge pipeline и interview loop после ответа пользователя.
+Ниже зафиксированы четыре ключевых service-driven участка, уже реализованных в workflow: diff-aware historical prep (snapshot + temporal delta), knowledge pipeline, interview loop после ответа пользователя, и diff signal routing вместе с temporal window confirmation loop-back.
 
 ```mermaid
 sequenceDiagram
@@ -106,22 +106,40 @@ sequenceDiagram
     Hist-->>Node: planned session
 
     Node->>Hist: resolve_target_commits(..., checkout=true)
-    Hist->>Audit: GUARD_COMMAND_REQUESTED(resolve_target_commits)
+    Hist->>Audit: TEMPORAL_RANGE_REQUESTED(snapshot_at, repository_count)
 
     loop for each repository
         Hist->>Git: resolve commit for snapshot date
         alt commit found
+            Hist->>Hist: resolve_temporal_baseline(previous window commit, or first commit for window 1)
+            Hist->>Git: build_commit_range: merge-base --is-ancestor(baseline, snapshot_commit)
+            alt baseline missing
+                Hist->>Hist: commit_range_status = BASELINE_MISSING
+                Hist->>Audit: TEMPORAL_DIFF_MISSING(repository_name, commit_range_status)
+            else baseline == snapshot commit
+                Hist->>Hist: commit_range_status = NO_CHANGES
+                Hist->>Audit: TEMPORAL_RANGE_RESOLVED(repository_name, commit_range_status)
+            else baseline not an ancestor (rewritten history)
+                Hist->>Hist: commit_range_status = INVALID_RANGE
+                Hist->>Audit: TEMPORAL_RANGE_INVALID(repository_name, commit_range_status)
+            else valid range
+                Hist->>Git: git log --oneline / git diff --stat / git diff --name-status (commit_range)
+                Git-->>Hist: commit_log_summary, diff_stat_summary, changed/renamed/deleted paths
+                Hist->>Hist: commit_range_status = DIFF_COLLECTED
+                Hist->>Audit: TEMPORAL_DIFF_COLLECTED(repository_name, commit_range_status)
+            end
             Hist->>Git: checkout snapshot commit
             Hist->>Hist: mark CHECKED_OUT
         else commit missing
-            Hist->>Hist: mark MISSING
+            Hist->>Hist: mark MISSING, commit_range_status = BASELINE_MISSING
         end
     end
 
     Hist->>Audit: GUARD_COMMAND_APPLIED(resolve_target_commits)
-    Hist-->>Node: resolved session
+    Hist-->>Node: resolved session (snapshot state + temporal delta)
     Node->>Guard: advance_step(..., ASSESS_SCOPE_AND_DOMAINS)
     Guard->>Domain: historical_prep_is_complete(session)
+    Note over Domain: Требует snapshot_commit И (DIFF_COLLECTED|NO_CHANGES|BASELINE_MISSING) для non-first окна — RANGE_RESOLVED/INVALID_RANGE/NOT_STARTED блокируют переход, даже если checkout уже выполнен
     alt historical prep complete
         Guard->>Audit: GUARD_COMMAND_REQUESTED/APPLIED(advance)
         Node->>Audit: WORKFLOW_STEP_COMPLETED(plan_repository_order)
@@ -219,6 +237,55 @@ sequenceDiagram
         Guard->>Audit: GUARD_COMMAND_APPLIED(advance)
         Node->>Audit: WORKFLOW_STEP_COMPLETED(interview_user)
         Note over Node,Audit: Только сервис принимает решение о переходе к следующему шагу
+    end
+```
+
+```mermaid
+sequenceDiagram
+    autonumber
+
+    participant User as Пользователь
+    participant WF as LangGraph workflow
+    participant Node as init_arch.nodes
+    participant Routing as domain.signal_routing
+    participant Guard as InitArchGuardService
+    participant Hist as HistoricalPrepService
+    participant Audit as WorkflowAuditService
+
+    WF->>Node: node_analyze_repositories(state)
+    loop for each repository
+        Node->>Routing: classify_diff_severity(repository)
+        Note over Routing: commit_range_status=NOT_STARTED/BASELINE_MISSING/INVALID_RANGE -> full_required<br/>NO_CHANGES или пустой diff -> no_signal<br/>иначе: <=3 top-level dirs -> local, больше -> broad
+        Routing-->>Node: DiffSeverity
+        Node->>Routing: route_checklist_items(repository, all_checklist_item_ids)
+        Routing-->>Node: routed subset (full / только repository_consistency_review / затронутые категории)
+        Node->>Audit: DIFF_SIGNAL_ROUTED(repository_name, diff_severity, routed_items, total_items)
+        loop for each routed checklist item
+            Node->>Node: build_step_prompt(...) с temporal-delta блоком (Stage 6)
+        end
+    end
+    Node->>Guard: advance_step(..., INTERVIEW_USER)
+
+    Note over WF,Node: ... остальные шаги knowledge pipeline не изменились ...
+
+    WF->>Node: node_confirm_next_temporal_window(state)
+    Node->>Hist: compute_next_window(session, today)
+    alt все repositories уже на remote_head_commit, либо следующее окно ещё в будущем
+        Hist-->>Node: None (terminal)
+        Node->>Guard: advance_step(..., FINALIZE_PROGRESS)
+    else есть следующее окно
+        Node-->>WF: interrupt({"interrupt_type": "temporal_window_confirmation", next_snapshot_at})
+        Note over Node,WF: Workflow останавливается и ждёт explicit user action — тот же паттерн паузы, что у request_repository_list/interview_user
+        User->>WF: resume({"action": "continue_to_next_window"}) или {"action": "finish_temporal_analysis"}
+        alt continue_to_next_window
+            Node->>Guard: request_next_temporal_window_confirmation(...) -> confirm_next_temporal_window(...)
+            Node->>Node: сбросить checklist_items_completed/analysis_status для всех repositories (per-window re-analysis)
+            Node->>Guard: advance_step(..., REFRESH_MAIN_BRANCHES)
+            Note over Node,WF: Реальный loop-back графа — следующее окно начинается с refresh_main_branches
+        else finish_temporal_analysis
+            Node->>Guard: confirm_next_temporal_window(action=finish_temporal_analysis)
+            Node->>Guard: advance_step(..., FINALIZE_PROGRESS)
+        end
     end
 ```
 
@@ -747,9 +814,50 @@ Transport-level terminal states:
 
 Это не означает, что transport уже полностью эквивалентен всем будущим OpenAI-compatible action semantics, но означает, что текущий service-owned workflow, historical prep, knowledge pipeline и transport/persistence regressions ловятся тестами до реального запуска.
 
+С Этапа 9 к этому добавлены regression-срезы, целенаправленно закрывающие diff-aware temporal analysis:
+
+- `tests/workflows/init_arch/test_historical.py::test_temporal_delta_pipeline_against_real_git_repo_with_multi_commit_rename_and_delete` — единственный тест в наборе, который прогоняет `build_commit_range()`/`collect_diff_summary()`/`collect_changed_paths()`/`collect_commit_log_summary()` против **реального** git-репозитория (несколько commit в одном окне, реальный `git mv` и `git rm`), а не мокнутого `_run_git_command`;
+- `tests/workflows/init_arch/test_nodes.py::test_node_plan_repository_order_blocks_when_checkout_done_but_temporal_delta_missing` — единственный workflow-level (не domain-level) тест quality gate: прогоняет реальный `InitArchGuardService` через реальный `node_plan_repository_order()` и подтверждает, что checkout сам по себе не продвигает workflow, если temporal delta не собрана (`commit_range_status` застрял на `RANGE_RESOLVED`);
+- `init-repo-arch-skill/tests/test_analysis_guard_knowledge.py::TemporalDeltaUnitTests::test_build_temporal_delta_parses_real_rename_and_delete_across_multiple_commits` — тот же real-git rename/delete сценарий для legacy CLI; этот тест поймал реальное расхождение между `arch-docs` и legacy `_parse_name_status()` (переименованный путь не добавлялся в `changed_paths`), исправленное сразу после обнаружения.
+
+## Operational Guide
+
+Практические указания для эксплуатации и отладки diff-aware temporal workflow — что делать, когда `commit_range_status` репозитория не `diff_collected`.
+
+### Что делать при `invalid_range`
+
+`invalid_range` означает, что `window_start_commit` (baseline предыдущего окна) больше не является предком `window_end_commit` (snapshot commit текущего окна) — типичная причина: force-push, rebase или squash в отслеживаемом репозитории между двумя прогонами `init_arch`.
+
+- Это блокирующее состояние: `historical_prep_is_complete()` не пропустит workflow дальше `plan_repository_order`, пока `commit_range_status` остаётся `invalid_range`.
+- Прежде чем повторять прогон, проверь в самом репозитории (`git log --oneline --all`), не была ли реально переписана история между `window_start_commit` и текущим `HEAD` основной ветки — если да, значит diff за это окно физически невозможно восстановить как непрерывный range.
+- Рабочий обход: явно сбросить `previous_analysis_target_commit` для этого репозитория (например, через ручную правку session state или через новый цикл `timeline --plan`/`--advance-window` в legacy CLI) так, чтобы baseline снова резолвился как first-window fallback (первый commit на `main_branch`). Это не восстанавливает потерянный diff за реально переписанный период, но переводит репозиторий в валидное состояние `baseline_missing`/`diff_collected` для дальнейших окон.
+- Не пытайся вручную поставить `commit_range_status=diff_collected` с пустым/некорректным `commit_range` — quality gate (`_repository_temporal_window_is_valid`) проверяет и статус, и непустой `commit_range` совместно; несогласованное состояние будет поймано на следующей валидации.
+
+### Как интерпретировать `baseline_missing`
+
+`baseline_missing` — валидное, не аварийное состояние. Возникает в двух случаях:
+
+1. **Первое окно репозитория без истории**: если у репозитория нет ни одного commit до snapshot date (например, репозиторий создан позже anchor-репозитория) и первый commit на `main_branch` не резолвится.
+2. **Отсутствует baseline с предыдущего окна**: `previous_analysis_target_commit` пуст для non-first окна — обычно означает, что репозиторий появился в scope анализа только сейчас (не участвовал в предыдущем окне).
+
+В обоих случаях `historical_prep_is_complete()` пропускает такой репозиторий дальше **без diff** — worker получит только snapshot-state (checkout), но явную заметку в промпте (`temporal_delta_note`), что полагаться на diff для этого репозитория нельзя. Это осознанный компромисс: снапшот-анализ всё равно нужен для первого прохода по репозиторию, а diff появится начиная со следующего окна, когда baseline уже будет зафиксирован.
+
+### Когда допустим fallback к snapshot-only анализу
+
+Формально — никогда для окон, следующих не первыми: quality gate (Stage 4) не пропустит `analyze_repositories`, если `commit_range_status` не в `{diff_collected, no_changes, baseline_missing}`. Единственный легитимный "fallback к snapshot-only" — это сам `baseline_missing` (см. выше), который по определению уже является explicit, задокументированным и auditable случаем, а не тихим обходом. Если нужен полностью snapshot-only анализ без temporal reasoning вообще — это сценарий не `init_arch`, а разового ручного анализа вне workflow; сервис такого режима не поддерживает намеренно (см. Temporal Contract, Downstream Contract).
+
+## Граница с `update-repo-arch-skill`
+
+`init_arch` (этот документ) и `update-repo-arch-skill` оба строят diff между двумя состояниями репозитория, но решают разные задачи и не должны путаться местами:
+
+- **`update-repo-arch-skill`** — это **baseline-to-HEAD** delta workflow: он берёт один зафиксированный `previous_baseline_commit` (последний коммит, на котором архитектурный репозиторий обновлялся в прошлый раз) и текущий `HEAD` каждого отслеживаемого репозитория, строит один diff на весь интервал и обновляет уже существующий архитектурный репозиторий triage-first, signal-routed образом (см. `update-repo-arch-skill/references/checklist-signal-routing.md`). Это операция "что изменилось с прошлого обновления документации" — линейная, один прогон на все репозитории сразу.
+- **`init_arch`** — получает **window-to-window** diff semantics **внутри** первичного исторического анализа: он не обновляет уже существующий архитектурный репозиторий, а реконструирует его с нуля, проходя по нескольким последовательным temporal snapshot'ам (`window_months`-интервалы от `created_at` анархор-репозитория до текущего момента), и для каждого окна строит diff относительно *предыдущего окна*, а не относительно единого baseline. Это множество последовательных diff-срезов внутри одного workflow, разделённых обязательным user confirmation (`confirm_next_temporal_window`), а не один diff на весь исторический период.
+- Общие primitives переиспользуются намеренно (см. риск "`init` и `update` начнут дублировать слишком много логики" в implementation plan): concepts как `commit_range`, `diff_stat_summary`, `changed_paths`/`renamed_paths`/`deleted_paths`, и lightweight signal routing (`DiffSeverity`/`route_checklist_items()` в `init_arch` — прямая адаптация `checklist-signal-routing.md` из `update-repo-arch-skill`) одинаковы по духу, но domain state, quality gates и workflow orchestration у двух skill'ов разные и не должны смешиваться в одном session state.
+- Практическое следствие: если репозиторий уже проанализирован через `init_arch` (архитектурный репозиторий существует), последующие обновления документации идут через `update-repo-arch-skill`, а не через повторный запуск `init_arch` с новым `snapshot_date`. `init_arch`-овский temporal window loop предназначен для реконструкции истории эволюции продукта "с нуля", а не для его текущего сопровождения.
+
 ## Known Gaps
 
-1. Temporal historical prep строит `commit_range`, `diff_stat_summary`, `changed_paths` и `commit_log_summary` для окна и требует их как обязательный quality gate перед content-анализом (Stage 3-4 закрыты); domain-контракт, реальный graph loop-back и REST/OpenAI transport wiring для подтверждения следующего окна тоже готовы (Stage 5 полностью закрыт); prompts/worker получают structured change context — compact/expanded temporal-delta блок и `diff_based_findings`/`snapshot_based_findings` в `LlmTaskResult` (Stage 6 закрыт); diff приоритизирует глубину анализа внутри `analyze_repositories` через `DiffSeverity`/`route_checklist_items()` (Stage 7 закрыт); legacy `analysis_guard` CLI (`init-repo-arch-skill/scripts/analysis_guard/`) синхронизирован с тем же diff-aware contract — temporal-delta поля, `timeline --resolve-local`/`--advance-window`, `validate`-gate и `status`-вывод (Stage 8 закрыт) — читай "Worker Prompt Enrichment", "Diff Signal Routing", "Legacy Interop Tooling" и "Temporal Window Confirmation". Открыто: Stage 9 (расширенный тестовый контур/регрессии специально для этого набора этапов) и Stage 10 (финальная документация/операционные критерии).
+1. Diff-aware temporal analysis для `init_arch` реализован полностью, все 10 этапов [implementation-плана](../spec/init-repo-arch-skill-temporal-diff-implementation-plan.md) закрыты: typed temporal-delta contract и domain state (Stage 1-2), range/diff extraction в `HistoricalPrepService` (Stage 3), обязательный quality gate перед content-анализом (Stage 4), обязательное user confirmation между temporal-окнами с реальным graph loop-back и REST/OpenAI transport wiring (Stage 5), structured change context в worker prompts и `LlmTaskResult` (Stage 6), diff-based signal routing внутри `analyze_repositories` (Stage 7), синхронизация с legacy `analysis_guard` CLI (Stage 8), regression-покрытие через real-git интеграционные тесты, включая multi-commit/rename/delete сценарии (Stage 9), и операционная документация — читай "Worker Prompt Enrichment", "Diff Signal Routing", "Legacy Interop Tooling", "Temporal Window Confirmation", "Operational Guide" и "Граница с `update-repo-arch-skill`" (Stage 10).
 2. Workflow graph больше не полностью линеен: `confirm_next_temporal_window` умеет зацикливаться на `refresh_main_branches` для следующего temporal-окна; richer branching/state machine semantics за пределами этого и conditional retry routing по-прежнему не реализованы.
 3. `progress_file_path` ещё существует как compatibility field, хотя long-term owner состояния должен быть persisted session state.
 4. OpenAI facade теперь экспонирует generic submit-action route (`POST /v1/responses/{response_id}/actions`, тот же `submit_response_action_async()`, что и REST), но это по-прежнему не полноценный аналог OpenAI Assistants API `submit_tool_outputs` — это custom-расширение facade, а не часть официальной OpenAI-спецификации.

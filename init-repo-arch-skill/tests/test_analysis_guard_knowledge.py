@@ -1203,6 +1203,55 @@ class TemporalDeltaUnitTests(unittest.TestCase):
             self.assertEqual(repo["commit_range"], f"{first_commit}..{third_commit}")
             self.assertIn("payload.txt", repo["changed_paths"])
 
+    def test_build_temporal_delta_parses_real_rename_and_delete_across_multiple_commits(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir) / "rename-delete-repo"
+            repo_path.mkdir(parents=True, exist_ok=True)
+            subprocess.run(["git", "init", "-b", "main"], cwd=repo_path, check=True, capture_output=True)
+            subprocess.run(
+                ["git", "config", "user.name", "Codex Test"], cwd=repo_path, check=True, capture_output=True
+            )
+            subprocess.run(
+                ["git", "config", "user.email", "codex@example.com"], cwd=repo_path, check=True, capture_output=True
+            )
+
+            def _commit(message: str) -> str:
+                subprocess.run(["git", "commit", "-m", message], cwd=repo_path, check=True, capture_output=True)
+                return subprocess.run(
+                    ["git", "rev-parse", "HEAD"], cwd=repo_path, check=True, capture_output=True, text=True
+                ).stdout.strip()
+
+            (repo_path / "file_a.txt").write_text("a-1\n", encoding="utf-8")
+            (repo_path / "file_b.txt").write_text("b-1\n", encoding="utf-8")
+            subprocess.run(["git", "add", "file_a.txt", "file_b.txt"], cwd=repo_path, check=True, capture_output=True)
+            baseline_commit = _commit("commit-1: baseline")
+
+            (repo_path / "file_a.txt").write_text("a-2\n", encoding="utf-8")
+            subprocess.run(["git", "add", "file_a.txt"], cwd=repo_path, check=True, capture_output=True)
+            _commit("commit-2: modify file_a")
+
+            subprocess.run(
+                ["git", "mv", "file_b.txt", "file_b_renamed.txt"], cwd=repo_path, check=True, capture_output=True
+            )
+            _commit("commit-3: rename file_b")
+
+            subprocess.run(["git", "rm", "file_a.txt"], cwd=repo_path, check=True, capture_output=True)
+            target_commit = _commit("commit-4: delete file_a")
+
+            repo: dict = {"main_branch": "main", "previous_analysis_target_commit": baseline_commit}
+            _build_temporal_delta(repo, repo_path, target_commit)
+
+            self.assertEqual(repo["commit_range_status"], "diff_collected")
+            self.assertEqual(repo["commit_range"], f"{baseline_commit}..{target_commit}")
+            self.assertEqual(repo["changed_paths"], ["file_b_renamed.txt"])
+            self.assertEqual(repo["renamed_paths"], ["file_b.txt -> file_b_renamed.txt"])
+            self.assertEqual(repo["deleted_paths"], ["file_a.txt"])
+            log_lines = [line for line in repo["commit_log_summary"].splitlines() if line.strip()]
+            self.assertEqual(len(log_lines), 3)
+            self.assertTrue(any("commit-4" in line for line in log_lines))
+            self.assertTrue(any("commit-3" in line for line in log_lines))
+            self.assertTrue(any("commit-2" in line for line in log_lines))
+
 
 if __name__ == "__main__":
     unittest.main()

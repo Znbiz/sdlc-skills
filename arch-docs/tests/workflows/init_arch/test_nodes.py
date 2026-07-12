@@ -7,6 +7,7 @@ from app.workflows.init_arch import nodes as nodes_module
 from app.workflows.init_arch.domain import (
     AnalysisTargetCommitStatus,
     AuditActor,
+    CommitRangeStatus,
     EventType,
     LlmTaskKind,
     LlmTaskResult,
@@ -15,7 +16,7 @@ from app.workflows.init_arch.domain import (
     StepId,
     WorkflowSessionRecord,
 )
-from app.workflows.init_arch.guard import GuardOperationResult
+from app.workflows.init_arch.guard import GuardOperationResult, InitArchGuardService
 from app.workflows.init_arch.knowledge import KnowledgeArtifactResult
 from app.workflows.init_arch.state import InitArchState
 
@@ -222,6 +223,75 @@ async def test_node_plan_repository_order_plans_and_resolves_historical_prep() -
         workspace_dir=state["workspace_dir"],
         checkout=True,
     )
+
+
+async def test_node_plan_repository_order_blocks_when_checkout_done_but_temporal_delta_missing() -> None:
+    """Checkout succeeded but temporal delta collection did not run.
+
+    `analysis_target_commit_status=CHECKED_OUT`, but the temporal delta for this
+    (non-first) window never made it past `RANGE_RESOLVED` — i.e. diff collection
+    did not run. The real domain gate (`historical_prep_is_complete`) must refuse
+    the transition to `assess_scope_and_domains`, and the node must surface that
+    as `step_error` rather than advancing.
+    """
+    state = _make_state()
+    historical_service = MagicMock()
+    real_guard_service = InitArchGuardService(audit_service=MagicMock())
+
+    planned_session = state["session"].model_copy(
+        update={
+            "current_step": StepId.PLAN_REPOSITORY_ORDER,
+            "historical_analysis": state["session"].historical_analysis.model_copy(
+                update={
+                    "anchor_repository_name": "svc-a",
+                    "anchor_created_at": None,
+                    "previous_snapshot_at": dt.date(2024, 1, 1),
+                    "current_snapshot_at": None,
+                    "ordered_repository_names": ["svc-a"],
+                }
+            )
+        }
+    )
+    resolved_session = planned_session.model_copy(
+        update={
+            "historical_analysis": planned_session.historical_analysis.model_copy(
+                update={"anchor_created_at": dt.date(2024, 1, 1), "current_snapshot_at": dt.date(2024, 4, 1)}
+            ),
+            "repositories": [
+                state["session"]
+                .repositories[0]
+                .model_copy(
+                    update={
+                        "created_at": dt.date(2024, 1, 1),
+                        "analysis_target_date": dt.date(2024, 4, 1),
+                        "analysis_target_commit": "abc123",
+                        "analysis_target_commit_status": AnalysisTargetCommitStatus.CHECKED_OUT,
+                        "window_end_commit": "abc123",
+                        "commit_range_status": CommitRangeStatus.RANGE_RESOLVED,
+                    }
+                )
+            ],
+        }
+    )
+    historical_service.plan_repository_order = AsyncMock(
+        return_value=nodes_module.HistoricalPrepResult(session=planned_session, summary="planned")
+    )
+    historical_service.resolve_target_commits = AsyncMock(
+        return_value=nodes_module.HistoricalPrepResult(session=resolved_session, summary="resolved")
+    )
+
+    with (
+        patch("app.workflows.init_arch.nodes.get_guard_service", return_value=real_guard_service),
+        patch("app.workflows.init_arch.nodes.get_historical_prep_service", return_value=historical_service),
+        patch("app.workflows.init_arch.nodes.get_llm_worker_service") as llm_service,
+        patch("app.workflows.init_arch.nodes.get_workflow_audit_service", return_value=MagicMock()),
+    ):
+        result = await nodes_module.node_plan_repository_order(state)
+
+    assert "step_error" in result
+    assert result["step_error"] is not None
+    assert "historical prep must be completed" in result["step_error"]
+    llm_service.assert_not_called()
 
 
 async def test_node_analyze_repositories_uses_typed_services() -> None:
