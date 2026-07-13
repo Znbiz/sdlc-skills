@@ -6,31 +6,40 @@
 
 **Архитектура:** Добавить новый модуль `app/workflows/init_arch/architecture_lint.py`, который зеркалит существующий паттерн `run_knowledge_lint` из `knowledge_runtime.py`: чистые функции, читающие файлы внутри `arch_repo_dir` и возвращающие `list[str]` с issues в формате `ERROR:`. Подключить его к существующему вызову `run_knowledge_lint()`, чтобы он выполнялся автоматически на шаге workflow `run_knowledge_lint` (`StepId.RUN_KNOWLEDGE_LINT`) — том же quality gate, который уже блокирует переход к `validate_final` при наличии `ERROR:`.
 
+**Дополнение (обновление плана после Задачи 3):** первоначальная версия плана оставляла 20 из 23 шаблонов вообще не подключёнными к коду сервиса — структура существовала только как текст, продублированный в чеклисты (см. «Предварительные правки» ниже), а сам worker писал `architecture/*.md` с нуля. Только 3 шаблона (`features-index-template.md`, `architecture/glossary-template.md`, `open-questions-template.md`) реально копируются кодом сервиса — `KnowledgeArtifactService._bootstrap_contents()` в `knowledge.py` пишет их **как есть**, включая литеральные плейсхолдеры вида `<термин>` и служебные HTML-комментарии вида `<!-- Не добавляй сюда... -->`, и только если целевой файл ещё не существует. Это уже сегодня скрытый баг: если worker не трогает `glossary.md` после bootstrap, финальный артефакт репозитория буквально содержит нерасшифрованные плейсхолдеры и комментарии для агента — и это никак не проверяется.
+
+Чтобы закрыть оба пробела разом, план расширен двумя задачами:
+
+- **Задача 3.1** — распространить уже существующий bootstrap-механизм (`_load_asset` + запись, только если файла ещё нет) на 9 markdown-артефактов из Задачи 2, используя их реальные шаблоны из `knowledge_base/architecture/*-template.md` как единственный источник содержимого (шаблоны не переписываются и не дублируются — читаются напрямую). Так сервис даёт worker'у готовый скелет с плейсхолдерами вместо чистого листа, вместо того чтобы worker писал структуру с нуля по инлайну в чеклисте.
+- **Задача 7.1** — новая проверка в `architecture_lint.py`, которая детектирует **оставшиеся незаполненными** плейсхолдеры (`<...>`, извлечённые программно из тех же файлов шаблонов — единый источник, без ручного дублирования списка) и служебные HTML-комментарии (`<!--...-->`, универсальный маркер — комментарии никогда не должны попадать в synthesis-слой) в любом артефакте, который bootstrap мог создать из шаблона дословно: 9 markdown-артефактов Задачи 2, `glossary.md`, `open-questions.md`, `features-index.md`. Без этой проверки Задача 3.1 стала бы регрессией: `_lint_required_sections` видит заголовки секций в незаполненном шаблоне и репортует их как присутствующие, то есть сам факт существования секции перестаёт что-либо гарантировать по содержимому.
+
+Обе задачи вместе отвечают на вопрос «шаблон подгружается или создаётся автоматически» — решение: **автоматически создаётся** (bootstrap из шаблона, как уже делается для 3 файлов), а не просто подгружается на лету для рендеринга воркеру, потому что у worker'а и так нет доступа к `shared_assets/`. Явное **не**-решение: сервис не делает автоматическую вырезку оставшихся плейсхолдеров/комментариев из финального артефакта — `architecture_lint.py` во всём плане является чистым валидатором (issue-list, никогда не мутирует файлы), и авто-вырезание рискует стереть частично отредактированный текст, который лишь похож на плейсхолдер. Вместо этого Задача 7.1 **блокирует** `validate_final`, пока worker сам не уберёт мусор — тот же паттерн quality gate, что и во всех остальных задачах плана.
+
 ## Таблица покрытия всех 23 шаблонов
 
 | Шаблон в `knowledge_base/` | Целевой артефакт | Решение в этом плане |
 | --- | --- | --- |
-| `architecture/hld-template.md` | `architecture/hld.md` | Новая проверка обязательных секций (Задача 2) |
-| `architecture/security-template.md` | `architecture/security.md` | Новая проверка обязательных секций (Задача 2) |
-| `architecture/risks-template.md` | `architecture/risks.md` | Новая проверка обязательных секций (Задача 2) |
-| `architecture/tech-stack-template.md` | `architecture/tech-stack.md` | Новая проверка обязательных секций (Задача 2) |
-| `architecture/roles-and-permissions-template.md` | `architecture/roles-and-permissions.md` | Новая проверка обязательных секций (Задача 2) |
-| `architecture/domain-entities-template.md` | `architecture/domain-entities.md` | Новая проверка обязательных секций (Задача 2) |
-| `architecture/integrations-overview-template.md` | `architecture/integrations-overview.md` | Новая проверка обязательных секций (Задача 2) |
-| `architecture/constraints-template.md` | `architecture/constraints.md` | Новая проверка обязательных секций (Задача 2) |
-| `architecture/requirements-template.md` | `architecture/requirements.md` | Новая проверка обязательных секций (Задача 2) |
-| `AGENTS-template.md` | `AGENTS.md` | Новая проверка секций, только если файл уже существует — он создаётся позже в workflow, чем `run_knowledge_lint` (Задача 3) |
-| `architecture/integration-template.md` | `architecture/integrations/<service>.md` (много файлов) | Новая проверка секций по каждому файлу в каталоге (Задача 4) |
-| `feature-template.md` | `features/<name>.md` (много файлов) | Новая проверка секций по каждому файлу в каталоге (Задача 4) |
+| `architecture/hld-template.md` | `architecture/hld.md` | Bootstrap-скаффолдинг из шаблона (Задача 3.1) + проверка обязательных секций (Задача 2) + проверка незаполненных плейсхолдеров/комментариев (Задача 7.1) |
+| `architecture/security-template.md` | `architecture/security.md` | Bootstrap-скаффолдинг из шаблона (Задача 3.1) + проверка обязательных секций (Задача 2) + проверка незаполненных плейсхолдеров/комментариев (Задача 7.1) |
+| `architecture/risks-template.md` | `architecture/risks.md` | Bootstrap-скаффолдинг из шаблона (Задача 3.1) + проверка обязательных секций (Задача 2) + проверка незаполненных плейсхолдеров/комментариев (Задача 7.1) |
+| `architecture/tech-stack-template.md` | `architecture/tech-stack.md` | Bootstrap-скаффолдинг из шаблона (Задача 3.1) + проверка обязательных секций (Задача 2) + проверка незаполненных плейсхолдеров/комментариев (Задача 7.1) |
+| `architecture/roles-and-permissions-template.md` | `architecture/roles-and-permissions.md` | Bootstrap-скаффолдинг из шаблона (Задача 3.1) + проверка обязательных секций (Задача 2) + проверка незаполненных плейсхолдеров/комментариев (Задача 7.1) |
+| `architecture/domain-entities-template.md` | `architecture/domain-entities.md` | Bootstrap-скаффолдинг из шаблона (Задача 3.1) + проверка обязательных секций (Задача 2) + проверка незаполненных плейсхолдеров/комментариев (Задача 7.1) |
+| `architecture/integrations-overview-template.md` | `architecture/integrations-overview.md` | Bootstrap-скаффолдинг из шаблона (Задача 3.1) + проверка обязательных секций (Задача 2) + проверка незаполненных плейсхолдеров/комментариев (Задача 7.1) |
+| `architecture/constraints-template.md` | `architecture/constraints.md` | Bootstrap-скаффолдинг из шаблона (Задача 3.1) + проверка обязательных секций (Задача 2) + проверка незаполненных плейсхолдеров/комментариев (Задача 7.1) |
+| `architecture/requirements-template.md` | `architecture/requirements.md` | Bootstrap-скаффолдинг из шаблона (Задача 3.1) + проверка обязательных секций (Задача 2) + проверка незаполненных плейсхолдеров/комментариев (Задача 7.1) |
+| `AGENTS-template.md` | `AGENTS.md` | **Без bootstrap** — файл создаётся позже в workflow, чем `run_knowledge_lint` (см. Глобальные ограничения), поэтому шаблон сюда не копируется заранее. Проверка секций, только если файл уже существует (Задача 3) |
+| `architecture/integration-template.md` | `architecture/integrations/<service>.md` (много файлов) | **Без bootstrap** — имя файла зависит от `<service>`, неизвестного заранее; worker создаёт с нуля по инлайну в чеклисте. Проверка секций по каждому файлу в каталоге (Задача 4) |
+| `feature-template.md` | `features/<name>.md` (много файлов) | **Без bootstrap** — имя файла зависит от `<name>`, неизвестного заранее; worker создаёт с нуля по инлайну в чеклисте. Проверка секций по каждому файлу в каталоге (Задача 4) |
 | `architecture/contract-template.yml` | `architecture/contracts/*-sync.yml` | Новая структурная OpenAPI-проверка (Задача 5) |
 | `architecture/async-contract-template.yml` | `architecture/contracts/*-async.yml` | Новая полноценная валидация по вендоренной официальной JSON Schema AsyncAPI 2.6.0 через `jsonschema` (Задача 5) |
 | `architecture/storage-template.yml` | `architecture/storage/*.yml` | Новая минимальная схема-проверка (Задача 6) |
 | `architecture/landscape-template.yaml` | `architecture/landscape.yaml` | Уже используется в проверке commit-консистентности (Задача 7); отдельной проверки структуры не требуется — `entities.services` и так парсится и валидируется там |
 | `architecture/repo-structure-map-template.yml` | `architecture/structure/<repo>.yml` | Уже используется в проверке commit-консистентности (Задача 7) |
-| `architecture/glossary-template.md` | `glossary.md` | Не требует новой проверки — шаблон уже используется при bootstrap (`knowledge.py:209`), а структуры сверх заголовка `# Глоссарий` шаблон не определяет |
+| `architecture/glossary-template.md` | `glossary.md` | Структурной проверки не требуется — шаблон уже используется при bootstrap (`knowledge.py:209`), структуры сверх заголовка `# Глоссарий` шаблон не определяет. Но именно этот шаблон содержит служебный HTML-комментарий `<!-- Не добавляй сюда... -->` и плейсхолдер `<термин>` — теперь покрыт проверкой незаполненных плейсхолдеров/комментариев (Задача 7.1) |
 | `architecture/support-repositories-template.md` | `architecture/support-repositories.md` | Шаблон **удалён** из `arch-docs` (нигде не читался кодом), структура инлайнена прямо в `checklist-repository-classification.md`. Артефакт `support-repositories.md` остаётся рабочей концепцией — фиксированных секций для отдельной lint-проверки нет (только повторяющиеся per-repo подзаголовки), см. Предварительные правки ниже |
-| `features-index-template.md` | `features-index.md` | Уже используется при bootstrap и уже полноценно линтуется `_lint_feature_index` в `knowledge_runtime.py` — не дублируем |
-| `open-questions-template.md` | `open-questions.md` | Уже используется при bootstrap и уже полноценно линтуется `_lint_open_questions_with_graph` — не дублируем |
+| `features-index-template.md` | `features-index.md` | Уже используется при bootstrap и уже полноценно линтуется `_lint_feature_index` в `knowledge_runtime.py` — структурную проверку не дублируем, но добавляем проверку незаполненных плейсхолдеров/комментариев (Задача 7.1) |
+| `open-questions-template.md` | `open-questions.md` | Уже используется при bootstrap и уже полноценно линтуется `_lint_open_questions_with_graph` — структурную проверку не дублируем, но добавляем проверку незаполненных плейсхолдеров/комментариев (Задача 7.1) |
 | `index-template.md` | `wiki/index.md` (bootstrap-заглушка) | Финальная версия после `analysis_guard compile`/`build_navigation_index` уже проверяется `INDEX_REQUIRED_SECTIONS` в `knowledge_runtime.py` — не дублируем |
 | `knowledge-log-template.md` | `wiki/log.md` | Уже полноценно линтуется `_lint_knowledge_log` в `knowledge_runtime.py` — не дублируем |
 | `CLAUDE-template.md` | `CLAUDE.md` | Шаблон **удалён** из `arch-docs` (нигде не читался кодом, а содержимое тривиально — одна строка `@AGENTS.md`), см. Предварительные правки ниже |
@@ -54,6 +63,8 @@
 - Не изменять `init-repo-arch-skill/assets/`, `init-repo-arch-skill/references/`, `update-repo-arch-skill/assets/`, `update-repo-arch-skill/references/` — правки в «Предварительных правках» выше касаются только копий внутри `arch-docs`, у которых нет доступа к файловой системе `assets/` в контейнере worker'а. У отдельно устанавливаемых skill'ов эта проблема не воспроизводится.
 - Вне скоупа (явно, не браться): переписывание CLI-мнемоник `domain --...`/`repo --...`/`timeline --...` по всему `SKILL.md` и checklist-референсам — они описывают операции, которые сервис уже выполняет иначе через `InitArchState`/`domain/operations.py`, и распутывание всех их — отдельная, более крупная задача на будущее.
 - Каждая новая проверка обязательных секций требует существования файла (`ERROR: отсутствует ...`), кроме `AGENTS.md` — он по договорённости репозитория (`repository-layout.md`) создаётся позже в workflow, чем `run_knowledge_lint`, поэтому для него проверяются только секции, если файл уже есть.
+- Bootstrap-скаффолдинг (Задача 3.1) и проверка плейсхолдеров/комментариев (Задача 7.1) — только для артефактов с предсказуемым, известным заранее именем файла (9 markdown из Задачи 2 + `glossary.md`/`open-questions.md`/`features-index.md`). Артефакты с именем, зависящим от `<service>`/`<name>` (`architecture/integrations/*.md`, `features/*.md`, `architecture/contracts/*.yml`, `architecture/storage/*.yml`, `architecture/structure/*.yml`) не скаффолдятся — их по-прежнему пишет worker с нуля по инлайну в чеклисте; расширение этого списка — отдельная будущая задача, не входит в скоуп.
+- `architecture_lint.py` во всём плане — чистый валидатор: возвращает `list[str]` issues и никогда не пишет и не мутирует файлы. Задача 7.1 не удаляет и не «чистит» плейсхолдеры/комментарии автоматически — она только детектирует их и блокирует `validate_final`, пока worker не уберёт их сам. Автоматическая вырезка контента намеренно не реализуется: эвристика «похоже на плейсхолдер» недостаточно надёжна, чтобы гарантированно не стереть частично отредактированный текст.
 
 ---
 
@@ -63,6 +74,8 @@
 - **Создать:** `arch-docs/app/workflows/init_arch/schemas/asyncapi-2.6.0.json` — вендоренная официальная JSON Schema AsyncAPI 2.6.0.
 - **Создать:** `arch-docs/tests/workflows/init_arch/test_architecture_lint.py` — юнит-тесты для нового модуля.
 - **Изменить:** `arch-docs/app/workflows/init_arch/knowledge_runtime.py` — подключить `lint_architecture_artifacts` внутри `run_knowledge_lint()`.
+- **Изменить:** `arch-docs/app/workflows/init_arch/knowledge.py` — расширить `_bootstrap_contents()` bootstrap-скаффолдингом 9 markdown-артефактов из шаблонов (Задача 3.1).
+- **Изменить:** `arch-docs/tests/workflows/init_arch/test_knowledge.py` — тесты на новый bootstrap-скаффолдинг (Задача 3.1).
 - **Изменить:** `arch-docs/pyproject.toml` — добавить явные зависимости `pyyaml`, `openapi-spec-validator`, `jsonschema`.
 - **Изменить:** `arch-docs/app/workflows/shared_assets/init_arch/references/checklist-architecture-artifact-updates.md` — заменить мёртвый bash-блок `analysis_guard.py validate-contracts`/`validate-commits` описанием нового автоматического gate.
 - **Изменить:** `arch-docs/app/workflows/shared_assets/init_arch/SKILL.md` — убрать два ложных утверждения о том, что `scripts/analysis_guard.py` — обязательный механизм progress-guard.
@@ -378,6 +391,120 @@ def _lint_agents_md(arch_repo_path: Path) -> list[str]:
 cd /Users/aanekraso2/github.com/znbiz/sdlc
 git add arch-docs/app/workflows/init_arch/architecture_lint.py arch-docs/tests/workflows/init_arch/test_architecture_lint.py
 git commit -m "feat(arch-docs): добавить опциональную проверку секций AGENTS.md"
+```
+
+---
+
+### Задача 3.1 (НОВАЯ): Bootstrap-скаффолдинг 9 markdown-артефактов из шаблонов `knowledge_base/`
+
+**Контекст:** сейчас `KnowledgeArtifactService._bootstrap_contents()` копирует из `knowledge_base/` только 3 шаблона (`features-index-template.md`, `architecture/glossary-template.md`, `open-questions-template.md`) — остальные 9 markdown-артефактов из Задачи 2 worker обязан писать с нуля, ориентируясь только на инлайн-структуру в чеклистах, хотя их реальные шаблоны (`architecture/hld-template.md` и т.д.) уже лежат в `knowledge_base/architecture/` и нигде не используются. Эта задача распространяет уже существующий bootstrap-паттерн (пишем, только если файла ещё нет) на эти 9 файлов — так worker получает готовый скелет с плейсхолдерами вместо чистого листа. `AGENTS.md` намеренно не входит — он создаётся позже в workflow (см. Глобальные ограничения).
+
+**Файлы:**
+- Изменить: `arch-docs/app/workflows/init_arch/knowledge.py`
+- Тест: `arch-docs/tests/workflows/init_arch/test_knowledge.py`
+
+**Интерфейсы:**
+- Производит: `_ARCHITECTURE_TEMPLATE_ASSETS: Final[dict[str, str]]` (целевой relative_path -> relative_path шаблона внутри `knowledge_base/`), включённый в `_bootstrap_contents()`.
+- Потребляет: `ARCHITECTURE_MARKDOWN_REQUIRED_SECTIONS` из `architecture_lint.py` только как справочный список ключей (не импортируется — `knowledge.py` не должен знать о `architecture_lint.py`, зависимость идёт в обратную сторону: `knowledge_runtime.py` вызывает `architecture_lint.py`, а `knowledge.py` — соседний независимый модуль).
+
+- [ ] **Шаг 1: Написать падающий тест**
+
+Добавить в `arch-docs/tests/workflows/init_arch/test_knowledge.py`:
+
+```python
+@pytest.mark.asyncio
+async def test_bootstrap_arch_repo_scaffolds_architecture_markdown_from_templates(tmp_path: Path) -> None:
+    asset_loader = WorkflowAssetLoader(
+        Path("/Users/aanekraso2/github.com/znbiz/sdlc/arch-docs/app/workflows/shared_assets")
+    )
+    service = KnowledgeArtifactService(asset_loader=asset_loader)
+
+    result = await service.bootstrap_arch_repo(_make_session(), arch_repo_dir=str(tmp_path / "arch-repo"))
+
+    hld_path = tmp_path / "arch-repo" / "architecture" / "hld.md"
+    assert hld_path.exists()
+    assert "## Контекстная диаграмма" in hld_path.read_text(encoding="utf-8")
+    assert any(artifact.artifact_path == "architecture/hld.md" for artifact in result.session.artifacts)
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_arch_repo_does_not_overwrite_existing_architecture_markdown(tmp_path: Path) -> None:
+    arch_repo_dir = tmp_path / "arch-repo"
+    (arch_repo_dir / "architecture").mkdir(parents=True)
+    (arch_repo_dir / "architecture" / "hld.md").write_text("# уже написано worker'ом\n", encoding="utf-8")
+    service = KnowledgeArtifactService()
+
+    await service.bootstrap_arch_repo(_make_session(), arch_repo_dir=str(arch_repo_dir))
+
+    assert (arch_repo_dir / "architecture" / "hld.md").read_text(encoding="utf-8") == "# уже написано worker'ом\n"
+```
+
+- [ ] **Шаг 2: Запустить тесты и убедиться, что они падают**
+
+Выполнить: `cd arch-docs && .venv/bin/pytest tests/workflows/init_arch/test_knowledge.py -v -k architecture_markdown`
+Ожидается: первый тест падает (`hld.md` не создаётся), второй проходит уже сейчас (это regression-guard, что механизм "не перезаписывать существующее" не сломается).
+
+- [ ] **Шаг 3: Написать минимальную реализацию**
+
+В `arch-docs/app/workflows/init_arch/knowledge.py` добавить рядом с `_ARTIFACT_KINDS`:
+
+```python
+_ARCHITECTURE_TEMPLATE_ASSETS: Final[dict[str, str]] = {
+    "architecture/hld.md": "architecture/hld-template.md",
+    "architecture/security.md": "architecture/security-template.md",
+    "architecture/risks.md": "architecture/risks-template.md",
+    "architecture/tech-stack.md": "architecture/tech-stack-template.md",
+    "architecture/roles-and-permissions.md": "architecture/roles-and-permissions-template.md",
+    "architecture/domain-entities.md": "architecture/domain-entities-template.md",
+    "architecture/integrations-overview.md": "architecture/integrations-overview-template.md",
+    "architecture/constraints.md": "architecture/constraints-template.md",
+    "architecture/requirements.md": "architecture/requirements-template.md",
+}
+```
+
+Обновить `_bootstrap_contents`, добавив эти 9 ключей через тот же `_load_asset`:
+
+```python
+def _bootstrap_contents(self, session: WorkflowSessionRecord) -> dict[str, str]:
+    repositories = [
+        {"name": repository.repository_name, "analysis_status": repository.analysis_status}
+        for repository in session.repositories
+    ]
+    contents = {
+        "features-index.md": self._load_asset("features-index-template.md"),
+        "glossary.md": self._load_asset("architecture/glossary-template.md"),
+        "open-questions.md": self._load_asset("open-questions-template.md"),
+        "wiki/index.md": build_navigation_index(
+            pathlib.Path(),
+            session.product_name,
+            repositories,
+        ).replace("](./", "](../"),
+        "wiki/log.md": build_knowledge_log_stub(),
+        "wiki/maps/compile-report.md": build_compile_report_stub(),
+    }
+    for target_path, template_path in _ARCHITECTURE_TEMPLATE_ASSETS.items():
+        contents[target_path] = self._load_asset(template_path)
+    return contents
+```
+
+Логика "пишем, только если файла ещё нет" в `bootstrap_arch_repo` (строки 84-88) уже не требует изменений — она уже безусловно применяется ко всем ключам `_bootstrap_contents()`.
+
+- [ ] **Шаг 4: Запустить тесты и убедиться, что они проходят**
+
+Выполнить: `cd arch-docs && .venv/bin/pytest tests/workflows/init_arch/test_knowledge.py -v`
+Ожидается: все тесты проходят, включая уже существующий `test_valid_arch_repo_smoke_bootstrap_compile_and_lint` (фикстура уже содержит реальный, заполненный `architecture/hld.md` — bootstrap его не тронет, сработает ветка "файл уже существует").
+
+- [ ] **Шаг 5: Полный регрессионный прогон и ruff**
+
+Выполнить: `cd arch-docs && .venv/bin/pytest -q && .venv/bin/ruff check app/workflows/init_arch/knowledge.py tests/workflows/init_arch/test_knowledge.py`
+Ожидается: все тесты проходят, `ruff` чист.
+
+- [ ] **Шаг 6: Коммит**
+
+```bash
+cd /Users/aanekraso2/github.com/znbiz/sdlc
+git add arch-docs/app/workflows/init_arch/knowledge.py arch-docs/tests/workflows/init_arch/test_knowledge.py
+git commit -m "feat(arch-docs): bootstrap-скаффолдинг 9 architecture/*.md артефактов из реальных шаблонов knowledge_base/"
 ```
 
 ---
@@ -1046,6 +1173,187 @@ git commit -m "feat(arch-docs): добавить проверку согласо
 
 ---
 
+### Задача 7.1 (НОВАЯ): `architecture_lint.py` — детектировать незаполненные плейсхолдеры и служебные комментарии шаблонов
+
+**Контекст:** Задача 3.1 сделала bootstrap 9 markdown-артефактов из реальных шаблонов дословно, включая плейсхолдеры вида `<риск или пробел в документации>` и служебные HTML-комментарии вида `<!-- Не добавляй сюда... -->` (пример уже существует сегодня в `architecture/glossary-template.md`, который bootstrap копирует с самого начала плана, до этой задачи). Без отдельной проверки такой незаполненный скелет проходит `_lint_required_sections` (заголовки секций физически присутствуют) и попадает в финальный knowledge-репозиторий как есть — то есть worker может забыть заполнить файл, а lint этого не заметит. Эта задача закрывает разрыв: находит плейсхолдеры и комментарии, оставшиеся в финальном содержимом, и блокирует ими `validate_final` (тот же механизм `ERROR:`, что и во всех остальных проверках).
+
+**Файлы:**
+- Изменить: `arch-docs/app/workflows/init_arch/architecture_lint.py`
+- Тест: `arch-docs/tests/workflows/init_arch/test_architecture_lint.py`
+
+**Интерфейсы:**
+- Производит: `_lint_template_residue(arch_repo_path: Path) -> list[str]`, включённую в `lint_architecture_artifacts`. Известные плейсхолдеры извлекаются программно из тех же файлов шаблонов в `knowledge_base/` (единый источник — список не дублируется руками), известные комментарии детектируются универсальным regex `<!--.*?-->` (в synthesis-слое HTML-комментариев не должно быть в принципе, вне зависимости от шаблона-источника).
+- Область действия: 9 markdown-артефактов из `ARCHITECTURE_MARKDOWN_REQUIRED_SECTIONS` (ключи переиспользуются напрямую, отдельный список не заводим) + `glossary.md`, `features-index.md`, `open-questions.md` — все артефакты, которые могут быть bootstrap-скопированы из шаблона дословно. `AGENTS.md`, `architecture/integrations/*.md`, `features/*.md`, контракты и storage — вне области действия (не bootstrap-ятся, см. Задачу 3.1 и Глобальные ограничения).
+
+- [ ] **Шаг 1: Написать падающие тесты**
+
+Добавить в конец `arch-docs/tests/workflows/init_arch/test_architecture_lint.py`:
+
+```python
+def test_lint_template_residue_skips_missing_files(tmp_path: Path) -> None:
+    issues = architecture_lint._lint_template_residue(tmp_path)
+
+    assert issues == []
+
+
+def test_lint_template_residue_flags_unfilled_placeholder(tmp_path: Path) -> None:
+    _write(tmp_path, "architecture/risks.md", "# Риски\n\n## Категории\n\n1. <риск или пробел в документации>\n")
+
+    issues = architecture_lint._lint_template_residue(tmp_path)
+
+    assert any(
+        "незаполненный плейсхолдер" in issue and "architecture/risks.md" in issue for issue in issues
+    )
+
+
+def test_lint_template_residue_flags_unfilled_comment(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "glossary.md",
+        "# Глоссарий\n\n"
+        '<!-- Не добавляй сюда служебный вводный абзац про "этот файл фиксирует..." или список уже '
+        'проанализированных репозиториев. В итоговом glossary.md после заголовка файла должен сразу идти '
+        'таблица терминов, без промежуточного заголовка "Термины". -->\n\n'
+        "| Термин | Определение | Источник |\n| --- | --- | --- |\n"
+        "| API | Программный интерфейс | gateway-service/README.md |\n",
+    )
+
+    issues = architecture_lint._lint_template_residue(tmp_path)
+
+    assert any("незаполненный служебный комментарий" in issue and "glossary.md" in issue for issue in issues)
+
+
+def test_lint_template_residue_passes_when_content_is_filled_in(tmp_path: Path) -> None:
+    _write(tmp_path, "architecture/risks.md", "# Риски\n\n## Категории\n\n1. Нет автоматических бэкапов БД\n")
+    _write(
+        tmp_path,
+        "glossary.md",
+        "# Глоссарий\n\n| Термин | Определение | Источник |\n| --- | --- | --- |\n"
+        "| CLI-токен | Токен обмена для CLI-логина | gateway-service/src/api/auth.py |\n",
+    )
+
+    issues = architecture_lint._lint_template_residue(tmp_path)
+
+    assert issues == []
+```
+
+- [ ] **Шаг 2: Запустить тесты и убедиться, что они падают**
+
+Выполнить: `cd arch-docs && .venv/bin/pytest tests/workflows/init_arch/test_architecture_lint.py -v -k lint_template_residue`
+Ожидается: падение с `AttributeError`.
+
+- [ ] **Шаг 3: Написать минимальную реализацию**
+
+В `arch-docs/app/workflows/init_arch/architecture_lint.py` добавить импорт `re` рядом с остальными импортами (после `import json`):
+
+```python
+import re
+```
+
+Обновить `lint_architecture_artifacts`:
+
+```python
+def lint_architecture_artifacts(arch_repo_path: Path) -> list[str]:
+    issues: list[str] = []
+    for relative_path, required_sections in ARCHITECTURE_MARKDOWN_REQUIRED_SECTIONS.items():
+        issues.extend(_lint_required_sections(arch_repo_path, relative_path, required_sections))
+    issues.extend(_lint_agents_md(arch_repo_path))
+    issues.extend(_lint_directory_documents(arch_repo_path, "architecture/integrations", INTEGRATION_REQUIRED_SECTIONS))
+    issues.extend(_lint_directory_documents(arch_repo_path, "features", FEATURE_REQUIRED_SECTIONS))
+    issues.extend(_lint_contracts(arch_repo_path))
+    issues.extend(_lint_storage(arch_repo_path))
+    issues.extend(_lint_commit_consistency(arch_repo_path))
+    issues.extend(_lint_template_residue(arch_repo_path))
+    return issues
+```
+
+Добавить в конец файла:
+
+```python
+_RESIDUE_SOURCE_TEMPLATES: Final[tuple[str, ...]] = (
+    "architecture/hld-template.md",
+    "architecture/security-template.md",
+    "architecture/risks-template.md",
+    "architecture/tech-stack-template.md",
+    "architecture/roles-and-permissions-template.md",
+    "architecture/domain-entities-template.md",
+    "architecture/integrations-overview-template.md",
+    "architecture/constraints-template.md",
+    "architecture/requirements-template.md",
+    "architecture/glossary-template.md",
+    "features-index-template.md",
+    "open-questions-template.md",
+)
+_RESIDUE_TARGET_PATHS: Final[tuple[str, ...]] = (
+    *ARCHITECTURE_MARKDOWN_REQUIRED_SECTIONS,
+    "glossary.md",
+    "features-index.md",
+    "open-questions.md",
+)
+_PLACEHOLDER_PATTERN: Final[re.Pattern[str]] = re.compile(r"<[^<>\n]{1,120}>")
+_COMMENT_PATTERN: Final[re.Pattern[str]] = re.compile(r"<!--.*?-->", re.DOTALL)
+_KNOWLEDGE_BASE_DIR: Final[Path] = Path(__file__).resolve().parent.parent / "shared_assets" / "knowledge_base"
+
+_known_template_placeholders_cache: frozenset[str] | None = None
+
+
+def _known_template_placeholders() -> frozenset[str]:
+    global _known_template_placeholders_cache  # noqa: PLW0603
+    if _known_template_placeholders_cache is None:
+        tokens: set[str] = set()
+        for relative_path in _RESIDUE_SOURCE_TEMPLATES:
+            template_text = (_KNOWLEDGE_BASE_DIR / relative_path).read_text(encoding="utf-8")
+            tokens.update(_PLACEHOLDER_PATTERN.findall(template_text))
+        _known_template_placeholders_cache = frozenset(tokens)
+    return _known_template_placeholders_cache
+
+
+def _lint_template_residue(arch_repo_path: Path) -> list[str]:
+    known_placeholders = _known_template_placeholders()
+    issues: list[str] = []
+    for relative_path in _RESIDUE_TARGET_PATHS:
+        artifact_path = arch_repo_path / relative_path
+        if not artifact_path.exists():
+            continue
+
+        content = artifact_path.read_text(encoding="utf-8")
+        for comment in _COMMENT_PATTERN.findall(content):
+            issues.append(
+                f"ERROR: {relative_path} содержит незаполненный служебный комментарий шаблона: `{comment.strip()}`"
+            )
+        for placeholder in sorted(known_placeholders):
+            if placeholder in content:
+                issues.append(f"ERROR: {relative_path} содержит незаполненный плейсхолдер шаблона: `{placeholder}`")
+    return issues
+```
+
+`Path(__file__).resolve().parent.parent` — `architecture_lint.py` лежит в `app/workflows/init_arch/`, а `knowledge_base/` — в `app/workflows/shared_assets/`, то есть на уровень выше и в соседний каталог; тот же уровень вложенности, который уже использует `WorkflowAssetLoader` (`app/workflows/shared_assets/loader.py:7`), но без зависимости от него — модуль остаётся самодостаточным.
+
+- [ ] **Шаг 4: Запустить тесты и убедиться, что они проходят**
+
+Выполнить: `cd arch-docs && .venv/bin/pytest tests/workflows/init_arch/test_architecture_lint.py -v`
+Ожидается: все тесты проходят.
+
+- [ ] **Шаг 5: Запустить ruff и исправить**
+
+Выполнить: `cd arch-docs && .venv/bin/ruff check app/workflows/init_arch/architecture_lint.py tests/workflows/init_arch/test_architecture_lint.py --fix`
+Ожидается: код возврата 0.
+
+- [ ] **Шаг 6: Полный регрессионный прогон**
+
+Выполнить: `cd arch-docs && .venv/bin/pytest -q`
+Ожидается: все тесты проходят, включая `test_valid_arch_repo_smoke_bootstrap_compile_and_lint` — фикстура из Задачи 9 содержит только заполненный реальный контент, без плейсхолдеров и комментариев, поэтому `_lint_template_residue` не должна на ней ничего репортить.
+
+- [ ] **Шаг 7: Коммит**
+
+```bash
+cd /Users/aanekraso2/github.com/znbiz/sdlc
+git add arch-docs/app/workflows/init_arch/architecture_lint.py arch-docs/tests/workflows/init_arch/test_architecture_lint.py
+git commit -m "feat(arch-docs): детектировать незаполненные плейсхолдеры и служебные комментарии шаблонов в architecture-артефактах"
+```
+
+---
+
 ### Задача 8: Подключить `lint_architecture_artifacts` к `run_knowledge_lint`
 
 **Файлы:**
@@ -1053,7 +1361,7 @@ git commit -m "feat(arch-docs): добавить проверку согласо
 - Тест: `arch-docs/tests/workflows/init_arch/test_knowledge_runtime.py`
 
 **Интерфейсы:**
-- Потребляет: `lint_architecture_artifacts(arch_repo_path: Path) -> list[str]` из `architecture_lint.py` (задачи 2-7).
+- Потребляет: `lint_architecture_artifacts(arch_repo_path: Path) -> list[str]` из `architecture_lint.py` (задачи 2-7 и 7.1 — residue-проверка уже включена внутри той же функции, здесь ничего дополнительно вызывать не нужно).
 - Производит: `run_knowledge_lint(arch_repo_path: Path) -> list[str]` теперь включает issues по architecture-артефактам (эту функцию уже вызывает `KnowledgeArtifactService.lint_knowledge` в `knowledge.py` на шаге `run_knowledge_lint` — там менять ничего не нужно).
 
 - [ ] **Шаг 1: Написать падающий тест**
@@ -1132,10 +1440,10 @@ git commit -m "feat(arch-docs): подключить lint_architecture_artifacts
 - Изменить: `init-repo-arch-skill/tests/fixtures/valid_arch_repo/architecture/storage/gateway-service.yml`
 
 **Интерфейсы:**
-- Потребляет: все проверки из задач 2-7.
+- Потребляет: все проверки из задач 2-7 и 7.1.
 - Производит: фикстуру, которая даёт ноль issues уровня `ERROR:` от `run_knowledge_lint`, используемую обоими test suite — `arch-docs` и `init-repo-arch-skill`.
 
-Эта фикстура старше текущих шаблонов почти по всем артефактам сразу — она никогда не была реально валидной относительно проверок, которые добавляют задачи 2-7, что и является тем пробелом, который закрывает план.
+Эта фикстура старше текущих шаблонов почти по всем артефактам сразу — она никогда не была реально валидной относительно проверок, которые добавляют задачи 2-7, что и является тем пробелом, который закрывает план. Весь новый и изменённый контент фикстуры ниже — полностью заполненный реальный текст, без единого литерального плейсхолдера `<...>` или служебного HTML-комментария из шаблонов, поэтому проверка Задачи 7.1 (`_lint_template_residue`) на этой фикстуре тоже должна давать `issues == []`.
 
 - [ ] **Шаг 1: Переписать `landscape.yaml`**
 
