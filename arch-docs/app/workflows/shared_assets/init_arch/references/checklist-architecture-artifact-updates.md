@@ -88,19 +88,14 @@
 
 ## Автоматические проверки
 
-Перед закрытием пункта обязательно прогнать:
+Эти проверки не нужно запускать вручную — они выполняются автоматически сервисом на шаге `run_knowledge_lint` (см. `knowledge-workflow.md`) и блокируют переход к `validate_final`, если находят `ERROR`:
 
-```bash
-python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py validate-contracts \
-  --contracts-dir <arch-repo>/architecture/contracts
-python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py validate-commits \
-  --arch-repo-path <arch-repo>
-```
+- обязательные секции для `hld.md`, `security.md`, `risks.md`, `tech-stack.md`, `roles-and-permissions.md`, `domain-entities.md`, `integrations-overview.md`, `constraints.md`, `requirements.md`, а также для каждого файла в `architecture/integrations/` и `features/`;
+- `*-sync.yml` контракты в `architecture/contracts/` валидируются полноценно как OpenAPI через `openapi-spec-validator` (та же спецификация, что понимает Swagger) — документ, не прошедший эту проверку, не откроется в Swagger; `*-async.yml` валидируются полноценно как AsyncAPI 2.6.0 через `jsonschema` по официальной JSON Schema;
+- файлы в `architecture/storage/` проверяются на наличие mapping `storage` с непустым `storage.type`;
+- `landscape.yaml: entities.services[].repository_state.head_commit` сверяется с `architecture/structure/<id>.yml: repo_structure_map.analyzed_commit` для каждого сервиса — это два независимых места фиксации коммита анализа, и они не должны расходиться.
 
-- `validate-contracts` проверяет, что файлы `*-sync.yml`/`*-async.yml` в `architecture/contracts/` — валидные OpenAPI/AsyncAPI.
-- `validate-commits` проверяет, что `landscape.yaml: repository_state.head_commit` совпадает с `architecture/structure/<repo>.yml: analyzed_commit` для каждого сервиса — это два независимых места фиксации коммита анализа, и они не должны расходиться.
-
-Если любая из команд вернула `ERROR`, пункт `architecture_artifact_updates` нельзя считать `completed` — сначала исправь расхождение в артефактах, затем повтори проверку.
+Если на шаге `run_knowledge_lint` появился `ERROR` по одной из этих проверок, пункт `architecture_artifact_updates` нельзя считать `completed` — сначала исправь расхождение в артефактах.
 
 ## Проверка согласованности
 

@@ -767,6 +767,11 @@ Transport-контракт для этого подтверждения полн
 теперь входят в тот же blocking quality gate перед переходом к `validate_final`,
 что и остальные ошибки knowledge lint.
 
+Это же правило теперь отражено и в worker reference `checklist-architecture-artifact-updates.md`:
+пункт `architecture_artifact_updates` больше не требует ручного запуска
+`analysis_guard.py validate-contracts`/`validate-commits`, а ссылается на тот же
+автоматический service-side gate `run_knowledge_lint`.
+
 ## Audit / Events
 
 Сейчас используются typed event categories:

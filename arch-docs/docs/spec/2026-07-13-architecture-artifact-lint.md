@@ -1543,7 +1543,7 @@ git commit -m "feat(arch-docs): подключить lint_architecture_artifacts
 
 **Интерфейсы:** нет (изменение только документации).
 
-- [ ] **Шаг 1: Заменить секцию "Автоматические проверки"**
+- [x] **Шаг 1: Заменить секцию "Автоматические проверки"**
 
 Заменить блок, который сейчас выглядит так:
 
@@ -1580,13 +1580,19 @@ python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py validate-co
 Если на шаге `run_knowledge_lint` появился `ERROR` по одной из этих проверок, пункт `architecture_artifact_updates` нельзя считать `completed` — сначала исправь расхождение в артефактах.
 ```
 
-- [ ] **Шаг 2: Коммит**
+- [x] **Шаг 2: Коммит**
 
 ```bash
 cd /Users/aanekraso2/github.com/znbiz/sdlc
 git add arch-docs/app/workflows/shared_assets/init_arch/references/checklist-architecture-artifact-updates.md
 git commit -m "docs(arch-docs): описать автоматические проверки architecture/* как service-side gate"
 ```
+
+**Мини-отчёт по задаче 10**
+
+- В [checklist-architecture-artifact-updates.md](/Users/aanekraso2/github.com/znbiz/sdlc/arch-docs/app/workflows/shared_assets/init_arch/references/checklist-architecture-artifact-updates.md:89) удалён мёртвый bash-блок с `analysis_guard.py validate-contracts` и `validate-commits`; вместо него checklist теперь описывает единый автоматический gate на шаге `run_knowledge_lint`.
+- В тексте checklist явно перечислены четыре группы service-side проверок: обязательные секции markdown-артефактов, schema-валидация OpenAPI/AsyncAPI контрактов, минимальная проверка `architecture/storage/*.yml` и commit-consistency между `landscape.yaml` и `architecture/structure/<id>.yml`.
+- В [init.md](/Users/aanekraso2/github.com/znbiz/sdlc/arch-docs/docs/workflows/init.md:766) workflow-документация синхронизирована с этим изменением: `architecture_artifact_updates` теперь документирован как consumer того же автоматического gate `run_knowledge_lint`, а не ручных CLI-команд.
 
 ---
 
