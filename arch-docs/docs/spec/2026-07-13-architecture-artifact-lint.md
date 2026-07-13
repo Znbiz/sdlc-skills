@@ -1603,7 +1603,7 @@ git commit -m "docs(arch-docs): описать автоматические пр
 
 **Интерфейсы:** нет (изменение только документации). Это текст, инжектируемый в промпт каждого worker'а через `prompts.py:139` (`_load_skill_md()`), и сейчас он противоречит собственному footer'у промпта (`prompts.py:206-207`: *"Сервис оркестрирует workflow и сам управляет progress state... не используй его как источник решений"*), настаивая, что агент обязан вызывать CLI-скрипт, которого в этом окружении не существует.
 
-- [ ] **Шаг 1: Переписать claim про обязательный CLI в секции "Шаблоны и структура репозитория"**
+- [x] **Шаг 1: Переписать claim про обязательный CLI в секции "Шаблоны и структура репозитория"**
 
 Заменить строку (сейчас строка 36):
 
@@ -1617,7 +1617,7 @@ git commit -m "docs(arch-docs): описать автоматические пр
 Прогресс workflow отслеживает сам сервис, а не агент: текущий шаг, завершённые шаги и зарегистрированные артефакты хранятся в состоянии сессии и обновляются автоматически по структурированному JSON-отчёту, который агент возвращает в конце каждого шага (`completed_actions`, `created_artifacts`, `open_questions_found`, `notes`). Агенту не нужно вызывать какой-либо CLI progress-guard самому — если промпт шага сообщает путь к progress-файлу, это только informational bridge, а не источник решений.
 ```
 
-- [ ] **Шаг 2: Переписать финальное напоминание в "Правила работы"**
+- [x] **Шаг 2: Переписать финальное напоминание в "Правила работы"**
 
 Заменить строку (сейчас строка 366):
 
@@ -1631,19 +1631,25 @@ git commit -m "docs(arch-docs): описать автоматические пр
 - **Не полагайся на память вместо фактического состояния артефактов.** Прогресс-guard в этом сервисе не CLI-утилита — это состояние сессии, которое сервис ведёт сам; агент должен строго следовать шагу и reference-чеклисту, которые получает в промпте, и не пропускать обязательные пункты checklist, даже если ничего не блокирует это технически на его стороне.
 ```
 
-- [ ] **Шаг 3: Вручную убедиться, что других claims про обязательность `scripts/analysis_guard.py` не осталось**
+- [x] **Шаг 3: Вручную убедиться, что других claims про обязательность `scripts/analysis_guard.py` не осталось**
 
 Выполнить: `cd /Users/aanekraso2/github.com/znbiz/sdlc && grep -n "analysis_guard.py\|\.agents/skills" arch-docs/app/workflows/shared_assets/init_arch/SKILL.md`
 
 Ожидается: останутся только блоки CLI-мнемоник `domain --...`/`repo --...`/`timeline --...` (вне скоупа плана, см. Глобальные ограничения).
 
-- [ ] **Шаг 4: Коммит**
+- [x] **Шаг 4: Коммит**
 
 ```bash
 cd /Users/aanekraso2/github.com/znbiz/sdlc
 git add arch-docs/app/workflows/shared_assets/init_arch/SKILL.md
 git commit -m "docs(arch-docs): убрать ложные инструкции про обязательный CLI analysis_guard.py для progress-guard"
 ```
+
+**Мини-отчёт по задаче 11**
+
+- В [SKILL.md](/Users/aanekraso2/github.com/znbiz/sdlc/arch-docs/app/workflows/shared_assets/init_arch/SKILL.md:36) секция про progress-guard переписана под service-owned orchestration: текущий шаг определяется session state и reference-чеклистом, а не ручным вызовом `analysis_guard.py`.
+- Все полные пути вида `python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py ...` удалены из injected worker skill; сохранены только короткие legacy CLI-мнемоники (`init`, `status`, `domain`, `repo`, `advance`, `bootstrap`, `index`, `lint`, `compile`, `timeline`) как терминологический мост со старыми reference-материалами.
+- В [init.md](/Users/aanekraso2/github.com/znbiz/sdlc/arch-docs/docs/workflows/init.md:770) зафиксирована та же semantics: `progress_file_path` остаётся compatibility bridge, а источником истины для worker'а являются session state, reference-чеклист и фактические knowledge-артефакты.
 
 ---
 

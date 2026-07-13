@@ -33,17 +33,17 @@ Markdown/YAML артефакты, создаваемые в архитектур
 
 Прогресс workflow отслеживает сам сервис, а не агент: текущий шаг, завершённые шаги и зарегистрированные артефакты хранятся в состоянии сессии и обновляются автоматически по структурированному JSON-отчёту, который агент возвращает в конце каждого шага (`completed_actions`, `created_artifacts`, `open_questions_found`, `notes`). Агенту не нужно вызывать какой-либо CLI progress-guard самому и не нужен шаблон progress-файла — если промпт шага сообщает путь к progress-файлу, это только informational bridge, а не источник решений.
 
-## Обязательный guard workflow
+## Обязательная дисциплина workflow
 
-Этот skill нужно исполнять в режиме `low freedom`: переход между этапами анализа должен идти через `scripts/analysis_guard.py`, а не только через текстовые инструкции в голове агента.
+Этот skill нужно исполнять в режиме `low freedom`: переход между этапами анализа определяется текущим шагом сессии и reference-чеклистом из промпта, а не памятью агента и не ручным CLI-guard.
 
 Минимальный цикл работы:
 
-1. Создай progress-файл через `python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py init ...`.
-2. Перед началом каждого нового этапа вызывай `... status` или `... validate` и сверяй текущий шаг.
-3. Не переходи к следующему этапу, пока текущий не завершен в progress-файле.
-4. После завершения этапа переводи workflow дальше через `... advance`.
-5. Если скрипт показывает ошибку консистентности или нарушение обязательных предусловий, сначала исправь progress-файл или артефакты, и только потом продолжай анализ.
+1. В начале шага сверяй блоки `Шаг`, `Завершённые шаги`, `Текущий репозиторий`, `Открытые вопросы` и `Temporal delta` из промпта.
+2. Выполняй только текущий шаг и только по reference-чеклисту, который инжектирован сервисом в этот prompt.
+3. Не переходи к следующему этапу, пока текущий шаг не отражён в артефактах и в JSON-отчёте (`completed_actions`, `created_artifacts`, `open_questions_found`, `notes`).
+4. Если промпт показывает путь к progress-файлу, используй его только как informational bridge и compatibility-след, а не как источник решений о том, что делать дальше.
+5. Если обнаружена ошибка консистентности или нарушение обязательных предусловий, сначала исправь артефакты и верни корректный структурированный отчёт, и только потом считай шаг завершённым.
 
 Стандартный happy path для `init-repo-arch-skill` всегда включает historical prep до первого содержательного анализа репозиториев:
 
@@ -89,21 +89,21 @@ Markdown/YAML артефакты, создаваемые в архитектур
 - Empty/degenerate delta допустима только как явно помеченный случай: `no_changes`, `baseline_missing` или `window_start_commit == window_end_commit`.
 - Downstream analysis не должен считать historical prep завершённым, если подготовлен только checkout на дату без delta-context.
 
-Рекомендуемый CLI минимален. По умолчанию агент должен использовать только 5 команд:
+Ниже приведены legacy CLI-мнемоники из исходного standalone skill. В `arch-docs` это не обязательные команды, а лишь короткие имена операций, чтобы не терять терминологическое соответствие с историческими reference-материалами:
 
-- `python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py init --output <path> --product <name> --scope <scope>`
-- `python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py status --progress <path>`
-- `python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py domain ...`
-- `python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py repo ...`
-- `python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py advance --progress <path> --note "<что завершено>"`
+- `init --output <path> --product <name> --scope <scope>`
+- `status --progress <path>`
+- `domain ...`
+- `repo ...`
+- `advance --progress <path> --note "<что завершено>"`
 
-Для knowledge workflow дополнительно допустимы специализированные команды:
+Для knowledge workflow тем же образом могут упоминаться операции:
 
-- `python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py bootstrap --progress <path> --arch-repo-path <arch-repo>`
-- `python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py index --progress <path> --arch-repo-path <arch-repo>`
-- `python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py lint --progress <path> --arch-repo-path <arch-repo>`
-- `python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py compile --progress <path> --arch-repo-path <arch-repo>`
-- `python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py timeline --progress <path> --plan|--resolve-local|--advance-window [--checkout]`
+- `bootstrap --progress <path> --arch-repo-path <arch-repo>`
+- `index --progress <path> --arch-repo-path <arch-repo>`
+- `lint --progress <path> --arch-repo-path <arch-repo>`
+- `compile --progress <path> --arch-repo-path <arch-repo>`
+- `timeline --progress <path> --plan|--resolve-local|--advance-window [--checkout]`
 
 Skill работает в единой wiki-схеме:
 
@@ -111,17 +111,16 @@ Skill работает в единой wiki-схеме:
 - `wiki/log.md` — append-only журнал обновлений knowledge-слоя;
 - `wiki/maps/compile-report.md` — диагностический compile-report.
 
-Перед первым вызовом `status`, `validate`, `repo` или `advance` агент обязан определить фактический путь к progress-файлу в текущем workspace.
-
-Если progress-файл уже существует, нужно использовать именно его фактическое имя и путь. По умолчанию progress-файл с работой скилла это `repo-initialization-progress.yaml`.
+Если промпт сообщает путь к progress-файлу, считай его compatibility bridge для человека и внешних инструментов.
+По умолчанию такой bridge-файл может называться `repo-initialization-progress.yaml`, но decisions о переходе между шагами принимает не он, а сервисное состояние сессии.
 
 Команда `validate` и низкоуровневые `register-repo`, `start-repo`, `update-repo-checklist`, `complete-repo` допустимы как служебные или для отладки, но не должны быть основным интерфейсом skill.
 
-Если workflow в progress-файле и фактические действия расходятся, источником истины считается не память агента, а проверяемый progress-файл и результаты `validate`.
+Если содержимое progress bridge расходится с текущим шагом в промпте или фактическими артефактами, источником истины считается не память агента и не bridge-файл, а состояние сессии, reference-чеклист и реальные файлы knowledge-слоя.
 
 ## Петля исполнения: один шаг за раз
 
-Скилл работает в режиме **одного шага за раз**. Не читай весь checklist заранее. Не переходи к следующему шагу, пока текущий не закрыт в progress-файле.
+Скилл работает в режиме **одного шага за раз**. Не читай весь checklist заранее. Не переходи к следующему шагу, пока текущий не закрыт в артефактах и сервисном состоянии шага.
 
 **Для шагов верхнего уровня** (`workflow.steps`):
 ```
@@ -139,7 +138,7 @@ status → загрузить reference → выполнить один шаг �
 6. Анализировать репозитории в порядке `created_at` от старых к новым, опираясь и на snapshot-state, и на delta текущего окна.
 7. После завершения прохода по всем репозиториям на текущем срезе перевести окно на следующий шаг `historical_window_months` workflow `init` (`3` месяца по умолчанию) и повторить цикл.
 
-Historical prep и его результаты должны фиксироваться в progress-файле через `historical_analysis` и поля репозитория, а не только в заметках агента.
+Historical prep и его результаты должны отражаться в сервисном состоянии сессии, связанных артефактах и итоговом JSON-отчёте шага, а не только в заметках агента.
 
 ### Standard Happy Path
 
@@ -262,8 +261,8 @@ domain --complete --domain-id <id> --notes "<итог домена>"
 5. Закрыть через `repo --complete`
 6. **Остановиться.** Вывести пользователю итог по репозиторию и явно попросить открыть новый чат для продолжения со следующим репозиторием. Не переходить к следующему репозиторию в текущем контексте. Пример сообщения:
 
-   > Репозиторий `<repo>` проанализирован и зафиксирован в progress-файле.
-   > Чтобы продолжить анализ следующего репозитория (`<next-repo>`), откройте новый чат и запустите этот skill снова, указав путь к уже существующему progress-файлу: `/init-repo-arch-skill <path-to-progress-file>`.
+   > Репозиторий `<repo>` проанализирован и зафиксирован в knowledge-артефактах и состоянии сессии.
+   > Чтобы продолжить анализ следующего репозитория (`<next-repo>`), откройте новый чат и продолжайте workflow с тем же session context; если промпт показывает progress bridge path, используйте его только как вспомогательную ссылку.
 
 7. Следующий репозиторий начинается только в новом чате.
 

@@ -772,6 +772,12 @@ Transport-контракт для этого подтверждения полн
 `analysis_guard.py validate-contracts`/`validate-commits`, а ссылается на тот же
 автоматический service-side gate `run_knowledge_lint`.
 
+Injected worker `SKILL.md` синхронизирован с этой моделью: он больше не требует
+обязательного вызова `analysis_guard.py` как progress-guard и трактует
+`progress_file_path` только как compatibility bridge. Источник истины для worker'а
+теперь один и тот же во всех слоях orchestration: текущий step/session state,
+reference-чеклист шага и фактические knowledge-артефакты в `arch_repo_dir`.
+
 ## Audit / Events
 
 Сейчас используются typed event categories:
