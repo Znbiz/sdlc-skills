@@ -5,8 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from app.workflows.init_arch.domain import RepositoryExecution, StepId, WorkflowSessionRecord
-from app.workflows.init_arch.domain import OpenQuestionRecord
+from app.workflows.init_arch.domain import OpenQuestionRecord, RepositoryExecution, StepId, WorkflowSessionRecord
 from app.workflows.init_arch.knowledge import KnowledgeArtifactService
 from app.workflows.shared_assets.loader import WorkflowAssetLoader
 
@@ -36,6 +35,36 @@ async def test_bootstrap_arch_repo_scaffolds_required_artifacts(tmp_path: Path) 
     assert (tmp_path / "arch-repo" / "glossary.md").exists()
     assert result.session.artifacts
     assert any(artifact.artifact_path == "wiki/index.md" for artifact in result.session.artifacts)
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_arch_repo_scaffolds_architecture_markdown_from_templates(tmp_path: Path) -> None:
+    asset_loader = WorkflowAssetLoader(
+        Path("/Users/aanekraso2/github.com/znbiz/sdlc/arch-docs/app/workflows/shared_assets")
+    )
+    service = KnowledgeArtifactService(asset_loader=asset_loader)
+
+    result = await service.bootstrap_arch_repo(_make_session(), arch_repo_dir=str(tmp_path / "arch-repo"))
+
+    hld_path = tmp_path / "arch-repo" / "architecture" / "hld.md"
+    assert hld_path.exists()
+    assert "## Контекстная диаграмма" in hld_path.read_text(encoding="utf-8")
+    assert any(artifact.artifact_path == "architecture/hld.md" for artifact in result.session.artifacts)
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_arch_repo_scaffolds_landscape_yaml_from_template(tmp_path: Path) -> None:
+    asset_loader = WorkflowAssetLoader(
+        Path("/Users/aanekraso2/github.com/znbiz/sdlc/arch-docs/app/workflows/shared_assets")
+    )
+    service = KnowledgeArtifactService(asset_loader=asset_loader)
+
+    result = await service.bootstrap_arch_repo(_make_session(), arch_repo_dir=str(tmp_path / "arch-repo"))
+
+    landscape_path = tmp_path / "arch-repo" / "architecture" / "landscape.yaml"
+    assert landscape_path.exists()
+    assert "entities:" in landscape_path.read_text(encoding="utf-8")
+    assert any(artifact.artifact_path == "architecture/landscape.yaml" for artifact in result.session.artifacts)
 
 
 @pytest.mark.asyncio
@@ -152,6 +181,18 @@ async def test_bootstrap_arch_repo_skips_existing_files(tmp_path: Path) -> None:
     result = await service.bootstrap_arch_repo(_make_session(), arch_repo_dir=str(arch_repo_dir))
 
     assert "wiki/index.md" not in result.written_artifacts
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_arch_repo_does_not_overwrite_existing_architecture_markdown(tmp_path: Path) -> None:
+    arch_repo_dir = tmp_path / "arch-repo"
+    (arch_repo_dir / "architecture").mkdir(parents=True)
+    (arch_repo_dir / "architecture" / "hld.md").write_text("# already written by worker\n", encoding="utf-8")
+    service = KnowledgeArtifactService()
+
+    await service.bootstrap_arch_repo(_make_session(), arch_repo_dir=str(arch_repo_dir))
+
+    assert (arch_repo_dir / "architecture" / "hld.md").read_text(encoding="utf-8") == "# already written by worker\n"
 
 
 def test_shared_asset_loader_reads_vendored_template() -> None:

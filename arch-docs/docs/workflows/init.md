@@ -383,6 +383,7 @@ sequenceDiagram
 ### Knowledge Artifact Service
 
 - bootstrap-ит `features/`, `architecture/`, `wiki/` и базовые knowledge files;
+- bootstrap-ит из vendored templates также одиночные `architecture/*.md` артефакты (`hld`, `security`, `risks`, `tech-stack`, `roles-and-permissions`, `domain-entities`, `integrations-overview`, `constraints`, `requirements`) и `architecture/landscape.yaml`;
 - использует vendored templates из `app/workflows/shared_assets/knowledge_base/` через общий asset loader;
 - синхронизирует `open-questions.md` из typed `session.open_questions` до и после interview loop;
 - компилирует `wiki/index.md` и `wiki/maps/compile-report.md`;
@@ -705,6 +706,16 @@ Transport-контракт для этого подтверждения полн
 - `features-index.md`
 - `glossary.md`
 - `open-questions.md`
+- `architecture/hld.md`
+- `architecture/security.md`
+- `architecture/risks.md`
+- `architecture/tech-stack.md`
+- `architecture/roles-and-permissions.md`
+- `architecture/domain-entities.md`
+- `architecture/integrations-overview.md`
+- `architecture/constraints.md`
+- `architecture/requirements.md`
+- `architecture/landscape.yaml`
 - `wiki/index.md`
 - `wiki/log.md`
 - `wiki/maps/compile-report.md`

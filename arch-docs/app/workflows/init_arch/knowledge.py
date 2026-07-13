@@ -51,6 +51,18 @@ _ARTIFACT_KINDS: Final[dict[str, str]] = {
     "wiki/log.md": "knowledge_log",
     "wiki/maps/compile-report.md": "compile_report",
 }
+_ARCHITECTURE_TEMPLATE_ASSETS: Final[dict[str, str]] = {
+    "architecture/hld.md": "architecture/hld-template.md",
+    "architecture/security.md": "architecture/security-template.md",
+    "architecture/risks.md": "architecture/risks-template.md",
+    "architecture/tech-stack.md": "architecture/tech-stack-template.md",
+    "architecture/roles-and-permissions.md": "architecture/roles-and-permissions-template.md",
+    "architecture/domain-entities.md": "architecture/domain-entities-template.md",
+    "architecture/integrations-overview.md": "architecture/integrations-overview-template.md",
+    "architecture/constraints.md": "architecture/constraints-template.md",
+    "architecture/requirements.md": "architecture/requirements-template.md",
+    "architecture/landscape.yaml": "architecture/landscape-template.yaml",
+}
 
 
 class KnowledgeArtifactResult(pydantic.BaseModel):
@@ -204,7 +216,7 @@ class KnowledgeArtifactService:
             {"name": repository.repository_name, "analysis_status": repository.analysis_status}
             for repository in session.repositories
         ]
-        return {
+        contents = {
             "features-index.md": self._load_asset("features-index-template.md"),
             "glossary.md": self._load_asset("architecture/glossary-template.md"),
             "open-questions.md": self._load_asset("open-questions-template.md"),
@@ -216,6 +228,9 @@ class KnowledgeArtifactService:
             "wiki/log.md": build_knowledge_log_stub(),
             "wiki/maps/compile-report.md": build_compile_report_stub(),
         }
+        for target_path, template_path in _ARCHITECTURE_TEMPLATE_ASSETS.items():
+            contents[target_path] = self._load_asset(template_path)
+        return contents
 
     def _load_asset(self, relative_path: str) -> str:
         return self._asset_loader.read_text("knowledge_base", relative_path)

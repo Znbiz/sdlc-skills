@@ -407,7 +407,7 @@ git commit -m "feat(arch-docs): добавить опциональную про
 - Производит: `_ARCHITECTURE_TEMPLATE_ASSETS: Final[dict[str, str]]` (целевой relative_path -> relative_path шаблона внутри `knowledge_base/`), включённый в `_bootstrap_contents()`.
 - Потребляет: `ARCHITECTURE_MARKDOWN_REQUIRED_SECTIONS` из `architecture_lint.py` только как справочный список ключей (не импортируется — `knowledge.py` не должен знать о `architecture_lint.py`, зависимость идёт в обратную сторону: `knowledge_runtime.py` вызывает `architecture_lint.py`, а `knowledge.py` — соседний независимый модуль).
 
-- [ ] **Шаг 1: Написать падающий тест**
+- [x] **Шаг 1: Написать падающий тест**
 
 Добавить в `arch-docs/tests/workflows/init_arch/test_knowledge.py`:
 
@@ -454,12 +454,12 @@ async def test_bootstrap_arch_repo_does_not_overwrite_existing_architecture_mark
     assert (arch_repo_dir / "architecture" / "hld.md").read_text(encoding="utf-8") == "# уже написано worker'ом\n"
 ```
 
-- [ ] **Шаг 2: Запустить тесты и убедиться, что они падают**
+- [x] **Шаг 2: Запустить тесты и убедиться, что они падают**
 
 Выполнить: `cd arch-docs && .venv/bin/pytest tests/workflows/init_arch/test_knowledge.py -v -k "architecture_markdown or landscape_yaml"`
 Ожидается: первые два теста падают (`hld.md`/`landscape.yaml` не создаются), третий (overwrite-guard) проходит уже сейчас.
 
-- [ ] **Шаг 3: Написать минимальную реализацию**
+- [x] **Шаг 3: Написать минимальную реализацию**
 
 В `arch-docs/app/workflows/init_arch/knowledge.py` добавить рядом с `_ARTIFACT_KINDS`:
 
@@ -505,12 +505,12 @@ def _bootstrap_contents(self, session: WorkflowSessionRecord) -> dict[str, str]:
 
 Логика "пишем, только если файла ещё нет" в `bootstrap_arch_repo` (строки 84-88) уже не требует изменений — она уже безусловно применяется ко всем ключам `_bootstrap_contents()`.
 
-- [ ] **Шаг 4: Запустить тесты и убедиться, что они проходят**
+- [x] **Шаг 4: Запустить тесты и убедиться, что они проходят**
 
 Выполнить: `cd arch-docs && .venv/bin/pytest tests/workflows/init_arch/test_knowledge.py -v`
 Ожидается: все тесты проходят, включая уже существующий `test_valid_arch_repo_smoke_bootstrap_compile_and_lint` (фикстура уже содержит реальный, заполненный `architecture/hld.md`/`architecture/landscape.yaml` — bootstrap их не тронет, сработает ветка "файл уже существует").
 
-- [ ] **Шаг 5: Полный регрессионный прогон и ruff**
+- [x] **Шаг 5: Полный регрессионный прогон и ruff**
 
 Выполнить: `cd arch-docs && .venv/bin/pytest -q && .venv/bin/ruff check app/workflows/init_arch/knowledge.py tests/workflows/init_arch/test_knowledge.py`
 Ожидается: все тесты проходят, `ruff` чист.
@@ -522,6 +522,14 @@ cd /Users/aanekraso2/github.com/znbiz/sdlc
 git add arch-docs/app/workflows/init_arch/knowledge.py arch-docs/tests/workflows/init_arch/test_knowledge.py
 git commit -m "feat(arch-docs): bootstrap-скаффолдинг 9 architecture/*.md артефактов и landscape.yaml из реальных шаблонов knowledge_base/"
 ```
+
+**Мини-отчёт (2026-07-13):**
+
+- Добавлены regression-тесты на bootstrap `architecture/hld.md`, `architecture/landscape.yaml` и на запрет перезаписи уже существующего `architecture/hld.md`.
+- Red подтверждён командой `./.venv/bin/pytest tests/workflows/init_arch/test_knowledge.py -v -k "architecture_markdown or landscape_yaml"`: два новых теста падали из-за отсутствующих `hld.md` и `landscape.yaml`, overwrite-guard уже проходил.
+- В `knowledge.py` добавлен `_ARCHITECTURE_TEMPLATE_ASSETS` и подключён в `_bootstrap_contents()`; bootstrap теперь копирует 9 markdown-шаблонов `architecture/*-template.md` и `architecture/landscape-template.yaml`, сохраняя существующее правило "не перезаписывать готовый файл".
+- Green подтверждён `./.venv/bin/pytest tests/workflows/init_arch/test_knowledge.py -v`: `12 passed`.
+- Регрессия подтверждена `./.venv/bin/pytest -q`: `372 passed, 3 warnings`. Линт подтверждён `./.venv/bin/ruff check app/workflows/init_arch/knowledge.py tests/workflows/init_arch/test_knowledge.py`: `All checks passed!`.
 
 ---
 
