@@ -1249,7 +1249,7 @@ git commit -m "feat(arch-docs): добавить проверку согласо
 - Производит: `_lint_template_residue(arch_repo_path: Path) -> list[str]`, включённую в `lint_architecture_artifacts`. Известные плейсхолдеры извлекаются программно из тех же файлов шаблонов в `knowledge_base/` (единый источник — список не дублируется руками), известные комментарии детектируются универсальным regex `<!--.*?-->` (в synthesis-слое HTML-комментариев не должно быть в принципе, вне зависимости от шаблона-источника).
 - Область действия: 9 markdown-артефактов из `ARCHITECTURE_MARKDOWN_REQUIRED_SECTIONS` (ключи переиспользуются напрямую, отдельный список не заводим) + `glossary.md`, `features-index.md`, `open-questions.md` + `architecture/landscape.yaml` — все артефакты, которые могут быть bootstrap-скопированы из шаблона дословно (Задача 3.1). `AGENTS.md`, `architecture/integrations/*.md`, `features/*.md`, контракты, storage и `architecture/structure/*.yml` — вне области действия (не bootstrap-ятся, см. Задачу 3.1 и Глобальные ограничения).
 
-- [ ] **Шаг 1: Написать падающие тесты**
+- [x] **Шаг 1: Написать падающие тесты**
 
 Добавить в конец `arch-docs/tests/workflows/init_arch/test_architecture_lint.py`:
 
@@ -1311,12 +1311,12 @@ def test_lint_template_residue_flags_unfilled_landscape_placeholder(tmp_path: Pa
     )
 ```
 
-- [ ] **Шаг 2: Запустить тесты и убедиться, что они падают**
+- [x] **Шаг 2: Запустить тесты и убедиться, что они падают**
 
 Выполнить: `cd arch-docs && .venv/bin/pytest tests/workflows/init_arch/test_architecture_lint.py -v -k lint_template_residue`
 Ожидается: падение с `AttributeError`.
 
-- [ ] **Шаг 3: Написать минимальную реализацию**
+- [x] **Шаг 3: Написать минимальную реализацию**
 
 В `arch-docs/app/workflows/init_arch/architecture_lint.py` добавить импорт `re` рядом с остальными импортами (после `import json`):
 
@@ -1405,28 +1405,42 @@ def _lint_template_residue(arch_repo_path: Path) -> list[str]:
 
 `Path(__file__).resolve().parent.parent` — `architecture_lint.py` лежит в `app/workflows/init_arch/`, а `knowledge_base/` — в `app/workflows/shared_assets/`, то есть на уровень выше и в соседний каталог; тот же уровень вложенности, который уже использует `WorkflowAssetLoader` (`app/workflows/shared_assets/loader.py:7`), но без зависимости от него — модуль остаётся самодостаточным.
 
-- [ ] **Шаг 4: Запустить тесты и убедиться, что они проходят**
+- [x] **Шаг 4: Запустить тесты и убедиться, что они проходят**
 
 Выполнить: `cd arch-docs && .venv/bin/pytest tests/workflows/init_arch/test_architecture_lint.py -v`
 Ожидается: все тесты проходят.
 
-- [ ] **Шаг 5: Запустить ruff и исправить**
+- [x] **Шаг 5: Запустить ruff и исправить**
 
 Выполнить: `cd arch-docs && .venv/bin/ruff check app/workflows/init_arch/architecture_lint.py tests/workflows/init_arch/test_architecture_lint.py --fix`
 Ожидается: код возврата 0.
 
-- [ ] **Шаг 6: Полный регрессионный прогон**
+- [x] **Шаг 6: Полный регрессионный прогон**
 
 Выполнить: `cd arch-docs && .venv/bin/pytest -q`
 Ожидается: все тесты проходят, включая `test_valid_arch_repo_smoke_bootstrap_compile_and_lint` — фикстура из Задачи 9 содержит только заполненный реальный контент, без плейсхолдеров и комментариев, поэтому `_lint_template_residue` не должна на ней ничего репортить.
 
-- [ ] **Шаг 7: Коммит**
+- [x] **Шаг 7: Коммит**
 
 ```bash
 cd /Users/aanekraso2/github.com/znbiz/sdlc
 git add arch-docs/app/workflows/init_arch/architecture_lint.py arch-docs/tests/workflows/init_arch/test_architecture_lint.py
 git commit -m "feat(arch-docs): детектировать незаполненные плейсхолдеры и служебные комментарии шаблонов в architecture-артефактах"
 ```
+
+**Мини-отчёт по задаче 7.1 (2026-07-13):**
+
+- В [architecture_lint.py](/Users/aanekraso2/github.com/znbiz/sdlc/arch-docs/app/workflows/init_arch/architecture_lint.py:64) общий `lint_architecture_artifacts(...)` расширен вызовом `_lint_template_residue(...)`.
+- Добавлены константы области действия для bootstrap-артефактов, regex-детекторы `_PLACEHOLDER_PATTERN` и `_COMMENT_PATTERN`, кеш `_known_template_placeholders_cache` и загрузка известных `<...>` токенов прямо из `shared_assets/knowledge_base`.
+- Реализован `_lint_template_residue(...)`, который проходит только по bootstrap-target артефактам и репортит два класса нарушений: незаполненные template placeholders и служебные HTML-комментарии.
+- Для упрощения сообщений и снижения complexity добавлены небольшие helper-функции `_find_template_comment_residue(...)` и `_find_template_placeholder_residue(...)`.
+- В [test_architecture_lint.py](/Users/aanekraso2/github.com/znbiz/sdlc/arch-docs/tests/workflows/init_arch/test_architecture_lint.py:318) добавлены 5 таргетных тестов: missing-files, markdown placeholder, glossary comment, filled-in content и landscape placeholder.
+- TDD зафиксирован свежим red-green циклом:
+  - `cd arch-docs && .venv/bin/pytest tests/workflows/init_arch/test_architecture_lint.py -v -k lint_template_residue` → `5 failed` с `AttributeError` до реализации.
+  - `cd arch-docs && .venv/bin/pytest tests/workflows/init_arch/test_architecture_lint.py -v` → `32 passed` после реализации.
+- Качество подтверждено двумя дополнительными проверками:
+  - `cd arch-docs && .venv/bin/ruff check app/workflows/init_arch/architecture_lint.py tests/workflows/init_arch/test_architecture_lint.py --fix` → код возврата 0.
+  - `cd arch-docs && .venv/bin/pytest -q` → `397 passed, 3 warnings`; residue-проверка не сломала общий smoke/regression path.
 
 ---
 

@@ -313,3 +313,60 @@ def test_lint_commit_consistency_passes_when_commits_match(tmp_path: Path) -> No
     issues = architecture_lint._lint_commit_consistency(tmp_path)
 
     assert issues == []
+
+
+def test_lint_template_residue_skips_missing_files(tmp_path: Path) -> None:
+    issues = architecture_lint._lint_template_residue(tmp_path)
+
+    assert issues == []
+
+
+def test_lint_template_residue_flags_unfilled_placeholder(tmp_path: Path) -> None:
+    _write(tmp_path, "architecture/risks.md", "# Риски\n\n## Категории\n\n1. <риск или пробел в документации>\n")
+
+    issues = architecture_lint._lint_template_residue(tmp_path)
+
+    assert any(
+        "незаполненный плейсхолдер" in issue and "architecture/risks.md" in issue for issue in issues
+    )
+
+
+def test_lint_template_residue_flags_unfilled_comment(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "glossary.md",
+        "# Глоссарий\n\n"
+        '<!-- Не добавляй сюда служебный вводный абзац про "этот файл фиксирует..." или список уже '
+        'проанализированных репозиториев. В итоговом glossary.md после заголовка файла должен сразу идти '
+        'таблица терминов, без промежуточного заголовка "Термины". -->\n\n'
+        "| Термин | Определение | Источник |\n| --- | --- | --- |\n"
+        "| API | Программный интерфейс | gateway-service/README.md |\n",
+    )
+
+    issues = architecture_lint._lint_template_residue(tmp_path)
+
+    assert any("незаполненный служебный комментарий" in issue and "glossary.md" in issue for issue in issues)
+
+
+def test_lint_template_residue_passes_when_content_is_filled_in(tmp_path: Path) -> None:
+    _write(tmp_path, "architecture/risks.md", "# Риски\n\n## Категории\n\n1. Нет автоматических бэкапов БД\n")
+    _write(
+        tmp_path,
+        "glossary.md",
+        "# Глоссарий\n\n| Термин | Определение | Источник |\n| --- | --- | --- |\n"
+        "| CLI-токен | Токен обмена для CLI-логина | gateway-service/src/api/auth.py |\n",
+    )
+
+    issues = architecture_lint._lint_template_residue(tmp_path)
+
+    assert issues == []
+
+
+def test_lint_template_residue_flags_unfilled_landscape_placeholder(tmp_path: Path) -> None:
+    _write(tmp_path, "architecture/landscape.yaml", "system:\n  name: <название-системы>\n")
+
+    issues = architecture_lint._lint_template_residue(tmp_path)
+
+    assert any(
+        "незаполненный плейсхолдер" in issue and "architecture/landscape.yaml" in issue for issue in issues
+    )

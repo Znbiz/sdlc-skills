@@ -10,6 +10,7 @@ worker prompt used to tell the agent to shell out to a CLI script
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Final
 
@@ -71,6 +72,7 @@ def lint_architecture_artifacts(arch_repo_path: Path) -> list[str]:
     issues.extend(_lint_contracts(arch_repo_path))
     issues.extend(_lint_storage(arch_repo_path))
     issues.extend(_lint_commit_consistency(arch_repo_path))
+    issues.extend(_lint_template_residue(arch_repo_path))
     return issues
 
 
@@ -312,3 +314,76 @@ def _lint_service_commit_consistency(service: object, structure_dir: Path) -> li
 
 def _normalize_service_value(value: object) -> str:
     return str(value).strip() if value else ""
+
+
+_RESIDUE_SOURCE_TEMPLATES: Final[tuple[str, ...]] = (
+    "architecture/hld-template.md",
+    "architecture/security-template.md",
+    "architecture/risks-template.md",
+    "architecture/tech-stack-template.md",
+    "architecture/roles-and-permissions-template.md",
+    "architecture/domain-entities-template.md",
+    "architecture/integrations-overview-template.md",
+    "architecture/constraints-template.md",
+    "architecture/requirements-template.md",
+    "architecture/glossary-template.md",
+    "features-index-template.md",
+    "open-questions-template.md",
+    "architecture/landscape-template.yaml",
+)
+_RESIDUE_TARGET_PATHS: Final[tuple[str, ...]] = (
+    *ARCHITECTURE_MARKDOWN_REQUIRED_SECTIONS,
+    "glossary.md",
+    "features-index.md",
+    "open-questions.md",
+    "architecture/landscape.yaml",
+)
+_PLACEHOLDER_PATTERN: Final[re.Pattern[str]] = re.compile(r"<[^<>\n]{1,120}>")
+_COMMENT_PATTERN: Final[re.Pattern[str]] = re.compile(r"<!--.*?-->", re.DOTALL)
+_KNOWLEDGE_BASE_DIR: Final[Path] = Path(__file__).resolve().parent.parent / "shared_assets" / "knowledge_base"
+
+_known_template_placeholders_cache: frozenset[str] | None = None
+
+
+def _known_template_placeholders() -> frozenset[str]:
+    global _known_template_placeholders_cache  # noqa: PLW0603
+    if _known_template_placeholders_cache is None:
+        tokens: set[str] = set()
+        for relative_path in _RESIDUE_SOURCE_TEMPLATES:
+            template_text = (_KNOWLEDGE_BASE_DIR / relative_path).read_text(encoding="utf-8")
+            tokens.update(_PLACEHOLDER_PATTERN.findall(template_text))
+        _known_template_placeholders_cache = frozenset(tokens)
+    return _known_template_placeholders_cache
+
+
+def _lint_template_residue(arch_repo_path: Path) -> list[str]:
+    known_placeholders = _known_template_placeholders()
+    issues: list[str] = []
+    for relative_path in _RESIDUE_TARGET_PATHS:
+        artifact_path = arch_repo_path / relative_path
+        if not artifact_path.exists():
+            continue
+
+        content = artifact_path.read_text(encoding="utf-8")
+        issues.extend(_find_template_comment_residue(relative_path, content))
+        issues.extend(_find_template_placeholder_residue(relative_path, content, known_placeholders))
+    return issues
+
+
+def _find_template_comment_residue(relative_path: str, content: str) -> list[str]:
+    return [
+        f"ERROR: {relative_path} содержит незаполненный служебный комментарий шаблона: `{comment.strip()}`"
+        for comment in _COMMENT_PATTERN.findall(content)
+    ]
+
+
+def _find_template_placeholder_residue(
+    relative_path: str,
+    content: str,
+    known_placeholders: frozenset[str],
+) -> list[str]:
+    return [
+        f"ERROR: {relative_path} содержит незаполненный плейсхолдер шаблона: `{placeholder}`"
+        for placeholder in sorted(known_placeholders)
+        if placeholder in content
+    ]
