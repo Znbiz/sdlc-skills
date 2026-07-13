@@ -715,6 +715,14 @@ Transport-контракт для этого подтверждения полн
 - blocking `ERROR:` из knowledge lint недопустимы;
 - warnings допустимы, но фиксируются в lint summary и остаются follow-up.
 
+**В процессе:** `app/workflows/init_arch/architecture_lint.py` (см. план
+[2026-07-13-architecture-artifact-lint.md](../spec/2026-07-13-architecture-artifact-lint.md))
+добавляет structural lint для `architecture/*` — обязательные секции 9 markdown-артефактов
+(`hld.md`, `security.md`, `risks.md` и др.) и опциональную проверку `AGENTS.md`. Модуль
+самодостаточен и покрыт тестами, но пока не вызывается из `run_knowledge_lint()` — подключение
+к этому же gate запланировано отдельной задачей плана (Задача 8), до этого момента `ERROR:` из
+`architecture_lint.py` не блокируют workflow.
+
 ## Audit / Events
 
 Сейчас используются typed event categories:

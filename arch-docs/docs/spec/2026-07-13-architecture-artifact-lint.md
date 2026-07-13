@@ -290,7 +290,7 @@ git commit -m "feat(arch-docs): добавить проверку обязате
 **Интерфейсы:**
 - Производит: `AGENTS_REQUIRED_SECTIONS: tuple[str, ...]`, `_lint_agents_md(arch_repo_path: Path) -> list[str]`, включённую в `lint_architecture_artifacts`.
 
-- [ ] **Шаг 1: Написать падающие тесты**
+- [x] **Шаг 1: Написать падающие тесты**
 
 Добавить в конец `arch-docs/tests/workflows/init_arch/test_architecture_lint.py`:
 
@@ -321,12 +321,12 @@ def test_lint_agents_md_passes_when_all_sections_present(tmp_path: Path) -> None
     assert issues == []
 ```
 
-- [ ] **Шаг 2: Запустить тесты и убедиться, что они падают**
+- [x] **Шаг 2: Запустить тесты и убедиться, что они падают**
 
 Выполнить: `cd arch-docs && .venv/bin/pytest tests/workflows/init_arch/test_architecture_lint.py -v -k lint_agents_md`
 Ожидается: падение с `AttributeError`.
 
-- [ ] **Шаг 3: Написать минимальную реализацию**
+- [x] **Шаг 3: Написать минимальную реализацию**
 
 Обновить `lint_architecture_artifacts` в `arch-docs/app/workflows/init_arch/architecture_lint.py`:
 
@@ -367,12 +367,12 @@ def _lint_agents_md(arch_repo_path: Path) -> list[str]:
     ]
 ```
 
-- [ ] **Шаг 4: Запустить тесты и убедиться, что они проходят**
+- [x] **Шаг 4: Запустить тесты и убедиться, что они проходят**
 
 Выполнить: `cd arch-docs && .venv/bin/pytest tests/workflows/init_arch/test_architecture_lint.py -v`
 Ожидается: все тесты проходят.
 
-- [ ] **Шаг 5: Коммит**
+- [x] **Шаг 5: Коммит**
 
 ```bash
 cd /Users/aanekraso2/github.com/znbiz/sdlc
