@@ -947,7 +947,7 @@ git commit -m "feat(arch-docs): валидировать OpenAPI через open
 **Интерфейсы:**
 - Производит: `_lint_storage(arch_repo_path: Path) -> list[str]`, включённую в `lint_architecture_artifacts`. По аналогии с `_lint_contracts`, проверяет только сигнатурные поля шаблона `storage-template.yml`: mapping верхнего уровня `storage` с непустым `storage.type`.
 
-- [ ] **Шаг 1: Написать падающие тесты**
+- [x] **Шаг 1: Написать падающие тесты**
 
 Добавить в конец `arch-docs/tests/workflows/init_arch/test_architecture_lint.py`:
 
@@ -988,12 +988,12 @@ def test_lint_storage_passes_valid_document(tmp_path: Path) -> None:
     assert issues == []
 ```
 
-- [ ] **Шаг 2: Запустить тесты и убедиться, что они падают**
+- [x] **Шаг 2: Запустить тесты и убедиться, что они падают**
 
 Выполнить: `cd arch-docs && .venv/bin/pytest tests/workflows/init_arch/test_architecture_lint.py -v -k lint_storage`
 Ожидается: падение с `AttributeError`.
 
-- [ ] **Шаг 3: Написать минимальную реализацию**
+- [x] **Шаг 3: Написать минимальную реализацию**
 
 Обновить `lint_architecture_artifacts`:
 
@@ -1036,23 +1036,33 @@ def _lint_storage(arch_repo_path: Path) -> list[str]:
     return issues
 ```
 
-- [ ] **Шаг 4: Запустить тесты и убедиться, что они проходят**
+- [x] **Шаг 4: Запустить тесты и убедиться, что они проходят**
 
 Выполнить: `cd arch-docs && .venv/bin/pytest tests/workflows/init_arch/test_architecture_lint.py -v`
 Ожидается: все тесты проходят.
 
-- [ ] **Шаг 5: Запустить ruff и исправить**
+- [x] **Шаг 5: Запустить ruff и исправить**
 
 Выполнить: `cd arch-docs && .venv/bin/ruff check app/workflows/init_arch/architecture_lint.py tests/workflows/init_arch/test_architecture_lint.py --fix`
 Ожидается: код возврата 0, либо только автоисправимые замечания. Если ruff отметит complexity/line-length в `architecture_lint.py`, добавить точечную запись `extend-per-file-ignores` в `pyproject.toml` по аналогии с `knowledge_runtime.py`, а не общий `# noqa`.
 
-- [ ] **Шаг 6: Коммит**
+- [x] **Шаг 6: Коммит**
 
 ```bash
 cd /Users/aanekraso2/github.com/znbiz/sdlc
 git add arch-docs/app/workflows/init_arch/architecture_lint.py arch-docs/tests/workflows/init_arch/test_architecture_lint.py
 git commit -m "feat(arch-docs): добавить минимальную схема-проверку architecture/storage/*.yml"
 ```
+
+**Мини-отчёт по задаче 6 (2026-07-13):**
+
+- В [architecture_lint.py](/Users/aanekraso2/github.com/znbiz/sdlc/arch-docs/app/workflows/init_arch/architecture_lint.py:64) `lint_architecture_artifacts(...)` расширен вызовом `_lint_storage(...)`, так что storage-проверка вошла в общий pipeline модуля.
+- Добавлен `_lint_storage(...)`, который обходит `architecture/storage/*.yml`, пропускает отсутствие каталога, репортит YAML-ошибки, отсутствие mapping верхнего уровня `storage` и отсутствие обязательного поля `storage.type`.
+- В [test_architecture_lint.py](/Users/aanekraso2/github.com/znbiz/sdlc/arch-docs/tests/workflows/init_arch/test_architecture_lint.py:223) добавлены 4 таргетных теста на red-green цикл для storage lint.
+- TDD зафиксирован свежим red-green циклом:
+  - `cd arch-docs && .venv/bin/pytest tests/workflows/init_arch/test_architecture_lint.py -v -k lint_storage` → `4 failed` с `AttributeError` до реализации.
+  - `cd arch-docs && .venv/bin/pytest tests/workflows/init_arch/test_architecture_lint.py -v` → `23 passed` после реализации.
+- `ruff check app/workflows/init_arch/architecture_lint.py tests/workflows/init_arch/test_architecture_lint.py --fix` прошёл с одной автоисправленной правкой форматирования в тесте.
 
 ---
 

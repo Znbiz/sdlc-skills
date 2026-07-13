@@ -174,7 +174,7 @@ def test_lint_contracts_passes_valid_openapi(tmp_path: Path) -> None:
             "  /ping:\n"
             "    get:\n"
             "      responses:\n"
-            "        \"200\":\n"
+            '        "200":\n'
             "          description: ok\n"
         ),
     )
@@ -217,5 +217,45 @@ def test_lint_contracts_passes_valid_asyncapi(tmp_path: Path) -> None:
     )
 
     issues = architecture_lint._lint_contracts(tmp_path)
+
+    assert issues == []
+
+
+def _write_storage(tmp_path: Path, name: str, body: str) -> Path:
+    return _write(tmp_path, f"architecture/storage/{name}", body)
+
+
+def test_lint_storage_skips_when_directory_missing(tmp_path: Path) -> None:
+    issues = architecture_lint._lint_storage(tmp_path)
+
+    assert issues == []
+
+
+def test_lint_storage_reports_missing_top_level_key(tmp_path: Path) -> None:
+    _write_storage(tmp_path, "gateway-service.yml", "service: gateway-service\n")
+
+    issues = architecture_lint._lint_storage(tmp_path)
+
+    assert issues == [
+        "ERROR: architecture/storage/gateway-service.yml не содержит mapping верхнего уровня `storage`"
+    ]
+
+
+def test_lint_storage_reports_missing_type(tmp_path: Path) -> None:
+    _write_storage(tmp_path, "gateway-service.yml", "storage:\n  id: gateway-tokens\n")
+
+    issues = architecture_lint._lint_storage(tmp_path)
+
+    assert issues == ["ERROR: architecture/storage/gateway-service.yml не содержит `storage.type`"]
+
+
+def test_lint_storage_passes_valid_document(tmp_path: Path) -> None:
+    _write_storage(
+        tmp_path,
+        "gateway-service.yml",
+        "storage:\n  id: gateway-tokens\n  type: postgresql\n",
+    )
+
+    issues = architecture_lint._lint_storage(tmp_path)
 
     assert issues == []

@@ -69,6 +69,7 @@ def lint_architecture_artifacts(arch_repo_path: Path) -> list[str]:
     issues.extend(_lint_directory_documents(arch_repo_path, "architecture/integrations", INTEGRATION_REQUIRED_SECTIONS))
     issues.extend(_lint_directory_documents(arch_repo_path, "features", FEATURE_REQUIRED_SECTIONS))
     issues.extend(_lint_contracts(arch_repo_path))
+    issues.extend(_lint_storage(arch_repo_path))
     return issues
 
 
@@ -217,3 +218,26 @@ def _lint_asyncapi_contract(document: dict[str, Any], label: str) -> list[str]:
         first_line = str(error).strip().splitlines()[0]
         return [f"ERROR: {label} не проходит валидацию AsyncAPI 2.6.0 JSON Schema: {first_line}"]
     return []
+
+
+def _lint_storage(arch_repo_path: Path) -> list[str]:
+    storage_dir = arch_repo_path / "architecture" / "storage"
+    if not storage_dir.exists():
+        return []
+
+    issues: list[str] = []
+    for storage_path in sorted(storage_dir.glob("*.yml")):
+        label = storage_path.relative_to(arch_repo_path).as_posix()
+        try:
+            document = yaml.safe_load(storage_path.read_text(encoding="utf-8"))
+        except yaml.YAMLError as error:
+            issues.append(f"ERROR: {label} невалидный YAML: {error}")
+            continue
+
+        storage_section = document.get("storage") if isinstance(document, dict) else None
+        if not isinstance(storage_section, dict):
+            issues.append(f"ERROR: {label} не содержит mapping верхнего уровня `storage`")
+            continue
+        if not storage_section.get("type"):
+            issues.append(f"ERROR: {label} не содержит `storage.type`")
+    return issues
