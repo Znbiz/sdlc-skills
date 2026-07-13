@@ -778,6 +778,10 @@ Injected worker `SKILL.md` синхронизирован с этой модел
 теперь один и тот же во всех слоях orchestration: текущий step/session state,
 reference-чеклист шага и фактические knowledge-артефакты в `arch_repo_dir`.
 
+Эта semantics теперь дополнительно защищена regression-слоем: `tests/workflows/init_arch/test_prompts.py`
+проверяет сборку injected prompt после изменений `SKILL.md`, а `tests/services/test_init_arch_workflow.py`
+фиксирует runtime-контракт вызова `compile_graph(checkpointer=...)` и persistence/status paths orchestration-слоя.
+
 ## Audit / Events
 
 Сейчас используются typed event categories:

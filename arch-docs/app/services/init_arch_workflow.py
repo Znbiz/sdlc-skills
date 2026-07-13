@@ -804,7 +804,11 @@ def _resolve_init_arch_paths(
 
     if raw_workspace_path == arch_repo_path or raw_workspace_path in arch_repo_path.parents:
         raise WorkflowValidationError("arch_repo_dir must not live inside raw workspace")
-    if arch_repo_path not in workspace_path.parents and arch_repo_path != workspace_path and workspace_path not in arch_repo_path.parents:
+    if (
+        arch_repo_path not in workspace_path.parents
+        and arch_repo_path != workspace_path
+        and workspace_path not in arch_repo_path.parents
+    ):
         raise WorkflowValidationError("arch_repo_dir must live inside workspace_dir")
 
     return str(workspace_path), str(arch_repo_path), str(raw_workspace_path)

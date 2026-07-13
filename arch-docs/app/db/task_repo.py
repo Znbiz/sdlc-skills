@@ -8,8 +8,8 @@ import sqlalchemy as sa
 import sqlalchemy.ext.asyncio as async_sa
 
 from app.db.models import CliTaskModel
-from app.settings import get_gateway_settings
 from app.services.task_registry import CliTask, TaskStatus
+from app.settings import get_gateway_settings
 
 _TRUNCATION_MARKER = "...[truncated]"
 _SENSITIVE_INLINE_PATTERNS = (

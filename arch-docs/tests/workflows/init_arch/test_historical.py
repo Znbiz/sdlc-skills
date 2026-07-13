@@ -1,4 +1,5 @@
 import datetime as dt
+import shutil
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -16,10 +17,12 @@ from app.workflows.init_arch.domain import (
 )
 from app.workflows.init_arch.historical import HistoricalPrepService
 
+_GIT_EXECUTABLE = shutil.which("git") or "git"
+
 
 def _git(repo_path: Path, *args: str) -> str:
     result = subprocess.run(  # noqa: S603
-        ["git", *args],
+        [_GIT_EXECUTABLE, *args],
         cwd=repo_path,
         capture_output=True,
         text=True,
@@ -591,7 +594,7 @@ async def test_plan_repository_order_requires_created_at_for_anchor() -> None:
         await service.plan_repository_order(session)
 
 
-def test_run_git_command_supports_empty_and_raises_on_error(monkeypatch) -> None:
+def test_run_git_command_supports_empty_and_raises_on_error(monkeypatch, tmp_path: Path) -> None:
     service = HistoricalPrepService()
 
     class _Completed:
@@ -602,15 +605,15 @@ def test_run_git_command_supports_empty_and_raises_on_error(monkeypatch) -> None
 
     monkeypatch.setattr(
         "app.workflows.init_arch.historical.subprocess.run",
-        lambda *args, **kwargs: _Completed(0, stdout=""),
+        lambda *_args, **_kwargs: _Completed(0, stdout=""),
     )
 
-    assert service._run_git_command(Path("/tmp"), ["git", "status"], allow_empty=True) == ""
+    assert service._run_git_command(tmp_path, ["git", "status"], allow_empty=True) == ""
 
     monkeypatch.setattr(
         "app.workflows.init_arch.historical.subprocess.run",
-        lambda *args, **kwargs: _Completed(1, stderr="boom"),
+        lambda *_args, **_kwargs: _Completed(1, stderr="boom"),
     )
 
     with pytest.raises(ValueError, match="boom"):
-        service._run_git_command(Path("/tmp"), ["git", "status"])
+        service._run_git_command(tmp_path, ["git", "status"])

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-import datetime as dt
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from app.workflows.init_arch import knowledge_runtime as runtime
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _write(path: Path, content: str) -> None:
@@ -11,7 +13,7 @@ def _write(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
-def _doc(
+def _doc(  # noqa: PLR0913
     relative_path: str,
     *,
     title: str = "Doc",
@@ -115,7 +117,8 @@ def test_lint_traceability_accepts_frontmatter_sources_and_markers(tmp_path: Pat
 
     issues = runtime._lint_traceability(no_trace, arch_repo)
 
-    assert issues and "нет явной трассировки источников" in issues[0]
+    assert issues
+    assert "нет явной трассировки источников" in issues[0]
 
 
 def test_lint_open_questions_with_graph_reports_multiple_resolution_issues(tmp_path: Path) -> None:
@@ -232,11 +235,11 @@ updated: yesterday
     assert any("confidence" in issue for issue in frontmatter_issues)
 
 
-def test_parse_helpers_extract_references_and_table_rows() -> None:
-    frontmatter, body = runtime._parse_frontmatter("---\ntitle: \"Auth\"\nrelated:\n  - wiki/x.md\n---\n# Body\n")
+def test_parse_helpers_extract_references_and_table_rows(tmp_path: Path) -> None:
+    frontmatter, body = runtime._parse_frontmatter('---\ntitle: "Auth"\nrelated:\n  - wiki/x.md\n---\n# Body\n')
     refs = runtime._extract_outgoing_references(
-        Path("/tmp/features/auth.md"),
-        Path("/tmp"),
+        tmp_path / "features" / "auth.md",
+        tmp_path,
         "[Doc](../wiki/x.md)\n[[Security]]",
         ["wiki/y.md"],
     )

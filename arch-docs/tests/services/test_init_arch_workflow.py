@@ -472,8 +472,12 @@ async def test_run_workflow_happy_path_persists_node_progress_and_terminal_succe
     async def _fake_persist(current: WorkflowRecord) -> None:
         persisted_states.append((current.current_step_id, current.workflow_status))
 
+    def _compile_graph(checkpointer):
+        del checkpointer
+        return _Graph()
+
     monkeypatch.setattr("app.services.init_arch_workflow.get_checkpointer", AsyncMock(return_value="checkpoint"))
-    monkeypatch.setattr("app.services.init_arch_workflow.compile_graph", lambda checkpointer: _Graph())
+    monkeypatch.setattr("app.services.init_arch_workflow.compile_graph", _compile_graph)
     monkeypatch.setattr("app.services.init_arch_workflow.persist_workflow_record", _fake_persist)
 
     await workflow_module.run_workflow(
@@ -532,8 +536,12 @@ async def test_run_workflow_interrupt_persists_pending_question(monkeypatch):
     async def _fake_persist(current: WorkflowRecord) -> None:
         persisted_statuses.append(current.workflow_status)
 
+    def _compile_graph(checkpointer):
+        del checkpointer
+        return _Graph()
+
     monkeypatch.setattr("app.services.init_arch_workflow.get_checkpointer", AsyncMock(return_value="checkpoint"))
-    monkeypatch.setattr("app.services.init_arch_workflow.compile_graph", lambda checkpointer: _Graph())
+    monkeypatch.setattr("app.services.init_arch_workflow.compile_graph", _compile_graph)
     monkeypatch.setattr("app.services.init_arch_workflow.persist_workflow_record", _fake_persist)
 
     await workflow_module.run_workflow(
@@ -577,8 +585,12 @@ async def test_run_workflow_failure_marks_record_failed(monkeypatch):
     async def _fake_persist(current: WorkflowRecord) -> None:
         persisted_statuses.append(current.workflow_status)
 
+    def _compile_graph(checkpointer):
+        del checkpointer
+        return _Graph()
+
     monkeypatch.setattr("app.services.init_arch_workflow.get_checkpointer", AsyncMock(return_value="checkpoint"))
-    monkeypatch.setattr("app.services.init_arch_workflow.compile_graph", lambda checkpointer: _Graph())
+    monkeypatch.setattr("app.services.init_arch_workflow.compile_graph", _compile_graph)
     monkeypatch.setattr("app.services.init_arch_workflow.persist_workflow_record", _fake_persist)
 
     await workflow_module.run_workflow(

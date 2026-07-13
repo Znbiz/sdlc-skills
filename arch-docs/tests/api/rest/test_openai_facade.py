@@ -1,3 +1,11 @@
+from unittest.mock import AsyncMock
+
+import fastapi
+import pytest
+
+from app.api import openai as openai_module
+
+
 async def test_list_openai_models_returns_workflow_models(async_client, auth_headers):
     response = await async_client.get("/v1/models", headers=auth_headers)
 
@@ -168,12 +176,6 @@ async def test_chat_completions_stream_returns_openai_sse(async_client, auth_hea
     assert response.headers["content-type"].startswith("text/event-stream")
     assert "chat.completion.chunk" in response.text
     assert "[DONE]" in response.text
-from unittest.mock import AsyncMock
-
-import fastapi
-import pytest
-
-from app.api import openai as openai_module
 
 
 def test_workflow_type_for_model_rejects_unknown_model():
@@ -234,7 +236,7 @@ def test_build_workflow_input_for_query_validates_repo_and_text():
         "timeout_seconds": 33,
     }
 
-    with pytest.raises(fastapi.HTTPException, match="requires metadata.repo_path"):
+    with pytest.raises(fastapi.HTTPException, match=r"requires metadata\.repo_path"):
         openai_module._build_workflow_input(
             workflow_type="query",
             request_input="question",

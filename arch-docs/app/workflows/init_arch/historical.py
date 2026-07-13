@@ -3,6 +3,7 @@ from __future__ import annotations
 import calendar
 import datetime as dt
 import pathlib
+import shutil
 import subprocess
 
 import pydantic
@@ -23,6 +24,11 @@ from app.workflows.init_arch.domain import (
 class HistoricalPrepResult(pydantic.BaseModel):
     session: WorkflowSessionRecord
     summary: str = ""
+
+
+_RENAME_PARTS_COUNT = 3
+_PATH_STATUS_PARTS_COUNT = 2
+_GIT_EXECUTABLE = shutil.which("git") or "git"
 
 
 class HistoricalPrepService:
@@ -196,7 +202,11 @@ class HistoricalPrepService:
                 deleted_paths: list[str] = []
                 commit_log_summary = ""
                 temporal_note = baseline_note or range_note
-                final_range_status = range_status if baseline_status is not CommitRangeStatus.BASELINE_MISSING else baseline_status
+                final_range_status = (
+                    range_status
+                    if baseline_status is not CommitRangeStatus.BASELINE_MISSING
+                    else baseline_status
+                )
 
                 if final_range_status in {
                     CommitRangeStatus.RANGE_RESOLVED,
@@ -205,7 +215,11 @@ class HistoricalPrepService:
                     diff_stat_summary = self.collect_diff_summary(repo_path, commit_range)
                     changed_paths, renamed_paths, deleted_paths = self.collect_changed_paths(repo_path, commit_range)
                     commit_log_summary = self.collect_commit_log_summary(repo_path, commit_range)
-                    final_range_status = CommitRangeStatus.DIFF_COLLECTED if commit_range else CommitRangeStatus.NO_CHANGES
+                    final_range_status = (
+                        CommitRangeStatus.DIFF_COLLECTED
+                        if commit_range
+                        else CommitRangeStatus.NO_CHANGES
+                    )
 
                 if checkout:
                     self._checkout_commit(repo_path, commit_sha)
@@ -319,7 +333,11 @@ class HistoricalPrepService:
         if previous_snapshot_at is not None:
             if repository.previous_analysis_target_commit:
                 return repository.previous_analysis_target_commit, CommitRangeStatus.RANGE_RESOLVED, ""
-            return "", CommitRangeStatus.BASELINE_MISSING, "Previous snapshot commit is unavailable for this repository."
+            return (
+                "",
+                CommitRangeStatus.BASELINE_MISSING,
+                "Previous snapshot commit is unavailable for this repository.",
+            )
 
         try:
             first_commit = self._read_first_commit(repository, workspace_dir=workspace_dir)
@@ -355,7 +373,11 @@ class HistoricalPrepService:
             allow_empty=True,
         )
 
-    def collect_changed_paths(self, repo_path: pathlib.Path, commit_range: str) -> tuple[list[str], list[str], list[str]]:
+    def collect_changed_paths(
+        self,
+        repo_path: pathlib.Path,
+        commit_range: str,
+    ) -> tuple[list[str], list[str], list[str]]:
         if not commit_range:
             return [], [], []
 
@@ -372,14 +394,14 @@ class HistoricalPrepService:
                 continue
             parts = raw_line.split("\t")
             status = parts[0]
-            if status.startswith("R") and len(parts) >= 3:
+            if status.startswith("R") and len(parts) >= _RENAME_PARTS_COUNT:
                 renamed_paths.append(f"{parts[1]} -> {parts[2]}")
                 changed_paths.append(parts[2])
                 continue
-            if status == "D" and len(parts) >= 2:
+            if status == "D" and len(parts) >= _PATH_STATUS_PARTS_COUNT:
                 deleted_paths.append(parts[1])
                 continue
-            if len(parts) >= 2:
+            if len(parts) >= _PATH_STATUS_PARTS_COUNT:
                 changed_paths.append(parts[1])
         return changed_paths, renamed_paths, deleted_paths
 
@@ -435,7 +457,7 @@ class HistoricalPrepService:
 
     def _git_is_ancestor(self, repo_path: pathlib.Path, start_commit: str, end_commit: str) -> bool:
         completed = subprocess.run(  # noqa: S603
-            ["git", "merge-base", "--is-ancestor", start_commit, end_commit],
+            [_GIT_EXECUTABLE, "merge-base", "--is-ancestor", start_commit, end_commit],
             cwd=repo_path,
             check=False,
             capture_output=True,

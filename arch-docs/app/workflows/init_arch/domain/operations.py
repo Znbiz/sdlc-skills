@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import datetime as dt
 import typing
 
 from app.workflows.init_arch.domain.models import (
@@ -17,6 +16,9 @@ from app.workflows.init_arch.domain.models import (
 from app.workflows.init_arch.domain.steps import STEP_DEFINITION_BY_ID
 
 TemporalWindowConfirmationAction = typing.Literal["continue_to_next_window", "finish_temporal_analysis"]
+
+if typing.TYPE_CHECKING:
+    import datetime as dt
 
 
 class DomainOperationError(ValueError):
@@ -254,7 +256,10 @@ def historical_prep_is_complete(session: WorkflowSessionRecord) -> bool:
         repository.created_at is not None
         and repository.analysis_target_date == historical.current_snapshot_at
         and repository.analysis_target_commit_status in allowed_statuses
-        and _repository_temporal_window_is_valid(repository, historical_previous_snapshot_at=historical.previous_snapshot_at)
+        and _repository_temporal_window_is_valid(
+            repository,
+            historical_previous_snapshot_at=historical.previous_snapshot_at,
+        )
         for repository in repositories
     )
 
