@@ -123,7 +123,7 @@ git commit -m "chore(arch-docs): объявить pyyaml прямой завис
 - Производит: `ARCHITECTURE_MARKDOWN_REQUIRED_SECTIONS: dict[str, tuple[str, ...]]`, `lint_architecture_artifacts(arch_repo_path: Path) -> list[str]`, `_lint_required_sections(arch_repo_path: Path, relative_path: str, required_sections: tuple[str, ...]) -> list[str]`.
 - Потребляет: ничего из других задач пока (самодостаточна).
 
-- [ ] **Шаг 1: Написать падающие тесты**
+- [x] **Шаг 1: Написать падающие тесты**
 
 Создать `arch-docs/tests/workflows/init_arch/test_architecture_lint.py`:
 
@@ -176,12 +176,12 @@ def test_lint_architecture_artifacts_reports_all_nine_missing_files(tmp_path: Pa
         assert f"ERROR: отсутствует {relative_path}" in issues
 ```
 
-- [ ] **Шаг 2: Запустить тесты и убедиться, что они падают**
+- [x] **Шаг 2: Запустить тесты и убедиться, что они падают**
 
 Выполнить: `cd arch-docs && .venv/bin/pytest tests/workflows/init_arch/test_architecture_lint.py -v`
 Ожидается: `ModuleNotFoundError: No module named 'app.workflows.init_arch.architecture_lint'`.
 
-- [ ] **Шаг 3: Написать минимальную реализацию**
+- [x] **Шаг 3: Написать минимальную реализацию**
 
 Создать `arch-docs/app/workflows/init_arch/architecture_lint.py`:
 
@@ -266,12 +266,12 @@ def _lint_required_sections(
     ]
 ```
 
-- [ ] **Шаг 4: Запустить тесты и убедиться, что они проходят**
+- [x] **Шаг 4: Запустить тесты и убедиться, что они проходят**
 
 Выполнить: `cd arch-docs && .venv/bin/pytest tests/workflows/init_arch/test_architecture_lint.py -v`
 Ожидается: `4 passed`
 
-- [ ] **Шаг 5: Коммит**
+- [x] **Шаг 5: Коммит**
 
 ```bash
 cd /Users/aanekraso2/github.com/znbiz/sdlc
