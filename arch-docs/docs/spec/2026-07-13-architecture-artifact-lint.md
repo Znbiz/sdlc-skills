@@ -1635,7 +1635,7 @@ git commit -m "docs(arch-docs): описать автоматические пр
 
 Выполнить: `cd /Users/aanekraso2/github.com/znbiz/sdlc && grep -n "analysis_guard.py\|\.agents/skills" arch-docs/app/workflows/shared_assets/init_arch/SKILL.md`
 
-Ожидается: останутся только блоки CLI-мнемоник `domain --...`/`repo --...`/`timeline --...` (вне скоупа плана, см. Глобальные ограничения).
+Ожидается: `grep` не найдёт в `SKILL.md` больше ни полных путей к `analysis_guard.py`, ни ссылок на `.agents/skills`.
 
 - [x] **Шаг 4: Коммит**
 
@@ -1648,7 +1648,7 @@ git commit -m "docs(arch-docs): убрать ложные инструкции �
 **Мини-отчёт по задаче 11**
 
 - В [SKILL.md](/Users/aanekraso2/github.com/znbiz/sdlc/arch-docs/app/workflows/shared_assets/init_arch/SKILL.md:36) секция про progress-guard переписана под service-owned orchestration: текущий шаг определяется session state и reference-чеклистом, а не ручным вызовом `analysis_guard.py`.
-- Все полные пути вида `python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py ...` удалены из injected worker skill; сохранены только короткие legacy CLI-мнемоники (`init`, `status`, `domain`, `repo`, `advance`, `bootstrap`, `index`, `lint`, `compile`, `timeline`) как терминологический мост со старыми reference-материалами.
+- Из injected worker skill удалены и полные пути к `analysis_guard.py`, и сам список legacy CLI-мнемоник: worker больше не получает текстовых подсказок, будто progression или orchestration нужно воспроизводить через CLI-команды.
 - В [init.md](/Users/aanekraso2/github.com/znbiz/sdlc/arch-docs/docs/workflows/init.md:770) зафиксирована та же semantics: `progress_file_path` остаётся compatibility bridge, а источником истины для worker'а являются session state, reference-чеклист и фактические knowledge-артефакты.
 
 ---

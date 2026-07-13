@@ -89,22 +89,6 @@ Markdown/YAML артефакты, создаваемые в архитектур
 - Empty/degenerate delta допустима только как явно помеченный случай: `no_changes`, `baseline_missing` или `window_start_commit == window_end_commit`.
 - Downstream analysis не должен считать historical prep завершённым, если подготовлен только checkout на дату без delta-context.
 
-Ниже приведены legacy CLI-мнемоники из исходного standalone skill. В `arch-docs` это не обязательные команды, а лишь короткие имена операций, чтобы не терять терминологическое соответствие с историческими reference-материалами:
-
-- `init --output <path> --product <name> --scope <scope>`
-- `status --progress <path>`
-- `domain ...`
-- `repo ...`
-- `advance --progress <path> --note "<что завершено>"`
-
-Для knowledge workflow тем же образом могут упоминаться операции:
-
-- `bootstrap --progress <path> --arch-repo-path <arch-repo>`
-- `index --progress <path> --arch-repo-path <arch-repo>`
-- `lint --progress <path> --arch-repo-path <arch-repo>`
-- `compile --progress <path> --arch-repo-path <arch-repo>`
-- `timeline --progress <path> --plan|--resolve-local|--advance-window [--checkout]`
-
 Skill работает в единой wiki-схеме:
 
 - `wiki/index.md` — основной navigation entrypoint;
