@@ -73,3 +73,30 @@ def test_lint_agents_md_passes_when_all_sections_present(tmp_path: Path) -> None
     issues = architecture_lint._lint_agents_md(tmp_path)
 
     assert issues == []
+
+
+def test_lint_directory_documents_skips_when_directory_missing(tmp_path: Path) -> None:
+    issues = architecture_lint._lint_directory_documents(tmp_path, "features", ("## X",))
+
+    assert issues == []
+
+
+def test_lint_directory_documents_reports_missing_sections_per_file(tmp_path: Path) -> None:
+    _write(tmp_path, "features/0001-auth.md", "# Фича\n\n## Метаданные\n\nтекст\n")
+
+    issues = architecture_lint._lint_directory_documents(tmp_path, "features", architecture_lint.FEATURE_REQUIRED_SECTIONS)
+
+    assert "ERROR: features/0001-auth.md не содержит обязательную секцию `## Бизнес-возможность`" in issues
+
+
+def test_lint_directory_documents_passes_when_all_sections_present(tmp_path: Path) -> None:
+    body = "# Интеграция\n\n" + "\n\n".join(
+        f"{section}\n\nтекст" for section in architecture_lint.INTEGRATION_REQUIRED_SECTIONS
+    )
+    _write(tmp_path, "architecture/integrations/gateway-service.md", body)
+
+    issues = architecture_lint._lint_directory_documents(
+        tmp_path, "architecture/integrations", architecture_lint.INTEGRATION_REQUIRED_SECTIONS
+    )
+
+    assert issues == []

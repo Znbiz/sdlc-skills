@@ -542,7 +542,7 @@ git commit -m "feat(arch-docs): bootstrap-скаффолдинг 9 architecture/
 **Интерфейсы:**
 - Производит: `INTEGRATION_REQUIRED_SECTIONS`, `FEATURE_REQUIRED_SECTIONS`, `_lint_directory_documents(arch_repo_path: Path, relative_dir: str, required_sections: tuple[str, ...]) -> list[str]`, включённую в `lint_architecture_artifacts` дважды.
 
-- [ ] **Шаг 1: Написать падающие тесты**
+- [x] **Шаг 1: Написать падающие тесты**
 
 Добавить в конец `arch-docs/tests/workflows/init_arch/test_architecture_lint.py`:
 
@@ -574,12 +574,12 @@ def test_lint_directory_documents_passes_when_all_sections_present(tmp_path: Pat
     assert issues == []
 ```
 
-- [ ] **Шаг 2: Запустить тесты и убедиться, что они падают**
+- [x] **Шаг 2: Запустить тесты и убедиться, что они падают**
 
 Выполнить: `cd arch-docs && .venv/bin/pytest tests/workflows/init_arch/test_architecture_lint.py -v -k lint_directory_documents`
 Ожидается: падение с `AttributeError`.
 
-- [ ] **Шаг 3: Написать минимальную реализацию**
+- [x] **Шаг 3: Написать минимальную реализацию**
 
 Обновить `lint_architecture_artifacts`:
 
@@ -640,18 +640,27 @@ def _lint_directory_documents(
     return issues
 ```
 
-- [ ] **Шаг 4: Запустить тесты и убедиться, что они проходят**
+- [x] **Шаг 4: Запустить тесты и убедиться, что они проходят**
 
 Выполнить: `cd arch-docs && .venv/bin/pytest tests/workflows/init_arch/test_architecture_lint.py -v`
 Ожидается: все тесты проходят.
 
-- [ ] **Шаг 5: Коммит**
+- [x] **Шаг 5: Коммит**
 
 ```bash
 cd /Users/aanekraso2/github.com/znbiz/sdlc
 git add arch-docs/app/workflows/init_arch/architecture_lint.py arch-docs/tests/workflows/init_arch/test_architecture_lint.py
 git commit -m "feat(arch-docs): добавить проверку обязательных секций для integrations/ и features/"
 ```
+
+**Мини-отчёт по задаче 4 (2026-07-13):**
+
+- Добавлены `INTEGRATION_REQUIRED_SECTIONS` и `FEATURE_REQUIRED_SECTIONS` в `architecture_lint.py`.
+- Добавлен `_lint_directory_documents(...)`, который обходит `architecture/integrations/*.md` и `features/*.md`, не падает при отсутствии каталога и репортит пропущенные секции по каждому файлу отдельно.
+- `lint_architecture_artifacts(...)` расширен двумя новыми вызовами directory-lint, поэтому покрытие Task 4 теперь входит в общий architecture artifact lint module.
+- TDD зафиксирован свежим red-green циклом:
+  - `cd arch-docs && .venv/bin/pytest tests/workflows/init_arch/test_architecture_lint.py -v -k lint_directory_documents` → `3 failed` с `AttributeError` до реализации.
+  - `cd arch-docs && .venv/bin/pytest tests/workflows/init_arch/test_architecture_lint.py -v` → `10 passed` после реализации.
 
 ---
 

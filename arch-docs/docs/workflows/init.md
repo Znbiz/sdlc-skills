@@ -728,11 +728,16 @@ Transport-контракт для этого подтверждения полн
 
 **В процессе:** `app/workflows/init_arch/architecture_lint.py` (см. план
 [2026-07-13-architecture-artifact-lint.md](../spec/2026-07-13-architecture-artifact-lint.md))
-добавляет structural lint для `architecture/*` — обязательные секции 9 markdown-артефактов
-(`hld.md`, `security.md`, `risks.md` и др.) и опциональную проверку `AGENTS.md`. Модуль
-самодостаточен и покрыт тестами, но пока не вызывается из `run_knowledge_lint()` — подключение
-к этому же gate запланировано отдельной задачей плана (Задача 8), до этого момента `ERROR:` из
-`architecture_lint.py` не блокируют workflow.
+уже покрывает structural lint для:
+
+- 9 одиночных markdown-артефактов в `architecture/*` (`hld.md`, `security.md`, `risks.md` и др.);
+- опционального `AGENTS.md`, если файл уже создан;
+- каждого markdown-файла в `architecture/integrations/`;
+- каждого markdown-файла в `features/`.
+
+Модуль самодостаточен и покрыт таргетными тестами, но пока не вызывается из
+`run_knowledge_lint()` — подключение к этому же gate запланировано отдельной задачей плана
+(Задача 8). До этого момента `ERROR:` из `architecture_lint.py` не блокируют workflow.
 
 ## Audit / Events
 

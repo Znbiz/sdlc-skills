@@ -61,6 +61,8 @@ def lint_architecture_artifacts(arch_repo_path: Path) -> list[str]:
     for relative_path, required_sections in ARCHITECTURE_MARKDOWN_REQUIRED_SECTIONS.items():
         issues.extend(_lint_required_sections(arch_repo_path, relative_path, required_sections))
     issues.extend(_lint_agents_md(arch_repo_path))
+    issues.extend(_lint_directory_documents(arch_repo_path, "architecture/integrations", INTEGRATION_REQUIRED_SECTIONS))
+    issues.extend(_lint_directory_documents(arch_repo_path, "features", FEATURE_REQUIRED_SECTIONS))
     return issues
 
 
@@ -104,3 +106,46 @@ def _lint_agents_md(arch_repo_path: Path) -> list[str]:
         for section in AGENTS_REQUIRED_SECTIONS
         if section not in content
     ]
+
+
+INTEGRATION_REQUIRED_SECTIONS: Final[tuple[str, ...]] = (
+    "## Краткое описание сервиса",
+    "## Входящие интеграции",
+    "## Исходящие интеграции",
+    "## Сводка по данным и границам доверия",
+    "## Итоговые выводы",
+    "## Закрытые вопросы",
+    "## Трассировка источников по разделам",
+)
+
+FEATURE_REQUIRED_SECTIONS: Final[tuple[str, ...]] = (
+    "## Метаданные",
+    "## Бизнес-возможность",
+    "## Текущее поведение",
+    "## Функциональные правила",
+    "## Основной поток",
+    "## Трассировка реализации",
+    "## Примечания по достоверности",
+    "## Трассировка источников по разделам",
+)
+
+
+def _lint_directory_documents(
+    arch_repo_path: Path,
+    relative_dir: str,
+    required_sections: tuple[str, ...],
+) -> list[str]:
+    directory = arch_repo_path / relative_dir
+    if not directory.exists():
+        return []
+
+    issues: list[str] = []
+    for markdown_path in sorted(directory.glob("*.md")):
+        label = markdown_path.relative_to(arch_repo_path).as_posix()
+        content = markdown_path.read_text(encoding="utf-8")
+        issues.extend(
+            f"ERROR: {label} не содержит обязательную секцию `{section}`"
+            for section in required_sections
+            if section not in content
+        )
+    return issues
