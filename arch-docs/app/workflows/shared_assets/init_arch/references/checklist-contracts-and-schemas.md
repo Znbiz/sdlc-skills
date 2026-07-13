@@ -28,10 +28,47 @@
 
 ## Обязательные выходы
 
-- **Если есть HTTP/REST/gRPC API**: создать `architecture/contracts/<service>-sync.yml` по шаблону `assets/architecture/contract-template.yml`.
-  - Нет API → написать `"нет sync контракта"` в notes.
-- **Если есть Kafka/AMQP топики**: создать `architecture/contracts/<service>-async.yml` по шаблону `assets/architecture/async-contract-template.yml`.
-  - Нет топиков → написать `"нет async контракта"` в notes.
+- **Если есть HTTP/REST/gRPC API**: создать `architecture/contracts/<service>-sync.yml` в формате OpenAPI 3.x. Обязательны ключ `openapi`, `info.title`, `info.version` и непустой `paths` — без них файл не пройдёт автоматическую проверку на шаге `run_knowledge_lint`. Минимальная структура:
+
+  ```yaml
+  openapi: 3.0.3
+  info:
+    title: API сервиса <название-сервиса>
+    version: 1.0.0
+    description: <описание>
+  x-traceability:
+    assertion_type: <наблюдаемый факт|выведено косвенно|требует подтверждения>
+    sources:
+      - <repo-name/path/to/openapi-or-handler>
+  paths:
+    /<resource-path>:
+      get:
+        summary: <описание>
+        operationId: <operationId>
+        responses:
+          "200":
+            description: <описание>
+  ```
+
+  Нет API → написать `"нет sync контракта"` в notes.
+- **Если есть Kafka/AMQP топики**: создать `architecture/contracts/<service>-async.yml` в формате AsyncAPI 2.x. Обязательны ключ `asyncapi`, `info.title`, `info.version` и непустой `channels`. Минимальная структура:
+
+  ```yaml
+  asyncapi: 2.6.0
+  info:
+    title: События домена <название-домена-событий>
+    version: 1.0.0
+    description: <описание>
+  x-traceability:
+    assertion_type: <наблюдаемый факт|выведено косвенно|требует подтверждения>
+    sources:
+      - <repo-name/path/to/topic-config-or-producer>
+  channels:
+    <topic-name>:
+      description: <описание канала>
+  ```
+
+  Нет топиков → написать `"нет async контракта"` в notes.
 - Kafka-топики **не попадают** в `architecture/storage/` — только в contracts.
 
 ## Проверка согласованности и правка артефактов

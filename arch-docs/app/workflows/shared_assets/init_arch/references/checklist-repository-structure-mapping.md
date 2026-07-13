@@ -32,7 +32,27 @@
 1. Построить дерево каталогов верхнего уровня (`find .temp/<repo> -maxdepth 3 -type d`), без чтения содержимого файлов.
 2. Для каждой категории определить покрывающие её пути/паттерны по структурным сигналам — именам папок/файлов, фреймворк-конвенциям (Django `apps/*/models.py`, FastAPI `routers/`, NestJS `*.controller.ts`, Go `internal/handler/`), а не по чтению бизнес-логики.
 3. Если один путь покрывает несколько категорий одновременно (например, `internal/users/` содержит и handler, и model, и use case) — указать его в карте под каждой подходящей категорией с уточнением (`internal/users/handler.go → entrypoints_and_interfaces`, `internal/users/model.go → data_and_storage`).
-4. Заполнить `architecture/structure/<repo>.yml` по шаблону `assets/architecture/repo-structure-map-template.yml`.
+4. Заполнить `architecture/structure/<repo>.yml` в следующей структуре (`repo_structure_map.analyzed_commit` обязателен — его сверяет с `landscape.yaml` автоматическая проверка на шаге `run_knowledge_lint`):
+
+   ```yaml
+   repo_structure_map:
+     repository: <название-репозитория>
+     analyzed_commit: <commit-sha-на-момент-построения-карты>
+     built_at: <дата-время>
+     assertion_type: <наблюдаемый факт|выведено косвенно|требует подтверждения>
+     sources:
+       - <repo-name/path/to/root-or-structure-signal>
+     categories:
+       entrypoints_and_interfaces:
+         status: <found|not_found|not_applicable>
+         paths:
+           - path: <например, internal/api/handlers/>
+             signal: <например, "HTTP-хендлеры, Go net/http">
+             assertion_type: <наблюдаемый факт|выведено косвенно|требует подтверждения>
+             sources:
+               - <repo-name/path/to/file-or-dir>
+       # остальные категории из таблицы выше — по той же схеме: status + paths[] (path/signal/assertion_type/sources)
+   ```
 5. Зафиксировать `analyzed_commit`, по которому построена карта — карта валидна только для этого коммита и более новых, если структура не менялась.
 
 ## Обязательные выходы

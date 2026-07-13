@@ -33,7 +33,41 @@
 
 ## Обязательные выходы
 
-- **Если есть БД, кэш, или файловое хранилище**: создать `architecture/storage/<service>.yml` по шаблону `assets/architecture/storage-template.yml` с полными схемами и комментариями по каждому полю. Путь к файлу зафиксировать в notes.
+- **Если есть БД, кэш, или файловое хранилище**: создать `architecture/storage/<service>.yml` с полными схемами и комментариями по каждому полю. Обязателен mapping верхнего уровня `storage` с непустым `storage.type` — без него файл не пройдёт автоматическую проверку на шаге `run_knowledge_lint`. Минимальная структура:
+
+  ```yaml
+  storage:
+    id: <идентификатор-хранилища>
+    name: <название-хранилища>
+    type: <postgresql|mongodb|redis|kafka-topic|...>
+    owner: <владелец, если известен>
+    description: <описание>
+    assertion_type: <наблюдаемый факт|выведено косвенно|требует подтверждения>
+    sources:
+      - <repo-name/path/to/migration-or-config>
+
+  schemas:
+    - name: <название-схемы>
+      assertion_type: <наблюдаемый факт|выведено косвенно|требует подтверждения>
+      sources:
+        - <repo-name/path/to/schema-source>
+      tables:
+        - name: <название-таблицы>
+          description: <описание>
+          assertion_type: <наблюдаемый факт|выведено косвенно|требует подтверждения>
+          sources:
+            - <repo-name/path/to/table-source>
+          columns:
+            - name: <название-колонки>
+              type: <тип-колонки>
+              nullable: false
+              description: <описание>
+              assertion_type: <наблюдаемый факт|выведено косвенно|требует подтверждения>
+              sources:
+                - <repo-name/path/to/column-source>
+  ```
+
+  Путь к файлу зафиксировать в notes.
 - Чистый фронтенд → написать `"frontend — хранилища не применимы"` в notes.
 - Нет хранилища (бэкенд без персистентности) → написать `"нет хранилища"` в notes.
 
