@@ -9,10 +9,15 @@ worker prompt used to tell the agent to shell out to a CLI script
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Final
+import json
+from pathlib import Path
+from typing import Any, Final
 
-if TYPE_CHECKING:
-    from pathlib import Path
+import jsonschema
+import yaml
+from openapi_spec_validator import validate as validate_openapi
+from openapi_spec_validator.exceptions import OpenAPISpecValidatorError
+from openapi_spec_validator.validation.exceptions import OpenAPIValidationError
 
 ARCHITECTURE_MARKDOWN_REQUIRED_SECTIONS: Final[dict[str, tuple[str, ...]]] = {
     "architecture/hld.md": (
@@ -63,6 +68,7 @@ def lint_architecture_artifacts(arch_repo_path: Path) -> list[str]:
     issues.extend(_lint_agents_md(arch_repo_path))
     issues.extend(_lint_directory_documents(arch_repo_path, "architecture/integrations", INTEGRATION_REQUIRED_SECTIONS))
     issues.extend(_lint_directory_documents(arch_repo_path, "features", FEATURE_REQUIRED_SECTIONS))
+    issues.extend(_lint_contracts(arch_repo_path))
     return issues
 
 
@@ -149,3 +155,65 @@ def _lint_directory_documents(
             if section not in content
         )
     return issues
+
+
+_ASYNCAPI_SCHEMA_PATH: Final[Path] = Path(__file__).parent / "schemas" / "asyncapi-2.6.0.json"
+_asyncapi_schema_cache: dict[str, Any] | None = None
+
+
+def _get_asyncapi_schema() -> dict[str, Any]:
+    global _asyncapi_schema_cache  # noqa: PLW0603
+    if _asyncapi_schema_cache is None:
+        _asyncapi_schema_cache = json.loads(_ASYNCAPI_SCHEMA_PATH.read_text(encoding="utf-8"))
+    return _asyncapi_schema_cache
+
+
+def _lint_contracts(arch_repo_path: Path) -> list[str]:
+    contracts_dir = arch_repo_path / "architecture" / "contracts"
+    if not contracts_dir.exists():
+        return []
+
+    issues: list[str] = []
+    contract_paths = sorted(contracts_dir.glob("*.yml")) + sorted(contracts_dir.glob("*.yaml"))
+    for contract_path in contract_paths:
+        issues.extend(_lint_single_contract(contract_path, arch_repo_path))
+    return issues
+
+
+def _lint_single_contract(contract_path: Path, arch_repo_path: Path) -> list[str]:
+    label = contract_path.relative_to(arch_repo_path).as_posix()
+    try:
+        document = yaml.safe_load(contract_path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as error:
+        return [f"ERROR: {label} невалидный YAML: {error}"]
+
+    if not isinstance(document, dict):
+        return [f"ERROR: {label} невалидный контракт: ожидается mapping верхнего уровня"]
+
+    if "openapi" in document:
+        return _lint_openapi_contract(document, label)
+    if "asyncapi" in document:
+        return _lint_asyncapi_contract(document, label)
+
+    return [
+        f"ERROR: {label} не является OpenAPI/AsyncAPI контрактом: "
+        "отсутствует ключ верхнего уровня `openapi` или `asyncapi`"
+    ]
+
+
+def _lint_openapi_contract(document: dict[str, Any], label: str) -> list[str]:
+    try:
+        validate_openapi(document)
+    except (OpenAPISpecValidatorError, OpenAPIValidationError) as error:
+        first_line = str(error).strip().splitlines()[0]
+        return [f"ERROR: {label} не проходит валидацию openapi-spec-validator: {first_line}"]
+    return []
+
+
+def _lint_asyncapi_contract(document: dict[str, Any], label: str) -> list[str]:
+    try:
+        jsonschema.validate(document, _get_asyncapi_schema())
+    except jsonschema.exceptions.ValidationError as error:
+        first_line = str(error).strip().splitlines()[0]
+        return [f"ERROR: {label} не проходит валидацию AsyncAPI 2.6.0 JSON Schema: {first_line}"]
+    return []

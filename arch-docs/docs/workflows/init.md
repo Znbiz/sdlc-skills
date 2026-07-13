@@ -735,6 +735,12 @@ Transport-контракт для этого подтверждения полн
 - каждого markdown-файла в `architecture/integrations/`;
 - каждого markdown-файла в `features/`.
 
+Отдельно модуль уже валидирует контракты в `architecture/contracts/`:
+
+- `*-sync.yml` проверяются как OpenAPI через `openapi-spec-validator`;
+- `*-async.yml` проверяются как AsyncAPI 2.6.0 через локально вендоренную JSON Schema и `jsonschema`;
+- ошибки YAML, отсутствие верхнеуровневого `openapi`/`asyncapi` и schema violations конвертируются в `ERROR:` issues того же формата, что и остальные проверки.
+
 Модуль самодостаточен и покрыт таргетными тестами, но пока не вызывается из
 `run_knowledge_lint()` — подключение к этому же gate запланировано отдельной задачей плана
 (Задача 8). До этого момента `ERROR:` из `architecture_lint.py` не блокируют workflow.

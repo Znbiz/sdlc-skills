@@ -100,3 +100,122 @@ def test_lint_directory_documents_passes_when_all_sections_present(tmp_path: Pat
     )
 
     assert issues == []
+
+
+def _write_contract(tmp_path: Path, name: str, body: str) -> Path:
+    return _write(tmp_path, f"architecture/contracts/{name}", body)
+
+
+def test_lint_contracts_skips_when_directory_missing(tmp_path: Path) -> None:
+    issues = architecture_lint._lint_contracts(tmp_path)
+
+    assert issues == []
+
+
+def test_lint_contracts_reports_invalid_yaml(tmp_path: Path) -> None:
+    _write_contract(tmp_path, "broken-sync.yml", "openapi: [unclosed\n")
+
+    issues = architecture_lint._lint_contracts(tmp_path)
+
+    assert len(issues) == 1
+    assert issues[0].startswith("ERROR: architecture/contracts/broken-sync.yml невалидный YAML:")
+
+
+def test_lint_contracts_reports_missing_openapi_or_asyncapi_key(tmp_path: Path) -> None:
+    _write_contract(tmp_path, "unknown-sync.yml", "service: gateway-service\n")
+
+    issues = architecture_lint._lint_contracts(tmp_path)
+
+    assert issues == [
+        "ERROR: architecture/contracts/unknown-sync.yml не является OpenAPI/AsyncAPI контрактом: "
+        "отсутствует ключ верхнего уровня `openapi` или `asyncapi`"
+    ]
+
+
+def test_lint_contracts_reports_openapi_missing_title(tmp_path: Path) -> None:
+    _write_contract(
+        tmp_path,
+        "bad-title-sync.yml",
+        "openapi: 3.0.3\ninfo:\n  version: '1.0.0'\npaths:\n  /ping:\n    get:\n      responses:\n        \"200\":\n          description: ok\n",
+    )
+
+    issues = architecture_lint._lint_contracts(tmp_path)
+
+    assert len(issues) == 1
+    assert issues[0].startswith(
+        "ERROR: architecture/contracts/bad-title-sync.yml не проходит валидацию openapi-spec-validator:"
+    )
+    assert "title" in issues[0]
+
+
+def test_lint_contracts_reports_openapi_missing_responses(tmp_path: Path) -> None:
+    _write_contract(
+        tmp_path,
+        "bad-responses-sync.yml",
+        "openapi: 3.0.3\ninfo:\n  title: API\n  version: '1.0.0'\npaths:\n  /ping:\n    get:\n      summary: ping\n",
+    )
+
+    issues = architecture_lint._lint_contracts(tmp_path)
+
+    assert len(issues) == 1
+    assert "responses" in issues[0]
+
+
+def test_lint_contracts_passes_valid_openapi(tmp_path: Path) -> None:
+    _write_contract(
+        tmp_path,
+        "good-sync.yml",
+        (
+            "openapi: 3.0.3\n"
+            "info:\n"
+            "  title: API\n"
+            "  version: '1.0.0'\n"
+            "paths:\n"
+            "  /ping:\n"
+            "    get:\n"
+            "      responses:\n"
+            "        \"200\":\n"
+            "          description: ok\n"
+        ),
+    )
+
+    issues = architecture_lint._lint_contracts(tmp_path)
+
+    assert issues == []
+
+
+def test_lint_contracts_reports_asyncapi_missing_channels(tmp_path: Path) -> None:
+    _write_contract(tmp_path, "events-async.yml", "asyncapi: 2.6.0\ninfo:\n  title: Events\n  version: '1.0.0'\n")
+
+    issues = architecture_lint._lint_contracts(tmp_path)
+
+    assert len(issues) == 1
+    assert issues[0].startswith(
+        "ERROR: architecture/contracts/events-async.yml не проходит валидацию AsyncAPI 2.6.0 JSON Schema:"
+    )
+    assert "channels" in issues[0]
+
+
+def test_lint_contracts_reports_asyncapi_missing_info_version(tmp_path: Path) -> None:
+    _write_contract(
+        tmp_path,
+        "events-async.yml",
+        "asyncapi: 2.6.0\ninfo:\n  title: Events\nchannels:\n  user.created:\n    description: x\n",
+    )
+
+    issues = architecture_lint._lint_contracts(tmp_path)
+
+    assert len(issues) == 1
+    assert "version" in issues[0]
+
+
+def test_lint_contracts_passes_valid_asyncapi(tmp_path: Path) -> None:
+    _write_contract(
+        tmp_path,
+        "events-async.yml",
+        "asyncapi: 2.6.0\ninfo:\n  title: Events\n  version: '1.0.0'\nchannels:\n  user.created:\n    description: x\n",
+    )
+
+    issues = architecture_lint._lint_contracts(tmp_path)
+
+    assert issues == []

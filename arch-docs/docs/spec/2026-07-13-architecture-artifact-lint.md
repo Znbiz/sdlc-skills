@@ -678,7 +678,7 @@ git commit -m "feat(arch-docs): добавить проверку обязате
 
 Для `*-async.yml`/AsyncAPI полноценного Python-пакета уровня `openapi-spec-validator` не существует (пакет `asyncapi` на PyPI — это фреймворк для генерации AsyncAPI-документации из consumer-кода, а не валидатор произвольного YAML/JSON-документа; проверено установкой в изолированное окружение). Поэтому план вендорит официальную bundled JSON Schema AsyncAPI 2.6.0 (публикуется в `github.com/asyncapi/spec-json-schemas`, единый файл без внешних `$ref`, ~130 КБ, 3228 строк) и валидирует через `jsonschema.validate()` — тот же движок, на котором построен сам `openapi-spec-validator`. Это полноценная JSON-schema валидация, а не облегчённая структурная проверка — прогнано напрямую при подготовке плана: минимальный документ без `channels` даёт `'channels' is a required property`, корректный документ проходит без ошибок.
 
-- [ ] **Шаг 1: Вендорить официальную JSON Schema AsyncAPI 2.6.0**
+- [x] **Шаг 1: Вендорить официальную JSON Schema AsyncAPI 2.6.0**
 
 ```bash
 cd /Users/aanekraso2/github.com/znbiz/sdlc/arch-docs
@@ -690,7 +690,7 @@ shasum -a 256 app/workflows/init_arch/schemas/asyncapi-2.6.0.json
 
 Ожидается: `4b0bfe579e3c98a1da14db72bbd22a446ae23d5ae347ec7873a4cb488e446583  app/workflows/init_arch/schemas/asyncapi-2.6.0.json` (хэш вычислен и зафиксирован при подготовке этого плана — если он не совпадает, upstream-файл изменился, нужно свериться с `asyncapi/spec-json-schemas` вручную перед тем, как продолжать).
 
-- [ ] **Шаг 2: Написать падающие тесты**
+- [x] **Шаг 2: Написать падающие тесты**
 
 Добавить в конец `arch-docs/tests/workflows/init_arch/test_architecture_lint.py`:
 
@@ -814,12 +814,12 @@ def test_lint_contracts_passes_valid_asyncapi(tmp_path: Path) -> None:
     assert issues == []
 ```
 
-- [ ] **Шаг 3: Запустить тесты и убедиться, что они падают**
+- [x] **Шаг 3: Запустить тесты и убедиться, что они падают**
 
 Выполнить: `cd arch-docs && .venv/bin/pytest tests/workflows/init_arch/test_architecture_lint.py -v -k lint_contracts`
 Ожидается: падение с `AttributeError`.
 
-- [ ] **Шаг 4: Написать минимальную реализацию**
+- [x] **Шаг 4: Написать минимальную реализацию**
 
 В `arch-docs/app/workflows/init_arch/architecture_lint.py` добавить импорты:
 
@@ -913,18 +913,28 @@ def _lint_asyncapi_contract(document: dict[str, Any], label: str) -> list[str]:
 
 `validate_openapi()` и `jsonschema.validate()` сами проверяют наличие и корректность `info.title`/`info.version`, структуру `paths`/`channels` и вложенных объектов по официальным JSON-schema обеих спецификаций — отдельные ручные проверки этих полей больше не нужны, они были бы дублированием с риском разойтись с реальной спецификацией.
 
-- [ ] **Шаг 5: Запустить тесты и убедиться, что они проходят**
+- [x] **Шаг 5: Запустить тесты и убедиться, что они проходят**
 
 Выполнить: `cd arch-docs && .venv/bin/pytest tests/workflows/init_arch/test_architecture_lint.py -v`
 Ожидается: все тесты проходят.
 
-- [ ] **Шаг 6: Коммит**
+- [x] **Шаг 6: Коммит**
 
 ```bash
 cd /Users/aanekraso2/github.com/znbiz/sdlc
 git add arch-docs/app/workflows/init_arch/architecture_lint.py arch-docs/app/workflows/init_arch/schemas/asyncapi-2.6.0.json arch-docs/tests/workflows/init_arch/test_architecture_lint.py
 git commit -m "feat(arch-docs): валидировать OpenAPI через openapi-spec-validator и AsyncAPI через вендоренную JSON Schema"
 ```
+
+**Мини-отчёт по задаче 5 (2026-07-13):**
+
+- В репозиторий добавлена вендоренная схема [asyncapi-2.6.0.json](/Users/aanekraso2/github.com/znbiz/sdlc/arch-docs/app/workflows/init_arch/schemas/asyncapi-2.6.0.json:1); SHA-256 совпал с планом: `4b0bfe579e3c98a1da14db72bbd22a446ae23d5ae347ec7873a4cb488e446583`.
+- В `architecture_lint.py` добавлен `_lint_contracts(...)` и вспомогательные функции для раздельной проверки OpenAPI и AsyncAPI контрактов из `architecture/contracts/*`.
+- `lint_architecture_artifacts(...)` теперь включает contract-lint в общий проход модуля.
+- Для OpenAPI валидация идёт через `openapi-spec-validator`, для AsyncAPI — через `jsonschema` по локальной вендоренной схеме; при этом в локальном окружении пришлось учитывать реальный тип исключения `OpenAPIValidationError` вместе с `OpenAPISpecValidatorError`.
+- TDD зафиксирован свежим red-green циклом:
+  - `cd arch-docs && .venv/bin/pytest tests/workflows/init_arch/test_architecture_lint.py -v -k lint_contracts` → `9 failed` с `AttributeError` до реализации.
+  - `cd arch-docs && .venv/bin/pytest tests/workflows/init_arch/test_architecture_lint.py -v -k lint_contracts` → `9 passed` после реализации.
 
 ---
 
