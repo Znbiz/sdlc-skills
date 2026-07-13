@@ -47,3 +47,29 @@ def test_lint_architecture_artifacts_reports_all_nine_missing_files(tmp_path: Pa
 
     for relative_path in architecture_lint.ARCHITECTURE_MARKDOWN_REQUIRED_SECTIONS:
         assert f"ERROR: отсутствует {relative_path}" in issues
+
+
+def test_lint_agents_md_skips_when_file_missing(tmp_path: Path) -> None:
+    issues = architecture_lint._lint_agents_md(tmp_path)
+
+    assert issues == []
+
+
+def test_lint_agents_md_reports_missing_sections_when_present(tmp_path: Path) -> None:
+    _write(tmp_path, "AGENTS.md", "# AGENTS.md\n\n## Что читать первым\n\nтекст\n")
+
+    issues = architecture_lint._lint_agents_md(tmp_path)
+
+    assert "ERROR: AGENTS.md не содержит обязательную секцию `## Source of Truth`" in issues
+    assert "ERROR: AGENTS.md не содержит обязательную секцию `## Что читать первым`" not in issues
+
+
+def test_lint_agents_md_passes_when_all_sections_present(tmp_path: Path) -> None:
+    body = "# AGENTS.md\n\n" + "\n\n".join(
+        f"{section}\n\nтекст" for section in architecture_lint.AGENTS_REQUIRED_SECTIONS
+    )
+    _write(tmp_path, "AGENTS.md", body)
+
+    issues = architecture_lint._lint_agents_md(tmp_path)
+
+    assert issues == []

@@ -60,6 +60,7 @@ def lint_architecture_artifacts(arch_repo_path: Path) -> list[str]:
     issues: list[str] = []
     for relative_path, required_sections in ARCHITECTURE_MARKDOWN_REQUIRED_SECTIONS.items():
         issues.extend(_lint_required_sections(arch_repo_path, relative_path, required_sections))
+    issues.extend(_lint_agents_md(arch_repo_path))
     return issues
 
 
@@ -76,5 +77,30 @@ def _lint_required_sections(
     return [
         f"ERROR: {relative_path} не содержит обязательную секцию `{section}`"
         for section in required_sections
+        if section not in content
+    ]
+
+
+AGENTS_REQUIRED_SECTIONS: Final[tuple[str, ...]] = (
+    "## Что читать первым",
+    "## Source of Truth",
+    "## Структура репозитория",
+    "## Operations",
+    "## Правила трассировки и gaps",
+    "## С чего начинать по типу задачи",
+    "## Текущие сервисы",
+    "## Как добавлять изменения",
+)
+
+
+def _lint_agents_md(arch_repo_path: Path) -> list[str]:
+    agents_path = arch_repo_path / "AGENTS.md"
+    if not agents_path.exists():
+        return []
+
+    content = agents_path.read_text(encoding="utf-8")
+    return [
+        f"ERROR: AGENTS.md не содержит обязательную секцию `{section}`"
+        for section in AGENTS_REQUIRED_SECTIONS
         if section not in content
     ]
