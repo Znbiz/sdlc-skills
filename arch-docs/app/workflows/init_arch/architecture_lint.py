@@ -70,6 +70,7 @@ def lint_architecture_artifacts(arch_repo_path: Path) -> list[str]:
     issues.extend(_lint_directory_documents(arch_repo_path, "features", FEATURE_REQUIRED_SECTIONS))
     issues.extend(_lint_contracts(arch_repo_path))
     issues.extend(_lint_storage(arch_repo_path))
+    issues.extend(_lint_commit_consistency(arch_repo_path))
     return issues
 
 
@@ -241,3 +242,73 @@ def _lint_storage(arch_repo_path: Path) -> list[str]:
         if not storage_section.get("type"):
             issues.append(f"ERROR: {label} не содержит `storage.type`")
     return issues
+
+
+def _load_yaml_document(document_path: Path, label: str) -> tuple[dict[str, Any] | None, list[str]]:
+    try:
+        document = yaml.safe_load(document_path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as error:
+        return None, [f"ERROR: {label} невалидный YAML: {error}"]
+
+    if not isinstance(document, dict):
+        return None, [f"ERROR: {label} невалидный формат: ожидается mapping верхнего уровня"]
+
+    return document, []
+
+
+def _lint_commit_consistency(arch_repo_path: Path) -> list[str]:
+    landscape_path = arch_repo_path / "architecture" / "landscape.yaml"
+    if not landscape_path.exists():
+        return []
+
+    landscape, issues = _load_yaml_document(landscape_path, "architecture/landscape.yaml")
+    if issues:
+        return issues
+    if landscape is None:
+        return []
+
+    entities = landscape.get("entities") or {}
+    services = entities.get("services") if isinstance(entities, dict) else None
+    if services is None:
+        return []
+    if not isinstance(services, list):
+        return ["ERROR: architecture/landscape.yaml: entities.services должен быть списком"]
+
+    structure_dir = arch_repo_path / "architecture" / "structure"
+    return [
+        issue
+        for service in services
+        for issue in _lint_service_commit_consistency(service, structure_dir)
+    ]
+
+
+def _lint_service_commit_consistency(service: object, structure_dir: Path) -> list[str]:
+    issues: list[str] = []
+    if isinstance(service, dict):
+        service_id = _normalize_service_value(service.get("id") or service.get("name"))
+        repository_state = service.get("repository_state") or {}
+        head_commit = _normalize_service_value(
+            repository_state.get("head_commit") if isinstance(repository_state, dict) else "",
+        )
+        if service_id and head_commit:
+            structure_path = structure_dir / f"{service_id}.yml"
+            label = f"architecture/structure/{service_id}.yml"
+            if not structure_path.exists():
+                issues.append(f"ERROR: {label} не найден для сервиса `{service_id}` из landscape.yaml")
+            else:
+                structure_document, issues = _load_yaml_document(structure_path, label)
+                if not issues and structure_document is not None:
+                    repo_structure_map = structure_document.get("repo_structure_map") or {}
+                    analyzed_commit = _normalize_service_value(
+                        repo_structure_map.get("analyzed_commit") if isinstance(repo_structure_map, dict) else "",
+                    )
+                    if analyzed_commit and analyzed_commit != head_commit:
+                        issues.append(
+                            f"ERROR: рассинхронизация commit между landscape.yaml (head_commit=`{head_commit}`) и "
+                            f"{label} (analyzed_commit=`{analyzed_commit}`) для сервиса `{service_id}`"
+                        )
+    return issues
+
+
+def _normalize_service_value(value: object) -> str:
+    return str(value).strip() if value else ""

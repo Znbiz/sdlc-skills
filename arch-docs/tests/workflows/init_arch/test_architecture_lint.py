@@ -259,3 +259,57 @@ def test_lint_storage_passes_valid_document(tmp_path: Path) -> None:
     issues = architecture_lint._lint_storage(tmp_path)
 
     assert issues == []
+
+
+def _write_landscape(tmp_path: Path, body: str) -> Path:
+    return _write(tmp_path, "architecture/landscape.yaml", body)
+
+
+def _write_structure(tmp_path: Path, service_id: str, body: str) -> Path:
+    return _write(tmp_path, f"architecture/structure/{service_id}.yml", body)
+
+
+def test_lint_commit_consistency_skips_when_landscape_missing(tmp_path: Path) -> None:
+    issues = architecture_lint._lint_commit_consistency(tmp_path)
+
+    assert issues == []
+
+
+def test_lint_commit_consistency_reports_missing_structure_file(tmp_path: Path) -> None:
+    _write_landscape(
+        tmp_path,
+        "entities:\n  services:\n    - id: gateway-service\n      repository_state:\n        head_commit: abc123\n",
+    )
+
+    issues = architecture_lint._lint_commit_consistency(tmp_path)
+
+    assert issues == [
+        "ERROR: architecture/structure/gateway-service.yml не найден для сервиса `gateway-service` из landscape.yaml"
+    ]
+
+
+def test_lint_commit_consistency_reports_mismatch(tmp_path: Path) -> None:
+    _write_landscape(
+        tmp_path,
+        "entities:\n  services:\n    - id: gateway-service\n      repository_state:\n        head_commit: abc123\n",
+    )
+    _write_structure(tmp_path, "gateway-service", "repo_structure_map:\n  analyzed_commit: def456\n")
+
+    issues = architecture_lint._lint_commit_consistency(tmp_path)
+
+    assert issues == [
+        "ERROR: рассинхронизация commit между landscape.yaml (head_commit=`abc123`) и "
+        "architecture/structure/gateway-service.yml (analyzed_commit=`def456`) для сервиса `gateway-service`"
+    ]
+
+
+def test_lint_commit_consistency_passes_when_commits_match(tmp_path: Path) -> None:
+    _write_landscape(
+        tmp_path,
+        "entities:\n  services:\n    - id: gateway-service\n      repository_state:\n        head_commit: abc123\n",
+    )
+    _write_structure(tmp_path, "gateway-service", "repo_structure_map:\n  analyzed_commit: abc123\n")
+
+    issues = architecture_lint._lint_commit_consistency(tmp_path)
+
+    assert issues == []

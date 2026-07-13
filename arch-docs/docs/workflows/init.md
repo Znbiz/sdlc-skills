@@ -748,6 +748,13 @@ Transport-контракт для этого подтверждения полн
 - внутри `storage` обязателен непустой `type`;
 - нарушения конвертируются в `ERROR:` issues, совместимые с остальными lint-проверками.
 
+Также модуль уже проверяет согласованность commit между обзорным и детальным слоями структуры:
+
+- из `architecture/landscape.yaml` читаются `entities.services[*].repository_state.head_commit`;
+- для каждого сервиса с `id` и `head_commit` ожидается файл `architecture/structure/<service>.yml`;
+- если structure-файл отсутствует, это конвертируется в blocking `ERROR:`;
+- если `repo_structure_map.analyzed_commit` в structure-файле не совпадает с `head_commit` из landscape, модуль репортит явную ошибку рассинхронизации.
+
 Модуль самодостаточен и покрыт таргетными тестами, но пока не вызывается из
 `run_knowledge_lint()` — подключение к этому же gate запланировано отдельной задачей плана
 (Задача 8). До этого момента `ERROR:` из `architecture_lint.py` не блокируют workflow.

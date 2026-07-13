@@ -1075,7 +1075,7 @@ git commit -m "feat(arch-docs): добавить минимальную схем
 **Интерфейсы:**
 - Производит: `_lint_commit_consistency(arch_repo_path: Path) -> list[str]`, включённую в `lint_architecture_artifacts`. Прямой перенос логики из `init-repo-arch-skill/scripts/analysis_guard/commit_consistency.py::validate_commit_consistency`, упрощённый до прямого `yaml.safe_load` вместо JSON/ruby-фолбэков (PyYAML гарантирован задачей 1). Эта же функция закрывает покрытие `landscape-template.yaml` и `repo-structure-map-template.yml` из таблицы покрытия — оба файла парсятся и валидируются по сигнатурным полям (`entities.services`, `repo_structure_map.analyzed_commit`).
 
-- [ ] **Шаг 1: Написать падающие тесты**
+- [x] **Шаг 1: Написать падающие тесты**
 
 Добавить в конец `arch-docs/tests/workflows/init_arch/test_architecture_lint.py`:
 
@@ -1134,12 +1134,12 @@ def test_lint_commit_consistency_passes_when_commits_match(tmp_path: Path) -> No
     assert issues == []
 ```
 
-- [ ] **Шаг 2: Запустить тесты и убедиться, что они падают**
+- [x] **Шаг 2: Запустить тесты и убедиться, что они падают**
 
 Выполнить: `cd arch-docs && .venv/bin/pytest tests/workflows/init_arch/test_architecture_lint.py -v -k lint_commit_consistency`
 Ожидается: падение с `AttributeError`.
 
-- [ ] **Шаг 3: Написать минимальную реализацию**
+- [x] **Шаг 3: Написать минимальную реализацию**
 
 Обновить `lint_architecture_artifacts`:
 
@@ -1211,18 +1211,29 @@ def _lint_commit_consistency(arch_repo_path: Path) -> list[str]:
     return issues
 ```
 
-- [ ] **Шаг 4: Запустить тесты и убедиться, что они проходят**
+- [x] **Шаг 4: Запустить тесты и убедиться, что они проходят**
 
 Выполнить: `cd arch-docs && .venv/bin/pytest tests/workflows/init_arch/test_architecture_lint.py -v`
 Ожидается: все тесты проходят (полный набор для модуля).
 
-- [ ] **Шаг 5: Коммит**
+- [x] **Шаг 5: Коммит**
 
 ```bash
 cd /Users/aanekraso2/github.com/znbiz/sdlc
 git add arch-docs/app/workflows/init_arch/architecture_lint.py arch-docs/tests/workflows/init_arch/test_architecture_lint.py
 git commit -m "feat(arch-docs): добавить проверку согласованности commit между landscape.yaml и structure-картами"
 ```
+
+**Мини-отчёт по задаче 7 (2026-07-13):**
+
+- В [architecture_lint.py](/Users/aanekraso2/github.com/znbiz/sdlc/arch-docs/app/workflows/init_arch/architecture_lint.py:64) общий `lint_architecture_artifacts(...)` расширен вызовом `_lint_commit_consistency(...)`.
+- Добавлен `_lint_commit_consistency(...)`, который читает `architecture/landscape.yaml`, извлекает `entities.services[*].repository_state.head_commit` и сверяет его с `repo_structure_map.analyzed_commit` в `architecture/structure/<service>.yml`.
+- Для упрощения и повторного использования добавлены хелперы `_load_yaml_document(...)`, `_lint_service_commit_consistency(...)` и `_normalize_service_value(...)`.
+- В [test_architecture_lint.py](/Users/aanekraso2/github.com/znbiz/sdlc/arch-docs/tests/workflows/init_arch/test_architecture_lint.py:264) добавлены 4 таргетных теста на отсутствие `landscape.yaml`, отсутствие structure-файла, mismatch commit и happy-path.
+- TDD зафиксирован свежим red-green циклом:
+  - `cd arch-docs && .venv/bin/pytest tests/workflows/init_arch/test_architecture_lint.py -v -k lint_commit_consistency` → `4 failed` с `AttributeError` до реализации.
+  - `cd arch-docs && .venv/bin/pytest tests/workflows/init_arch/test_architecture_lint.py -v` → `27 passed` после реализации.
+- Во время доводки качество дополнительно подтверждено `ruff`: сначала были сняты замечания по complexity/`assert`, после рефакторинга `./.venv/bin/ruff check app/workflows/init_arch/architecture_lint.py tests/workflows/init_arch/test_architecture_lint.py` завершился успешно.
 
 ---
 
