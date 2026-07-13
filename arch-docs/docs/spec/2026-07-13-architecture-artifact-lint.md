@@ -1454,7 +1454,7 @@ git commit -m "feat(arch-docs): детектировать незаполнен�
 - Потребляет: `lint_architecture_artifacts(arch_repo_path: Path) -> list[str]` из `architecture_lint.py` (задачи 2-7 и 7.1 — residue-проверка уже включена внутри той же функции, здесь ничего дополнительно вызывать не нужно).
 - Производит: `run_knowledge_lint(arch_repo_path: Path) -> list[str]` теперь включает issues по architecture-артефактам (эту функцию уже вызывает `KnowledgeArtifactService.lint_knowledge` в `knowledge.py` на шаге `run_knowledge_lint` — там менять ничего не нужно).
 
-- [ ] **Шаг 1: Написать падающий тест**
+- [x] **Шаг 1: Написать падающий тест**
 
 Добавить в конец `arch-docs/tests/workflows/init_arch/test_knowledge_runtime.py`:
 
@@ -1469,12 +1469,12 @@ def test_run_knowledge_lint_includes_architecture_artifact_issues(tmp_path: Path
     assert "ERROR: отсутствует architecture/hld.md" in issues
 ```
 
-- [ ] **Шаг 2: Запустить тест и убедиться, что он падает**
+- [x] **Шаг 2: Запустить тест и убедиться, что он падает**
 
 Выполнить: `cd arch-docs && .venv/bin/pytest tests/workflows/init_arch/test_knowledge_runtime.py -v -k test_run_knowledge_lint_includes_architecture_artifact_issues`
 Ожидается: FAIL.
 
-- [ ] **Шаг 3: Подключить проверку**
+- [x] **Шаг 3: Подключить проверку**
 
 В `arch-docs/app/workflows/init_arch/knowledge_runtime.py` добавить импорт рядом с началом файла (после `from typing import Final`, около строки 10):
 
@@ -1490,12 +1490,12 @@ from app.workflows.init_arch.architecture_lint import lint_architecture_artifact
     return issues
 ```
 
-- [ ] **Шаг 4: Запустить тест и убедиться, что он проходит**
+- [x] **Шаг 4: Запустить тест и убедиться, что он проходит**
 
 Выполнить: `cd arch-docs && .venv/bin/pytest tests/workflows/init_arch/test_knowledge_runtime.py -v -k test_run_knowledge_lint_includes_architecture_artifact_issues`
 Ожидается: PASS
 
-- [ ] **Шаг 5: Запустить полный knowledge test suite и разобраться с тестом на внешней фикстуре**
+- [x] **Шаг 5: Запустить полный knowledge test suite и разобраться с тестом на внешней фикстуре**
 
 Выполнить: `cd arch-docs && .venv/bin/pytest tests/workflows/init_arch/test_knowledge_runtime.py tests/workflows/init_arch/test_knowledge.py -v`
 
@@ -1517,13 +1517,22 @@ async def test_valid_arch_repo_smoke_bootstrap_compile_and_lint(tmp_path: Path) 
 
 `strict=False` — потому что тест должен оставаться "не красным" в CI `arch-docs` уже сейчас, но не должен молча начать проходить незамеченным: если кто-то обновит фикстуру в `init-repo-arch-skill` независимо и тест внезапно начнёт проходить, `pytest` сообщит об этом отдельно (`XPASS`), а не тихо смолчит.
 
-- [ ] **Шаг 6: Коммит**
+- [x] **Шаг 6: Коммит**
 
 ```bash
 cd /Users/aanekraso2/github.com/znbiz/sdlc
 git add arch-docs/app/workflows/init_arch/knowledge_runtime.py arch-docs/tests/workflows/init_arch/test_knowledge_runtime.py arch-docs/tests/workflows/init_arch/test_knowledge.py
 git commit -m "feat(arch-docs): подключить lint_architecture_artifacts к run_knowledge_lint"
 ```
+
+**Мини-отчёт по задаче 8**
+
+- В [knowledge_runtime.py](/Users/aanekraso2/github.com/znbiz/sdlc/arch-docs/app/workflows/init_arch/knowledge_runtime.py:10) добавлен импорт `lint_architecture_artifacts`, а в [run_knowledge_lint](/Users/aanekraso2/github.com/znbiz/sdlc/arch-docs/app/workflows/init_arch/knowledge_runtime.py:395) общий knowledge gate теперь расширяется architecture-issues перед `return issues`.
+- В [test_knowledge_runtime.py](/Users/aanekraso2/github.com/znbiz/sdlc/arch-docs/tests/workflows/init_arch/test_knowledge_runtime.py:293) добавлен red-green регрессионный тест, который подтверждает, что `run_knowledge_lint(...)` возвращает `ERROR: отсутствует architecture/hld.md` для пустого architecture-layer.
+- В [test_knowledge.py](/Users/aanekraso2/github.com/znbiz/sdlc/arch-docs/tests/workflows/init_arch/test_knowledge.py:85) smoke-тест на fixture из `init-repo-arch-skill` помечен `xfail(strict=False)`, потому что fixture находится вне скоупа этого плана и пока не приведён в соответствие новым architecture-проверкам.
+- Проверки:
+  - `cd arch-docs && .venv/bin/pytest tests/workflows/init_arch/test_knowledge_runtime.py -v -k test_run_knowledge_lint_includes_architecture_artifact_issues` → сначала `FAILED`, после подключения lint'а `PASSED`.
+  - `cd arch-docs && .venv/bin/pytest tests/workflows/init_arch/test_knowledge_runtime.py tests/workflows/init_arch/test_knowledge.py -v` → до `xfail` был один ожидаемый `FAILED` на внешней fixture, после маркировки suite должен идти без красного статуса внутри `arch-docs`.
 
 ---
 

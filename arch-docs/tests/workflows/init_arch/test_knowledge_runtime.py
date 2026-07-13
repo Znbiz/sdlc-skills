@@ -286,3 +286,13 @@ def test_quality_gate_helpers_and_metadata_flags() -> None:
     assert runtime._ratio(0, 0) == 0.0
     assert runtime._format_ratio(1, 2) == "50%"
     assert any("Frontmatter coverage gate" in line for line in lines)
+
+
+def test_run_knowledge_lint_includes_architecture_artifact_issues(tmp_path: Path) -> None:
+    (tmp_path / "wiki" / "maps").mkdir(parents=True)
+    (tmp_path / "features").mkdir()
+    (tmp_path / "architecture").mkdir()
+
+    issues = runtime.run_knowledge_lint(tmp_path)
+
+    assert "ERROR: отсутствует architecture/hld.md" in issues

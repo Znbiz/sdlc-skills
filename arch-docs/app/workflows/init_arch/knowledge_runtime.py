@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+from app.workflows.init_arch.architecture_lint import lint_architecture_artifacts
+
 TRACEABILITY_MARKERS: Final[tuple[str, ...]] = (
     "Источники",
     "sources:",
@@ -447,6 +449,8 @@ def run_knowledge_lint(arch_repo_path: Path) -> list[str]:
     for markdown_path in _iter_markdown_documents_for_lint(arch_repo_path, layout_paths):
         issues.extend(_lint_unprefixed_paths(markdown_path, arch_repo_path))
         issues.extend(_lint_frontmatter(markdown_path, arch_repo_path))
+
+    issues.extend(lint_architecture_artifacts(arch_repo_path))
 
     return issues
 
