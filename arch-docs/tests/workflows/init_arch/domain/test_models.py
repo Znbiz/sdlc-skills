@@ -1,6 +1,7 @@
 import datetime as dt
 
 from app.workflows.init_arch.domain import (
+    ArtifactRecord,
     STEP_DEFINITION_BY_ID,
     STEP_DEFINITIONS,
     AnalysisTargetCommitStatus,
@@ -88,6 +89,29 @@ def test_step_definitions_mark_historical_gate() -> None:
     assert assess.requires_historical_prep is True
     assert analyze.requires_historical_prep is True
     assert len(STEP_DEFINITIONS) >= 10
+
+
+def test_step_id_has_generate_release_notes_value() -> None:
+    assert StepId.GENERATE_RELEASE_NOTES.value == "generate_release_notes"
+
+
+def test_artifact_record_defaults_last_updated_window_index_to_zero() -> None:
+    artifact = ArtifactRecord(
+        artifact_path="release-notes/window-0-2020-01-01.md",
+        artifact_kind="release_notes",
+    )
+
+    assert artifact.last_updated_window_index == 0
+
+
+def test_artifact_record_accepts_explicit_window_index() -> None:
+    artifact = ArtifactRecord(
+        artifact_path="release-notes/window-2-2020-07-01.md",
+        artifact_kind="release_notes",
+        last_updated_window_index=2,
+    )
+
+    assert artifact.last_updated_window_index == 2
 
 
 def test_llm_task_request_and_result_are_typed() -> None:

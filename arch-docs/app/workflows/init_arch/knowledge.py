@@ -40,6 +40,7 @@ _DIRECTORY_PATHS: Final[tuple[str, ...]] = (
     "architecture/contracts",
     "architecture/storage",
     "architecture/structure",
+    "release-notes",
     "wiki",
     "wiki/maps",
 )
@@ -285,6 +286,7 @@ class KnowledgeArtifactService:
                 artifact_kind=_ARTIFACT_KINDS.get(artifact_path, self._artifact_kind_from_path(artifact_path)),
                 source_refs=[*source_refs, today],
                 last_updated_step=step_id,
+                last_updated_window_index=session.historical_analysis.window_index,
             )
             updated_session = register_artifact(updated_session, artifact=artifact)
             self._audit_service.record(
@@ -305,6 +307,8 @@ class KnowledgeArtifactService:
             return "feature"
         if path.parts[:1] == ("architecture",):
             return "architecture_artifact"
+        if path.parts[:1] == ("release-notes",):
+            return "release_notes"
         if path.parts[:1] == ("wiki",):
             return "navigation_artifact"
         return "knowledge_artifact"

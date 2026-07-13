@@ -86,9 +86,14 @@ STEP_DEFINITIONS: tuple[StepDefinition, ...] = (
         uses_llm_worker=False,
     ),
     StepDefinition(
+        step_id=StepId.GENERATE_RELEASE_NOTES,
+        title="Generate release notes",
+        required_previous_steps=[StepId.VALIDATE_FINAL],
+    ),
+    StepDefinition(
         step_id=StepId.CONFIRM_NEXT_TEMPORAL_WINDOW,
         title="Confirm next temporal window",
-        required_previous_steps=[StepId.VALIDATE_FINAL],
+        required_previous_steps=[StepId.GENERATE_RELEASE_NOTES],
         uses_llm_worker=False,
         allows_user_pause=True,
     ),

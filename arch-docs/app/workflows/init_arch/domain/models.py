@@ -21,6 +21,7 @@ class StepId(str, enum.Enum):
     BUILD_NAVIGATION_INDEX = "build_navigation_index"
     RUN_KNOWLEDGE_LINT = "run_knowledge_lint"
     VALIDATE_FINAL = "validate_final"
+    GENERATE_RELEASE_NOTES = "generate_release_notes"
     CONFIRM_NEXT_TEMPORAL_WINDOW = "confirm_next_temporal_window"
     FINALIZE_PROGRESS = "finalize_progress"
     DONE = "done"
@@ -54,6 +55,8 @@ class EventType(str, enum.Enum):
     LLM_TASK_REQUESTED = "llm_task_requested"
     LLM_TASK_COMPLETED = "llm_task_completed"
     LLM_TASK_FAILED = "llm_task_failed"
+    LLM_TASK_FAILOVER_TRIGGERED = "llm_task_failover_triggered"
+    LLM_TASK_FAILOVER_EXHAUSTED = "llm_task_failover_exhausted"
     USER_QUESTION_OPENED = "user_question_opened"
     USER_ANSWER_RECORDED = "user_answer_recorded"
     ARTIFACT_WRITTEN = "artifact_written"
@@ -151,6 +154,7 @@ class ArtifactRecord(pydantic.BaseModel):
     artifact_kind: str
     source_refs: list[str] = pydantic.Field(default_factory=list)
     last_updated_step: StepId | None = None
+    last_updated_window_index: int = 0
 
 
 class OpenQuestionRecord(pydantic.BaseModel):

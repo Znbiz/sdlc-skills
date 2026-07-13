@@ -2,7 +2,13 @@ import datetime as dt
 from unittest.mock import patch
 
 from app.workflows.init_arch import prompts as prompts_module
-from app.workflows.init_arch.domain import CommitRangeStatus, RepositoryExecution, StepId, WorkflowSessionRecord
+from app.workflows.init_arch.domain import (
+    ArtifactRecord,
+    CommitRangeStatus,
+    RepositoryExecution,
+    StepId,
+    WorkflowSessionRecord,
+)
 from app.workflows.init_arch.prompts import build_step_prompt
 from app.workflows.init_arch.state import InitArchState
 from app.workflows.shared_assets.loader import WorkflowAssetLoader
@@ -81,6 +87,13 @@ def test_build_step_prompt_no_reference_fallback():
     with patch.object(prompts_module, "_load_skill_md", return_value="SKILL"):
         result = build_step_prompt("define_scope", _make_state())
     assert "нет дополнительного reference" in result
+
+
+def test_build_step_prompt_release_notes_block_not_applicable_for_other_steps():
+    with patch.object(prompts_module, "_load_skill_md", return_value="SKILL"):
+        result = build_step_prompt("define_scope", _make_state())
+
+    assert "(не применимо для этого шага)" in result
 
 
 def test_build_step_prompt_includes_completed_steps():
@@ -229,3 +242,85 @@ def test_load_skill_md_missing_file():
         result = prompts_module._load_skill_md()
     assert "not found" in result
     prompts_module._SKILL_MD_CACHE = ""
+
+
+def test_build_step_prompt_release_notes_includes_all_repositories(tmp_path):
+    ref_file = tmp_path / "init_arch" / "references" / "checklist-release-notes.md"
+    ref_file.parent.mkdir(parents=True)
+    ref_file.write_text("RELEASE NOTES REFERENCE")
+    skill_file = tmp_path / "init_arch" / "SKILL.md"
+    skill_file.write_text("SKILL")
+
+    repo_a = RepositoryExecution(
+        repository_name="svc-a",
+        commit_range="a1..a2",
+        commit_range_status=CommitRangeStatus.DIFF_COLLECTED,
+        diff_stat_summary="3 files changed",
+        commit_log_summary="a2 fix bug",
+    )
+    repo_b = RepositoryExecution(
+        repository_name="svc-b",
+        commit_range_status=CommitRangeStatus.NO_CHANGES,
+    )
+    state = _make_state()
+    state["session"] = state["session"].model_copy(
+        update={
+            "repositories": [repo_a, repo_b],
+            "historical_analysis": state["session"].historical_analysis.model_copy(
+                update={"window_index": 1, "current_snapshot_at": dt.date(2020, 7, 1)}
+            ),
+        }
+    )
+
+    with patch.object(
+        prompts_module,
+        "get_workflow_asset_loader",
+        return_value=WorkflowAssetLoader(tmp_path),
+        create=True,
+    ):
+        result = build_step_prompt("generate_release_notes", state)
+
+    assert "RELEASE NOTES REFERENCE" in result
+    assert "Window index: 1" in result
+    assert "svc-a" in result
+    assert "svc-b" in result
+    assert "a1..a2" in result
+    assert "no_changes" in result
+
+
+def test_build_step_prompt_release_notes_lists_artifacts_changed_this_window(tmp_path):
+    ref_file = tmp_path / "init_arch" / "references" / "checklist-release-notes.md"
+    ref_file.parent.mkdir(parents=True)
+    ref_file.write_text("REF")
+    skill_file = tmp_path / "init_arch" / "SKILL.md"
+    skill_file.write_text("SKILL")
+
+    state = _make_state()
+    state["session"] = state["session"].model_copy(
+        update={
+            "historical_analysis": state["session"].historical_analysis.model_copy(update={"window_index": 1}),
+            "artifacts": [
+                ArtifactRecord(
+                    artifact_path="architecture/hld.md",
+                    artifact_kind="architecture_artifact",
+                    last_updated_window_index=1,
+                ),
+                ArtifactRecord(
+                    artifact_path="glossary.md",
+                    artifact_kind="glossary",
+                    last_updated_window_index=0,
+                ),
+            ],
+        }
+    )
+
+    with patch.object(
+        prompts_module,
+        "get_workflow_asset_loader",
+        return_value=WorkflowAssetLoader(tmp_path),
+        create=True,
+    ):
+        result = build_step_prompt("generate_release_notes", state)
+
+    assert "architecture/hld.md" in result
+    assert "glossary.md" not in result

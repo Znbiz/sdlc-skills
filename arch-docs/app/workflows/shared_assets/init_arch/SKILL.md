@@ -147,6 +147,8 @@ define_scope
   → build_navigation_index
   → run_knowledge_lint
   → validate_final
+  → generate_release_notes
+  → confirm_next_temporal_window
   → finalize_progress
 ```
 
@@ -278,6 +280,7 @@ domain --complete --domain-id <id> --notes "<итог домена>"
 | Шаг `workflow` | Reference-файл |
 |---|---|
 | `assess_scope_and_domains` | [checklist-scope-and-domain-assessment.md](references/checklist-scope-and-domain-assessment.md) |
+| `generate_release_notes` | [checklist-release-notes.md](references/checklist-release-notes.md) |
 
 ### Маппинг: пункт analysis_checklist → reference
 

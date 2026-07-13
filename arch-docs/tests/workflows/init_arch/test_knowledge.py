@@ -38,6 +38,18 @@ async def test_bootstrap_arch_repo_scaffolds_required_artifacts(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
+async def test_bootstrap_arch_repo_creates_release_notes_directory(tmp_path: Path) -> None:
+    asset_loader = WorkflowAssetLoader(
+        Path("/Users/aanekraso2/github.com/znbiz/sdlc/arch-docs/app/workflows/shared_assets")
+    )
+    service = KnowledgeArtifactService(asset_loader=asset_loader)
+
+    await service.bootstrap_arch_repo(_make_session(), arch_repo_dir=str(tmp_path / "arch-repo"))
+
+    assert (tmp_path / "arch-repo" / "release-notes").is_dir()
+
+
+@pytest.mark.asyncio
 async def test_bootstrap_arch_repo_scaffolds_architecture_markdown_from_templates(tmp_path: Path) -> None:
     asset_loader = WorkflowAssetLoader(
         Path("/Users/aanekraso2/github.com/znbiz/sdlc/arch-docs/app/workflows/shared_assets")
@@ -141,6 +153,31 @@ async def test_collect_worker_artifacts_deduplicates_paths() -> None:
 
     assert result.written_artifacts == ["features/auth.md", "wiki/index.md"]
     assert {artifact.artifact_path for artifact in result.session.artifacts} >= {"features/auth.md", "wiki/index.md"}
+
+
+def test_artifact_kind_from_path_recognizes_release_notes() -> None:
+    assert KnowledgeArtifactService._artifact_kind_from_path("release-notes/window-0-2020-01-01.md") == "release_notes"
+
+
+@pytest.mark.asyncio
+async def test_collect_worker_artifacts_stamps_current_window_index() -> None:
+    service = KnowledgeArtifactService()
+    baseline_session = _make_session()
+    session = baseline_session.model_copy(
+        update={"historical_analysis": baseline_session.historical_analysis.model_copy(update={"window_index": 2})}
+    )
+
+    result = await service.collect_worker_artifacts(
+        session,
+        step_id=StepId.GENERATE_RELEASE_NOTES,
+        created_artifacts=["release-notes/window-2-2020-07-01.md"],
+    )
+
+    artifact = next(
+        item for item in result.session.artifacts if item.artifact_path == "release-notes/window-2-2020-07-01.md"
+    )
+    assert artifact.last_updated_window_index == 2
+    assert artifact.artifact_kind == "release_notes"
 
 
 @pytest.mark.asyncio

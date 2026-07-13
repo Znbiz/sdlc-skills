@@ -582,7 +582,46 @@ async def node_run_knowledge_lint(state: InitArchState) -> dict[str, typing.Any]
 
 async def node_validate_final(state: InitArchState) -> dict[str, typing.Any]:
     logger.info("workflow.node.validate_final")
-    return await _simple_llm_step(state, StepId.VALIDATE_FINAL, StepId.CONFIRM_NEXT_TEMPORAL_WINDOW)
+    return await _simple_llm_step(state, StepId.VALIDATE_FINAL, StepId.GENERATE_RELEASE_NOTES)
+
+
+async def node_generate_release_notes(state: InitArchState) -> dict[str, typing.Any]:
+    logger.info("workflow.node.generate_release_notes")
+    guard_service = get_guard_service()
+    knowledge_service = get_knowledge_artifact_service()
+    _record_workflow_event(state, EventType.WORKFLOW_STEP_STARTED, step_id=StepId.GENERATE_RELEASE_NOTES)
+    try:
+        llm_result = await _run_step_worker(state, StepId.GENERATE_RELEASE_NOTES)
+        knowledge_result = await knowledge_service.collect_worker_artifacts(
+            state["session"],
+            step_id=StepId.GENERATE_RELEASE_NOTES,
+            created_artifacts=llm_result.created_artifacts,
+        )
+        result = await guard_service.advance_step(
+            knowledge_result.session,
+            StepId.CONFIRM_NEXT_TEMPORAL_WINDOW,
+            progress_file_path=state["progress_file_path"],
+            note=knowledge_result.summary,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _record_workflow_event(
+            state,
+            EventType.WORKFLOW_STEP_FAILED,
+            step_id=StepId.GENERATE_RELEASE_NOTES,
+            error=str(exc),
+        )
+        return {"step_error": str(exc), "retry_count": state.get("retry_count", 0) + 1}
+    _record_workflow_event(
+        state,
+        EventType.WORKFLOW_STEP_COMPLETED,
+        step_id=StepId.GENERATE_RELEASE_NOTES,
+        next_step=result.session.current_step.value,
+    )
+    return _session_update_payload(
+        result.session,
+        last_llm_result=llm_result,
+        last_guard_output=result.bridge_output,
+    )
 
 
 def _extract_window_confirmation_action(resume_payload: typing.Any) -> TemporalWindowConfirmationAction:

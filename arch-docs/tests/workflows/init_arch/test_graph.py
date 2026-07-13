@@ -56,6 +56,7 @@ def test_build_graph_has_all_nodes():
         "build_navigation_index",
         "run_knowledge_lint",
         "validate_final",
+        "generate_release_notes",
         "confirm_next_temporal_window",
         "finalize_progress",
         "handle_error",
@@ -99,8 +100,14 @@ def test_route_after_node_error_max_retries_goes_to_handle_error():
     assert route(state) == "handle_error"
 
 
-def test_route_after_validate_final_goes_to_confirm_next_temporal_window():
+def test_route_after_validate_final_goes_to_generate_release_notes():
     route = _route_after_node("validate_final")
+    state = _make_state(step_error=None)
+    assert route(state) == "generate_release_notes"
+
+
+def test_route_after_generate_release_notes_goes_to_confirm_next_temporal_window():
+    route = _route_after_node("generate_release_notes")
     state = _make_state(step_error=None)
     assert route(state) == "confirm_next_temporal_window"
 

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import typing
 
-from app.workflows.init_arch.domain import CommitRangeStatus, RepositoryExecution, StepId
+from app.workflows.init_arch.domain import CommitRangeStatus, RepositoryExecution, StepId, classify_diff_severity
 from app.workflows.init_arch.state import InitArchState
 from app.workflows.shared_assets import get_workflow_asset_loader
 
 _EXPANDED_DIFF_CONTEXT_STEPS: typing.Final[frozenset[str]] = frozenset({"analyze_repositories"})
 _MAX_COMPACT_CHANGED_PATHS: typing.Final[int] = 10
+_RELEASE_NOTES_STEP_VALUE: typing.Final[str] = "generate_release_notes"
+_NOT_APPLICABLE_RELEASE_NOTES_BLOCK: typing.Final[str] = "(не применимо для этого шага)"
 
 _WORKFLOW_ASSET_NAMESPACE = "init_arch"
 _SKILL_MD_RELATIVE_PATH = "SKILL.md"
@@ -26,6 +28,7 @@ STEP_TO_REFERENCE: typing.Final[dict[str, str]] = {
     "build_navigation_index": "references/knowledge-workflow.md",
     "run_knowledge_lint": "references/knowledge-workflow.md",
     "validate_final": "references/checklist-repository-consistency-review.md",
+    "generate_release_notes": "references/checklist-release-notes.md",
     "finalize_progress": "",
 }
 
@@ -134,6 +137,54 @@ def _build_temporal_delta_block(repository: RepositoryExecution | None, *, expan
     return "\n".join(lines)
 
 
+def _build_release_notes_context_block(state: InitArchState) -> str:
+    session = state["session"]
+    historical = session.historical_analysis
+    lines = [
+        f"Window index: {historical.window_index}",
+        f"Previous snapshot: {historical.previous_snapshot_at or '—'}",
+        f"Current snapshot: {historical.current_snapshot_at or '—'}",
+        "",
+        "Репозитории в этом окне:",
+    ]
+    for repository in session.repositories:
+        lines.extend(
+            [
+                "",
+                f"### {repository.repository_name}",
+                f"Commit range: {repository.commit_range or '—'}",
+                f"Commit range status: {repository.commit_range_status.value}",
+                f"Diff severity: {classify_diff_severity(repository).value}",
+                "Diff stat summary:",
+                repository.diff_stat_summary or "нет",
+                "Commit log summary:",
+                repository.commit_log_summary or "нет",
+                "Изменённые пути:",
+                _format_path_list(repository.changed_paths, expanded=False),
+            ]
+        )
+        if repository.temporal_delta_note:
+            lines.append(f"Заметка: {repository.temporal_delta_note}")
+
+    artifacts_this_window = [
+        artifact for artifact in session.artifacts if artifact.last_updated_window_index == historical.window_index
+    ]
+    lines.extend(["", "Артефакты, изменённые в этом окне:"])
+    if artifacts_this_window:
+        lines.extend(f"- {artifact.artifact_path} ({artifact.artifact_kind})" for artifact in artifacts_this_window)
+    else:
+        lines.append("нет")
+
+    open_questions = [question for question in session.open_questions if question.status == "open"]
+    lines.extend(["", "Открытые вопросы:"])
+    if open_questions:
+        lines.extend(f"- {question.question_id}: {question.question_text}" for question in open_questions)
+    else:
+        lines.append("нет")
+
+    return "\n".join(lines)
+
+
 def build_step_prompt(step_id: StepId | str, state: InitArchState, checklist_item_id: str = "") -> str:
     step_value = step_id.value if isinstance(step_id, StepId) else step_id
     skill_md = _load_skill_md()
@@ -151,6 +202,11 @@ def build_step_prompt(step_id: StepId | str, state: InitArchState, checklist_ite
     current_repo = current_repository.repository_name if current_repository is not None else "—"
     temporal_delta_block = _build_temporal_delta_block(
         current_repository, expanded=step_value in _EXPANDED_DIFF_CONTEXT_STEPS
+    )
+    release_notes_block = (
+        _build_release_notes_context_block(state)
+        if step_value == _RELEASE_NOTES_STEP_VALUE
+        else _NOT_APPLICABLE_RELEASE_NOTES_BLOCK
     )
     open_questions = (
         "\n".join(
@@ -186,6 +242,12 @@ Raw layer: {raw_workspace_dir}
 # Temporal delta текущего окна
 
 {temporal_delta_block}
+
+---
+
+# Контекст release notes для текущего окна
+
+{release_notes_block}
 
 ---
 

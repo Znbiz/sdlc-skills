@@ -13,6 +13,7 @@ from app.workflows.init_arch.nodes import (
     node_confirm_next_temporal_window,
     node_define_scope,
     node_finalize_progress,
+    node_generate_release_notes,
     node_handle_error,
     node_interview_user,
     node_plan_repository_order,
@@ -44,6 +45,7 @@ _NODE_FUNCTIONS: typing.Final[dict[StepId, typing.Any]] = {
     StepId.BUILD_NAVIGATION_INDEX: node_build_navigation_index,
     StepId.RUN_KNOWLEDGE_LINT: node_run_knowledge_lint,
     StepId.VALIDATE_FINAL: node_validate_final,
+    StepId.GENERATE_RELEASE_NOTES: node_generate_release_notes,
     StepId.CONFIRM_NEXT_TEMPORAL_WINDOW: node_confirm_next_temporal_window,
     StepId.FINALIZE_PROGRESS: node_finalize_progress,
 }

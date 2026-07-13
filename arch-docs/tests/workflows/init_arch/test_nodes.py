@@ -603,6 +603,52 @@ async def test_node_run_knowledge_lint_uses_knowledge_service_without_llm() -> N
     llm_service.assert_not_called()
 
 
+async def test_node_generate_release_notes_registers_artifact_and_advances() -> None:
+    state = _make_state()
+    guard_service = MagicMock()
+    llm_service = MagicMock()
+    knowledge_service = MagicMock()
+    audit_service = MagicMock()
+
+    llm_service.run_task = AsyncMock(
+        return_value=LlmTaskResult(
+            task_kind=LlmTaskKind.STEP_EXECUTION,
+            step_id=StepId.GENERATE_RELEASE_NOTES,
+            created_artifacts=["release-notes/window-0-2024-07-10.md"],
+        )
+    )
+    registered_session = state["session"].model_copy()
+    knowledge_service.collect_worker_artifacts = AsyncMock(
+        return_value=KnowledgeArtifactResult(
+            session=registered_session,
+            written_artifacts=["release-notes/window-0-2024-07-10.md"],
+        )
+    )
+    next_session = registered_session.model_copy(
+        update={
+            "current_step": StepId.CONFIRM_NEXT_TEMPORAL_WINDOW,
+            "completed_steps": [StepId.GENERATE_RELEASE_NOTES],
+        }
+    )
+    guard_service.advance_step = AsyncMock(return_value=GuardOperationResult(session=next_session))
+
+    with (
+        patch("app.workflows.init_arch.nodes.get_guard_service", return_value=guard_service),
+        patch("app.workflows.init_arch.nodes.get_llm_worker_service", return_value=llm_service),
+        patch("app.workflows.init_arch.nodes.get_knowledge_artifact_service", return_value=knowledge_service),
+        patch("app.workflows.init_arch.nodes.get_workflow_audit_service", return_value=audit_service),
+    ):
+        result = await nodes_module.node_generate_release_notes(state)
+
+    assert result["current_step_id"] == "confirm_next_temporal_window"
+    knowledge_service.collect_worker_artifacts.assert_awaited_once_with(
+        state["session"],
+        step_id=StepId.GENERATE_RELEASE_NOTES,
+        created_artifacts=["release-notes/window-0-2024-07-10.md"],
+    )
+    guard_service.advance_step.assert_awaited_once()
+
+
 async def test_node_finalize_progress_uses_guard_service() -> None:
     state = _make_state()
     guard_service = MagicMock()

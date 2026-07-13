@@ -56,6 +56,8 @@ refine_features          -> синтезировать и уточнить featu
 build_navigation_index   -> собрать навигационные knowledge artifacts и индексы
 run_knowledge_lint       -> проверить knowledge layer на структурные проблемы
 validate_final           -> выполнить финальную валидацию workflow результата
+generate_release_notes   -> сформировать release notes по всему продукту за это окно
+confirm_next_temporal_window -> продвинуться к следующему temporal-окну или завершить анализ
 finalize_progress        -> зафиксировать завершение session и закрыть workflow
 done                     -> terminal state
 ```
