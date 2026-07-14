@@ -77,6 +77,8 @@ def _workflow_record_from_model(model: WorkflowRunModel) -> WorkflowRecord:
         workflow_status=WorkflowStatus(model.workflow_status),
         current_step_id=model.current_step_id,
         current_repo_name=model.current_repo_name,
+        workspace_dir=model.workspace_dir,
+        arch_repo_dir=model.arch_repo_dir,
         completed_steps=list(model.completed_steps or []),
         session=session,
         pending_interrupt=dict(model.pending_interrupt_payload) if model.pending_interrupt_payload else None,
@@ -158,6 +160,8 @@ async def upsert_workflow_run(session: async_sa.AsyncSession, record: WorkflowRe
             workflow_status=str(record.workflow_status),
             current_step_id=record.current_step_id,
             current_repo_name=record.current_repo_name,
+            workspace_dir=record.workspace_dir,
+            arch_repo_dir=record.arch_repo_dir,
             completed_steps=list(record.completed_steps),
             session_payload=_session_payload(record.session),
             pending_interrupt_payload=dict(record.pending_interrupt) if record.pending_interrupt else None,
@@ -167,6 +171,28 @@ async def upsert_workflow_run(session: async_sa.AsyncSession, record: WorkflowRe
             updated_at=record.updated_at,
         )
         session.add(existing)
+        is_new_workflow_run = True
+    else:
+        existing.conversation_id = conversation_id
+        existing.workflow_status = str(record.workflow_status)
+        existing.current_step_id = record.current_step_id
+        existing.current_repo_name = record.current_repo_name
+        existing.workspace_dir = record.workspace_dir
+        existing.arch_repo_dir = record.arch_repo_dir
+        existing.completed_steps = list(record.completed_steps)
+        existing.session_payload = _session_payload(record.session)
+        existing.pending_interrupt_payload = dict(record.pending_interrupt) if record.pending_interrupt else None
+        existing.last_cli_output_snippet = record.last_cli_output_snippet
+        existing.error_message = record.error_message
+        existing.updated_at = record.updated_at
+        is_new_workflow_run = False
+
+    # Явный flush перед добавлением зависимых ConversationItemModel/WorkflowStepTransitionModel:
+    # без relationship() между моделями autoflush не гарантирует порядок вставки
+    # conversation/workflow_runs раньше conversation_items и падает по FK.
+    await session.flush()
+
+    if is_new_workflow_run:
         session.add(
             ConversationItemModel(
                 conversation_id=conversation_id,
@@ -181,17 +207,6 @@ async def upsert_workflow_run(session: async_sa.AsyncSession, record: WorkflowRe
                 created_at=record.created_at,
             )
         )
-    else:
-        existing.conversation_id = conversation_id
-        existing.workflow_status = str(record.workflow_status)
-        existing.current_step_id = record.current_step_id
-        existing.current_repo_name = record.current_repo_name
-        existing.completed_steps = list(record.completed_steps)
-        existing.session_payload = _session_payload(record.session)
-        existing.pending_interrupt_payload = dict(record.pending_interrupt) if record.pending_interrupt else None
-        existing.last_cli_output_snippet = record.last_cli_output_snippet
-        existing.error_message = record.error_message
-        existing.updated_at = record.updated_at
 
     if previous_step != record.current_step_id:
         session.add(_build_step_transition_model(record, conversation_id=conversation_id, previous_step=previous_step))

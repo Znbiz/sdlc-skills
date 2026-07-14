@@ -121,6 +121,8 @@ async def test_get_workflow_run_deserializes_session(mock_session):
         workflow_status = "interrupted"
         current_step_id = "interview_user"
         current_repo_name = ""
+        workspace_dir = ""
+        arch_repo_dir = ""
         completed_steps = ["define_scope"]
         session_payload = {
             "session_id": "wf-1",
@@ -243,3 +245,18 @@ async def test_list_conversation_items_returns_empty_without_filters(mock_sessio
     items = await list_conversation_items(mock_session)
 
     assert items == []
+
+
+async def test_upsert_and_get_workflow_run_round_trips_path_metadata(db_session):
+    record = WorkflowRecord(
+        workflow_id="wf-paths",
+        conversation_id="conv-paths",
+        workspace_dir="/workspace",
+        arch_repo_dir="/workspace/arch",
+    )
+
+    await upsert_workflow_run(db_session, record)
+    loaded = await get_workflow_run(db_session, "wf-paths")
+
+    assert loaded.workspace_dir == "/workspace"
+    assert loaded.arch_repo_dir == "/workspace/arch"

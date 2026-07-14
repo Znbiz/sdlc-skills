@@ -218,7 +218,9 @@ async def test_list_conversation_items_returns_404_when_missing(async_client, au
     assert resp.status_code == 404
 
 
-async def test_stream_conversation_returns_empty_stream_without_active_response(async_client, auth_headers, monkeypatch):
+async def test_stream_conversation_returns_empty_stream_without_active_response(
+    async_client, auth_headers, monkeypatch
+):
     async def _fake_get_conversation_async(_conversation_id: str):
         return {
             "conversation_id": "conv-empty",
@@ -285,6 +287,32 @@ async def test_legacy_rest_workflow_endpoints_removed(async_client, auth_headers
     resp = await async_client.get("/api/rest/workflows/legacy-id/", headers=auth_headers)
 
     assert resp.status_code == 404
+
+
+async def test_get_response_includes_path_metadata(async_client, auth_headers, monkeypatch):
+    payload = {
+        "response_id": "wf-1",
+        "conversation_id": "conv-1",
+        "workflow_type": "init_arch",
+        "response_status": "running",
+        "current_step_id": "define_scope",
+        "current_repo_name": "",
+        "completed_steps": [],
+        "required_actions": [],
+        "created_at": "2026-07-14T00:00:00+00:00",
+        "updated_at": "2026-07-14T00:00:00+00:00",
+        "error_message": None,
+        "terminal_result": None,
+        "workspace_dir": "/workspace",
+        "arch_repo_dir": "/workspace/arch",
+    }
+    monkeypatch.setattr("app.api.rest.conversations.get_response_async", AsyncMock(return_value=payload))
+
+    response = await async_client.get("/api/rest/responses/wf-1/", headers=auth_headers)
+
+    assert response.status_code == 200
+    assert response.json()["workspace_dir"] == "/workspace"
+    assert response.json()["arch_repo_dir"] == "/workspace/arch"
 
 
 async def test_legacy_rpc_workflow_endpoints_removed(async_client, auth_headers):

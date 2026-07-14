@@ -51,6 +51,10 @@ class WorkflowValidationError(ValueError):
     pass
 
 
+class ArchRepoNotAvailableError(RuntimeError):
+    pass
+
+
 def utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
@@ -234,6 +238,8 @@ def _workflow_response_payload(
         "response_status": str(record.workflow_status),
         "current_step_id": record.current_step_id,
         "current_repo_name": record.current_repo_name,
+        "workspace_dir": record.workspace_dir,
+        "arch_repo_dir": record.arch_repo_dir,
         "completed_steps": list(record.completed_steps),
         "required_actions": _serialize_required_actions(required_actions),
         "created_at": record.created_at.isoformat(),
@@ -255,6 +261,8 @@ def _task_response_payload(task: CliTask) -> dict[str, typing.Any]:
         "response_status": str(task.task_status),
         "current_step_id": "",
         "current_repo_name": task.repository_name or pathlib.Path(task.workspace_dir).name,
+        "workspace_dir": task.workspace_dir,
+        "arch_repo_dir": "",
         "completed_steps": [],
         "required_actions": [],
         "created_at": task.created_at.isoformat(),
@@ -275,6 +283,13 @@ async def get_response_async(response_id: str) -> dict[str, typing.Any]:
     if not required_actions:
         required_actions = _fallback_required_actions(record)
     return _workflow_response_payload(record, required_actions)
+
+
+async def get_response_arch_repo_dir_async(response_id: str) -> str:
+    record = await get_workflow_record_async(response_id)
+    if not record.arch_repo_dir:
+        raise ArchRepoNotAvailableError(f"No arch_repo_dir recorded for response {response_id!r}")
+    return record.arch_repo_dir
 
 
 def _active_conversation_record(conversation_id: str) -> WorkflowRecord | None:
@@ -851,6 +866,8 @@ async def start_init_arch_workflow(
         workflow_id=workflow_id,
         conversation_id=conversation_id or workflow_id,
         session=session,
+        workspace_dir=resolved_workspace_dir,
+        arch_repo_dir=resolved_arch_repo_dir,
     )
     registry = get_workflow_registry()
     registry[workflow_id] = record

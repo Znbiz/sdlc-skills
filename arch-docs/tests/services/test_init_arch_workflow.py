@@ -672,3 +672,53 @@ async def test_cancel_init_arch_workflow_rejects_terminal_status():
 
     with pytest.raises(workflow_module.WorkflowConflictError, match="not cancellable"):
         await workflow_module.cancel_init_arch_workflow("wf-terminal")
+
+
+async def test_start_init_arch_workflow_persists_resolved_paths(monkeypatch):
+    monkeypatch.setattr("app.services.init_arch_workflow.persist_workflow_record", AsyncMock())
+    monkeypatch.setattr("app.services.init_arch_workflow.asyncio.create_task", asyncio.create_task)
+    monkeypatch.setattr("app.services.init_arch_workflow.run_workflow", AsyncMock())
+
+    record = await workflow_module.start_init_arch_workflow(
+        product_name="svc",
+        analysis_scope="full",
+        workspace_dir="/workspace",
+        arch_repo_dir="/workspace/arch",
+        repo_list=["repo-a"],
+        engine_name="claude",
+        timeout_seconds=30,
+        conversation_id="conv-paths",
+    )
+
+    assert record.workspace_dir == "/workspace"
+    assert record.arch_repo_dir == "/workspace/arch"
+    record.asyncio_task.cancel()
+
+
+async def test_workflow_response_payload_includes_path_metadata():
+    record = workflow_module.WorkflowRecord(
+        workflow_id="wf-1",
+        conversation_id="conv-1",
+        workspace_dir="/workspace",
+        arch_repo_dir="/workspace/arch",
+    )
+    payload = workflow_module._workflow_response_payload(record, [])
+    assert payload["workspace_dir"] == "/workspace"
+    assert payload["arch_repo_dir"] == "/workspace/arch"
+
+
+async def test_get_response_arch_repo_dir_async_returns_path(monkeypatch):
+    record = workflow_module.WorkflowRecord(workflow_id="wf-2", arch_repo_dir="/workspace/arch")
+    monkeypatch.setattr("app.services.init_arch_workflow.get_workflow_record_async", AsyncMock(return_value=record))
+
+    result = await workflow_module.get_response_arch_repo_dir_async("wf-2")
+
+    assert result == "/workspace/arch"
+
+
+async def test_get_response_arch_repo_dir_async_raises_when_missing(monkeypatch):
+    record = workflow_module.WorkflowRecord(workflow_id="wf-3", arch_repo_dir="")
+    monkeypatch.setattr("app.services.init_arch_workflow.get_workflow_record_async", AsyncMock(return_value=record))
+
+    with pytest.raises(workflow_module.ArchRepoNotAvailableError):
+        await workflow_module.get_response_arch_repo_dir_async("wf-3")

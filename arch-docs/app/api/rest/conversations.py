@@ -36,6 +36,8 @@ class ResponseStatusResponse(pydantic.BaseModel, frozen=True):
     response_status: str
     current_step_id: str
     current_repo_name: str
+    workspace_dir: str
+    arch_repo_dir: str
     completed_steps: list[str]
     required_actions: list[RequiredActionResponse]
     created_at: str
@@ -91,6 +93,8 @@ def _response_model(payload: dict[str, typing.Any]) -> ResponseStatusResponse:
         response_status=payload["response_status"],
         current_step_id=payload["current_step_id"],
         current_repo_name=payload["current_repo_name"],
+        workspace_dir=payload["workspace_dir"],
+        arch_repo_dir=payload["arch_repo_dir"],
         completed_steps=list(payload["completed_steps"]),
         required_actions=[RequiredActionResponse.model_validate(action) for action in payload["required_actions"]],
         created_at=payload["created_at"],

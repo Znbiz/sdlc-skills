@@ -24,6 +24,8 @@ class WorkflowRecord:
     workflow_status: WorkflowStatus = WorkflowStatus.RUNNING
     current_step_id: str = "define_scope"
     current_repo_name: str = ""
+    workspace_dir: str = ""
+    arch_repo_dir: str = ""
     completed_steps: list[str] = dataclasses.field(default_factory=list)
     session: WorkflowSessionRecord | None = None
     pending_interrupt: dict[str, typing.Any] | None = None

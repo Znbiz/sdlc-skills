@@ -74,6 +74,8 @@ class WorkflowRunModel(Base):
     workflow_status: orm.Mapped[str] = orm.mapped_column(sa.Text, nullable=False, index=True)
     current_step_id: orm.Mapped[str] = orm.mapped_column(sa.Text, nullable=False)
     current_repo_name: orm.Mapped[str] = orm.mapped_column(sa.Text, nullable=False, default="")
+    workspace_dir: orm.Mapped[str] = orm.mapped_column(sa.Text, nullable=False, default="")
+    arch_repo_dir: orm.Mapped[str] = orm.mapped_column(sa.Text, nullable=False, default="")
     completed_steps: orm.Mapped[list[str]] = orm.mapped_column(sa.JSON, nullable=False, default=list)
     session_payload: orm.Mapped[dict | None] = orm.mapped_column(sa.JSON, nullable=True)
     pending_interrupt_payload: orm.Mapped[dict | None] = orm.mapped_column(sa.JSON, nullable=True)
