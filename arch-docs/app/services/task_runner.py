@@ -44,6 +44,20 @@ _CLAUDE_AUTH_ERROR_SUBSTRINGS: typing.Final[tuple[str, ...]] = (
     "oauth",
 )
 _CODEX_AUTH_ERROR_EXIT_CODES: typing.Final[frozenset[int]] = frozenset({401, 403})
+_CLAUDE_LIMIT_ERROR_SUBSTRINGS: typing.Final[tuple[str, ...]] = (
+    "usage limit reached",
+    "rate limit exceeded",
+    "too many requests",
+)
+_CODEX_LIMIT_ERROR_EXIT_CODES: typing.Final[frozenset[int]] = frozenset({429})
+_CODEX_LIMIT_ERROR_SUBSTRINGS: typing.Final[tuple[str, ...]] = (
+    "insufficient_quota",
+    "quota exceeded",
+    "rate limit exceeded",
+    "too many requests",
+)
+FAILURE_REASON_AUTH_EXPIRED: typing.Final[str] = "auth_expired"
+FAILURE_REASON_LIMIT_EXHAUSTED: typing.Final[str] = "limit_exhausted"
 
 
 def _build_cmd(cli_task: CliTask) -> list[str]:
@@ -78,6 +92,15 @@ def _is_auth_error(engine_name: str, exit_code: int, stderr_text: str) -> bool:
     return exit_code in _CODEX_AUTH_ERROR_EXIT_CODES or (
         exit_code != 0 and "auth" in stderr_text.lower() and "error" in stderr_text.lower()
     )
+
+
+def _is_limit_error(engine_name: str, exit_code: int, stderr_text: str) -> bool:
+    if exit_code == 0:
+        return False
+    lowered = stderr_text.lower()
+    if engine_name == "claude":
+        return any(phrase in lowered for phrase in _CLAUDE_LIMIT_ERROR_SUBSTRINGS)
+    return exit_code in _CODEX_LIMIT_ERROR_EXIT_CODES or any(phrase in lowered for phrase in _CODEX_LIMIT_ERROR_SUBSTRINGS)
 
 
 def _clamp_timeout_seconds(timeout_seconds: int) -> int:
@@ -147,8 +170,12 @@ async def run_cli_task(cli_task: CliTask, agent_pool: AgentPool) -> None:
 
             if _is_auth_error(cli_task.engine_name, exit_code, stderr_text):
                 cli_task.task_status = TaskStatus.FAILED
-                cli_task.task_error = f"auth_expired: {stderr_text}"
+                cli_task.task_error = f"{FAILURE_REASON_AUTH_EXPIRED}: {stderr_text}"
                 logger.warning("cli_task.auth_error", task_id=cli_task.task_id)
+            elif _is_limit_error(cli_task.engine_name, exit_code, stderr_text):
+                cli_task.task_status = TaskStatus.FAILED
+                cli_task.task_error = f"{FAILURE_REASON_LIMIT_EXHAUSTED}: {stderr_text}"
+                logger.warning("cli_task.limit_error", task_id=cli_task.task_id, engine=cli_task.engine_name)
             elif exit_code != 0:
                 cli_task.task_status = TaskStatus.FAILED
                 cli_task.task_error = stderr_text or f"Exit code: {exit_code}"
@@ -216,7 +243,7 @@ class LlmCliService:
                 engine_name=engine_name,
                 error=cli_task.task_error or "CLI task failed",
             )
-            raise RuntimeError(cli_task.task_error or "CLI task failed")
+            raise LlmTaskExecutionError.from_cli_task(cli_task)
 
         parsed_result = self._parse_result(cli_task.task_result or "")
         self._record_event(
@@ -286,6 +313,33 @@ class LlmCliService:
                 payload=payload,
             )
         )
+
+
+class LlmTaskExecutionError(RuntimeError):
+    def __init__(self, message: str, *, reason: str, engine_name: str, task_id: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.engine_name = engine_name
+        self.task_id = task_id
+
+    @classmethod
+    def from_cli_task(cls, cli_task: CliTask) -> "LlmTaskExecutionError":
+        message = cli_task.task_error or "CLI task failed"
+        reason = cls._detect_reason(message)
+        return cls(
+            message,
+            reason=reason,
+            engine_name=cli_task.engine_name,
+            task_id=cli_task.task_id,
+        )
+
+    @staticmethod
+    def _detect_reason(message: str) -> str:
+        if message.startswith(f"{FAILURE_REASON_AUTH_EXPIRED}:"):
+            return FAILURE_REASON_AUTH_EXPIRED
+        if message.startswith(f"{FAILURE_REASON_LIMIT_EXHAUSTED}:"):
+            return FAILURE_REASON_LIMIT_EXHAUSTED
+        return "task_failed"
 
 
 _llm_cli_service: LlmCliService | None = None

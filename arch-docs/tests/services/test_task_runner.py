@@ -9,9 +9,11 @@ from app.services import task_runner as task_runner_module
 from app.services.agent_pool import AgentPool
 from app.services.task_registry import CliTask, TaskStatus
 from app.services.task_runner import (
+    LlmTaskExecutionError,
     LlmCliService,
     _build_cmd,
     _is_auth_error,
+    _is_limit_error,
     cancel_cli_task,
     run_cli_task,
     set_db_enabled,
@@ -126,6 +128,24 @@ class TestIsAuthError:
         assert _is_auth_error(engine_name, exit_code, stderr_text) is expected
 
 
+class TestIsLimitError:
+    @pytest.mark.parametrize(
+        ("engine_name", "exit_code", "stderr_text", "expected"),
+        [
+            ("claude", 1, "usage limit reached", True),
+            ("claude", 1, "rate limit exceeded", True),
+            ("claude", 1, "authentication required", False),
+            ("codex", 429, "", True),
+            ("codex", 1, "insufficient_quota", True),
+            ("codex", 1, "quota exceeded for this request", True),
+            ("codex", 1, "command not found", False),
+            ("codex", 0, "", False),
+        ],
+    )
+    def test_limit_error_detection(self, engine_name: str, exit_code: int, stderr_text: str, expected: bool) -> None:
+        assert _is_limit_error(engine_name, exit_code, stderr_text) is expected
+
+
 class TestRunCliTask:
     async def test_success_sets_status_and_result(self) -> None:
         cli_task = _make_task(engine_name="claude")
@@ -161,6 +181,17 @@ class TestRunCliTask:
 
         assert cli_task.task_status == TaskStatus.FAILED
         assert "auth_expired" in cli_task.task_error
+
+    async def test_limit_error_sets_limit_exhausted_in_error(self) -> None:
+        cli_task = _make_task(engine_name="codex")
+        pool = _make_pool()
+        mock_proc = _make_mock_process(returncode=1, stdout=b"", stderr=b"insufficient_quota")
+
+        with unittest.mock.patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            await run_cli_task(cli_task, pool)
+
+        assert cli_task.task_status == TaskStatus.FAILED
+        assert "limit_exhausted" in cli_task.task_error
 
     async def test_timeout_sets_failed_status(self) -> None:
         cli_task = _make_task(engine_name="claude", timeout_seconds=1)
@@ -437,3 +468,23 @@ class TestLlmCliService:
             EventType.LLM_TASK_FAILED,
         ]
         assert all(event.payload["llm_call_id"] == cli_task.task_id for event in recorded_events)
+
+    async def test_run_task_raises_typed_error_for_limit_exhaustion(self) -> None:
+        service = LlmCliService(audit_service=unittest.mock.MagicMock())
+        request = LlmTaskRequest(
+            task_kind=LlmTaskKind.STEP_EXECUTION,
+            step_id=StepId.DEFINE_SCOPE,
+            prompt_text="do work",
+            workspace_dir="/workspace",
+            timeout_seconds=30,
+            expected_schema_name="init_arch_v1",
+            session_id="wf-1",
+        )
+        cli_task = _make_task(engine_name="claude")
+        cli_task.task_status = TaskStatus.FAILED
+        cli_task.task_error = "limit_exhausted: usage limit reached"
+
+        with unittest.mock.patch.object(service, "_build_cli_task", return_value=cli_task):
+            with unittest.mock.patch.object(service, "_run_cli_task", new=unittest.mock.AsyncMock()):
+                with pytest.raises(LlmTaskExecutionError, match="limit_exhausted"):
+                    await service.run_task(request, engine_name="claude")
