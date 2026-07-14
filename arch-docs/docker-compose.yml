@@ -33,6 +33,7 @@ services:
     volumes:
       - codex-auth:/home/appuser/.codex
       - claude-auth:/home/appuser/.claude
+      - git-credentials:/home/appuser/.config/git-credentials-store
       - workspace:/workspace
       - ./skills:/app/skills:ro
     depends_on:
@@ -52,8 +53,25 @@ services:
       - arch-docs
     restart: unless-stopped
 
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    ports:
+      - "3000:8080"
+    environment:
+      - OPENAI_API_BASE_URLS=http://arch-docs:8000/v1
+      - OPENAI_API_KEYS=${AUTH_SECRET}
+      - ENABLE_OLLAMA_API=false
+      - WEBUI_AUTH=false
+    volumes:
+      - open-webui-data:/app/backend/data
+    depends_on:
+      - arch-docs
+    restart: unless-stopped
+
 volumes:
   codex-auth:
   claude-auth:
+  git-credentials:
   workspace:
   postgres-data:
+  open-webui-data:

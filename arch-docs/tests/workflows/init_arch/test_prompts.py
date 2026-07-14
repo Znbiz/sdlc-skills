@@ -324,3 +324,33 @@ def test_build_step_prompt_release_notes_lists_artifacts_changed_this_window(tmp
 
     assert "architecture/hld.md" in result
     assert "glossary.md" not in result
+
+
+def test_build_step_prompt_clone_repositories_lists_urls_and_instructs_cloning():
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="MyProduct",
+        analysis_scope="full",
+        repositories=[
+            RepositoryExecution(repository_name="svc-a", repository_url="https://example.com/org/svc-a.git"),
+            RepositoryExecution(repository_name="svc-b"),
+        ],
+    )
+    state = _make_state(session=session, raw_workspace_dir="/workspace/repo/.temp")
+
+    with patch.object(prompts_module, "_load_skill_md", return_value="SKILL"):
+        result = build_step_prompt("clone_repositories", state)
+
+    assert "https://example.com/org/svc-a.git" in result
+    assert "/workspace/repo/.temp/svc-a" in result
+    assert "/workspace/repo/.temp/svc-b" in result
+    assert "URL не указан" in result
+    assert "git clone" in result
+
+
+def test_build_step_prompt_non_clone_step_has_no_repository_list_block():
+    with patch.object(prompts_module, "_load_skill_md", return_value="SKILL"):
+        result = build_step_prompt("define_scope", _make_state())
+
+    assert "# Список репозиториев" in result
+    assert "git clone <url>" not in result

@@ -13,6 +13,7 @@ from app.db.workflow_repo import mark_running_workflows_failed
 from app.mcp_server import mcp_server
 from app.middleware.bearer_auth import BearerAuthMiddleware
 from app.services.agent_pool import init_agent_pool
+from app.services.git_credentials import ensure_git_credentials_store
 from app.services.task_registry import TaskStatus, get_registry
 from app.services.task_runner import cancel_cli_task, set_db_enabled
 from app.settings import GatewaySettings
@@ -44,6 +45,11 @@ async def lifespan(_app: fastapi.FastAPI) -> typing.AsyncGenerator[None, None]:
         await _init_db(settings.database_url)
     except Exception as exc:  # noqa: BLE001
         logger.warning("ai_cli_gateway.db_unavailable", error=str(exc))
+
+    try:
+        await ensure_git_credentials_store()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ai_cli_gateway.git_credentials_unavailable", error=str(exc))
 
     logger.info("ai_cli_gateway.started", agent_pool_size=settings.agent_pool_size)
     yield

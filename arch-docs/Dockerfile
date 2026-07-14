@@ -2,7 +2,7 @@ FROM node:22-bookworm-slim
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        git ca-certificates ripgrep curl gosu \
+        git ca-certificates ripgrep curl gosu libpq5 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g @openai/codex @anthropic-ai/claude-code
@@ -23,6 +23,8 @@ RUN usermod -l appuser node \
     && usermod -d /home/appuser -m appuser
 
 COPY --chown=appuser:appuser app/ /app/app/
+COPY --chown=appuser:appuser alembic.ini ./
+COPY --chown=appuser:appuser migrations/ /app/migrations/
 
 RUN mkdir -p /workspace && chown appuser:appuser /workspace
 

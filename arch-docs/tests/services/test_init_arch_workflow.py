@@ -132,7 +132,9 @@ async def test_confirm_init_arch_temporal_window_rejects_unsupported_action():
     )
     workflow_module.get_workflow_registry()["wf-bad-action"] = record
 
-    with pytest.raises(workflow_module.WorkflowValidationError, match="Unsupported temporal window confirmation action"):
+    with pytest.raises(
+        workflow_module.WorkflowValidationError, match="Unsupported temporal window confirmation action"
+    ):
         await workflow_module.confirm_init_arch_temporal_window("wf-bad-action", action="not_a_real_action")
 
 
@@ -405,6 +407,44 @@ async def test_start_init_arch_workflow_registers_record_and_schedules_task(monk
     assert record.conversation_id == "conv-start"
     assert [repo.repository_name for repo in record.session.repositories] == ["repo-a", "repo-b"]
     assert created_tasks
+    for task in created_tasks:
+        task.cancel()
+
+
+async def test_start_init_arch_workflow_parses_urls_into_repository_name_and_url(monkeypatch):
+    created_tasks = []
+    real_create_task = asyncio.create_task
+
+    def _fake_create_task(coro):
+        task = real_create_task(coro)
+        created_tasks.append(task)
+        return task
+
+    monkeypatch.setattr("app.services.init_arch_workflow.persist_workflow_record", AsyncMock())
+    monkeypatch.setattr("app.services.init_arch_workflow.asyncio.create_task", _fake_create_task)
+    monkeypatch.setattr("app.services.init_arch_workflow.run_workflow", AsyncMock())
+
+    record = await workflow_module.start_init_arch_workflow(
+        product_name="svc",
+        analysis_scope="full",
+        workspace_dir="/workspace",
+        arch_repo_dir="/workspace/arch",
+        repo_list=[
+            "https://github.com/org/svc-a.git",
+            "git@github.com:org/svc-b.git",
+            "svc-c",
+        ],
+        engine_name="claude",
+        timeout_seconds=30,
+        conversation_id="conv-start-urls",
+    )
+
+    repos = {repo.repository_name: repo.repository_url for repo in record.session.repositories}
+    assert repos == {
+        "svc-a": "https://github.com/org/svc-a.git",
+        "svc-b": "git@github.com:org/svc-b.git",
+        "svc-c": "",
+    }
     for task in created_tasks:
         task.cancel()
 

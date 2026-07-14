@@ -13,6 +13,7 @@ _NOT_APPLICABLE_RELEASE_NOTES_BLOCK: typing.Final[str] = "(не применим
 
 _WORKFLOW_ASSET_NAMESPACE = "init_arch"
 _SKILL_MD_RELATIVE_PATH = "SKILL.md"
+_REPOSITORY_LIST_STEPS: typing.Final[frozenset[str]] = frozenset({"prepare_temp_workspace", "clone_repositories"})
 
 STEP_TO_REFERENCE: typing.Final[dict[str, str]] = {
     "define_scope": "",
@@ -185,6 +186,21 @@ def _build_release_notes_context_block(state: InitArchState) -> str:
     return "\n".join(lines)
 
 
+def _build_repository_list_block(state: InitArchState) -> str:
+    raw_workspace_dir = state.get("raw_workspace_dir", f"{state['workspace_dir']}/.temp")
+    lines: list[str] = []
+    for repository in state["session"].repositories:
+        target_path = f"{raw_workspace_dir}/{repository.repository_name}"
+        if repository.repository_url:
+            lines.append(f"- {repository.repository_name}: clone `{repository.repository_url}` -> `{target_path}`")
+        else:
+            lines.append(
+                f"- {repository.repository_name}: URL не указан, "
+                f"репозиторий должен уже присутствовать локально по пути `{target_path}`"
+            )
+    return "\n".join(lines) if lines else "(список репозиториев пуст)"
+
+
 def build_step_prompt(step_id: StepId | str, state: InitArchState, checklist_item_id: str = "") -> str:
     step_value = step_id.value if isinstance(step_id, StepId) else step_id
     skill_md = _load_skill_md()
@@ -208,6 +224,13 @@ def build_step_prompt(step_id: StepId | str, state: InitArchState, checklist_ite
         if step_value == _RELEASE_NOTES_STEP_VALUE
         else _NOT_APPLICABLE_RELEASE_NOTES_BLOCK
     )
+    clone_instruction = (
+        "Для каждого репозитория из раздела «Список репозиториев» с указанным URL выполни "
+        "`git clone <url> <целевой путь>`. Если URL не указан, репозиторий уже должен существовать "
+        "локально по целевому пути — просто убедись, что он там есть.\n"
+        if step_value == "clone_repositories"
+        else ""
+    )
     open_questions = (
         "\n".join(
             f"- {question.question_id} [{question.status}]: {question.question_text}"
@@ -216,7 +239,12 @@ def build_step_prompt(step_id: StepId | str, state: InitArchState, checklist_ite
         )
         or "нет"
     )
-    raw_workspace_dir = state.get("raw_workspace_dir", f'{state["workspace_dir"]}/.temp')
+    raw_workspace_dir = state.get("raw_workspace_dir", f"{state['workspace_dir']}/.temp")
+    repository_list_block = (
+        _build_repository_list_block(state)
+        if step_value in _REPOSITORY_LIST_STEPS
+        else _NOT_APPLICABLE_RELEASE_NOTES_BLOCK
+    )
 
     return f"""# Контекст навыка
 
@@ -236,6 +264,12 @@ Raw layer: {raw_workspace_dir}
 Завершённые шаги: {completed}
 Открытые вопросы:
 {open_questions}
+
+---
+
+# Список репозиториев
+
+{repository_list_block}
 
 ---
 
@@ -260,7 +294,7 @@ Raw layer: {raw_workspace_dir}
 # Инструкции
 
 Выполни шаг `{step_value}` строго по reference-чеклисту выше.
-Сначала изучи Temporal delta текущего окна выше — commit range, commit log и diff stat —
+{clone_instruction}Сначала изучи Temporal delta текущего окна выше — commit range, commit log и diff stat —
 и только затем при необходимости читай итоговое состояние файлов в raw checkout-слое.
 Работай только с файлами внутри {state["workspace_dir"]}.
 Raw checkout-слой расположен в {raw_workspace_dir}; используй его только для чтения/checkout исходников.

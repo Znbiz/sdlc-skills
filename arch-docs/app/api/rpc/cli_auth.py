@@ -45,6 +45,10 @@ class InitAuthResponse(pydantic.BaseModel, frozen=True):
     expires_at: str
 
 
+class SubmitAuthCodeRequest(pydantic.BaseModel, frozen=True):
+    code: str
+
+
 async def _collect_auth_output(reader: asyncio.StreamReader, session: CliAuthSession) -> None:
     while True:
         raw = await reader.readline()
@@ -76,6 +80,7 @@ async def _run_auth_session(session: CliAuthSession) -> None:
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
+            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env={**os.environ},
@@ -114,6 +119,36 @@ async def init_cli_auth(request: InitAuthRequest) -> InitAuthResponse:
     bg_task.add_done_callback(_background_tasks.discard)
 
     logger.info("cli_auth.init", auth_session_id=session.auth_session_id, engine=request.cli_engine)
+
+    return InitAuthResponse(
+        auth_session_id=session.auth_session_id,
+        cli_engine=session.cli_engine,
+        auth_flow_status=session.auth_flow_status,
+        instructions=session.instructions,
+        expires_at=session.expires_at.isoformat(),
+    )
+
+
+@router.post("/cli-auth/auth-sessions/{auth_session_id}/submit-code/", status_code=status.HTTP_202_ACCEPTED)
+async def submit_auth_code(auth_session_id: str, request: SubmitAuthCodeRequest) -> InitAuthResponse:
+    registry = get_auth_session_registry()
+    session = registry.get(auth_session_id)
+    if session is None:
+        raise fastapi.HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Auth session not found")
+
+    if session.auth_flow_status != AuthFlowStatus.PENDING:
+        msg = f"Auth session is not pending (status={session.auth_flow_status})"
+        raise fastapi.HTTPException(status_code=status.HTTP_409_CONFLICT, detail=msg)
+
+    proc = session.subprocess_handle
+    if proc is None or proc.stdin is None or proc.stdin.is_closing():
+        msg = "Auth session subprocess has no writable stdin"
+        raise fastapi.HTTPException(status_code=status.HTTP_409_CONFLICT, detail=msg)
+
+    proc.stdin.write(f"{request.code}\n".encode())
+    await proc.stdin.drain()
+
+    logger.info("cli_auth.session.code_submitted", auth_session_id=auth_session_id)
 
     return InitAuthResponse(
         auth_session_id=session.auth_session_id,

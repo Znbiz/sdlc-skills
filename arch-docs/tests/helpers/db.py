@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
 import sys
@@ -8,9 +9,12 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 import sqlalchemy as sa
+import sqlalchemy.exc
 import sqlalchemy.ext.asyncio as async_sa
 
 from app.db.models import Base
+
+_TRUNCATE_DEADLOCK_RETRIES: typing.Final[int] = 3
 
 REPO_ROOT: typing.Final[Path] = Path(__file__).resolve().parents[2]
 DEFAULT_TEST_DATABASE_NAME: typing.Final[str] = "arch_docs_test"

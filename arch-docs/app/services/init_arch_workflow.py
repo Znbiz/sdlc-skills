@@ -814,6 +814,15 @@ def _resolve_init_arch_paths(
     return str(workspace_path), str(arch_repo_path), str(raw_workspace_path)
 
 
+def _parse_repo_list_entry(entry: str) -> RepositoryExecution:
+    stripped = entry.strip()
+    if "://" in stripped or stripped.startswith("git@"):
+        repository_name = stripped.rstrip("/").rsplit("/", 1)[-1]
+        repository_name = repository_name.removesuffix(".git")
+        return RepositoryExecution(repository_name=repository_name, repository_url=stripped)
+    return RepositoryExecution(repository_name=stripped)
+
+
 async def start_init_arch_workflow(
     *,
     product_name: str,
@@ -835,7 +844,7 @@ async def start_init_arch_workflow(
         session_id=workflow_id,
         product_name=product_name,
         analysis_scope=analysis_scope,
-        repositories=[RepositoryExecution(repository_name=repo_name) for repo_name in repo_list],
+        repositories=[_parse_repo_list_entry(repo_entry) for repo_entry in repo_list],
     )
 
     record = WorkflowRecord(
