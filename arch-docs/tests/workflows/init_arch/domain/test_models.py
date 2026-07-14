@@ -1,10 +1,10 @@
 import datetime as dt
 
 from app.workflows.init_arch.domain import (
-    ArtifactRecord,
     STEP_DEFINITION_BY_ID,
     STEP_DEFINITIONS,
     AnalysisTargetCommitStatus,
+    ArtifactRecord,
     AuditActor,
     CommitRangeStatus,
     DomainStrategy,

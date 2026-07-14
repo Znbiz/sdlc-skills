@@ -9,8 +9,8 @@ from app.services import task_runner as task_runner_module
 from app.services.agent_pool import AgentPool
 from app.services.task_registry import CliTask, TaskStatus
 from app.services.task_runner import (
-    LlmTaskExecutionError,
     LlmCliService,
+    LlmTaskExecutionError,
     _build_cmd,
     _is_auth_error,
     _is_limit_error,
