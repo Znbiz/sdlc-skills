@@ -4,6 +4,8 @@ import os
 import pathlib
 import typing
 
+from app.services.status_taxonomy import ReasonCode
+
 _CREDENTIALS_DIR: typing.Final = pathlib.Path("~/.config/git-credentials-store").expanduser()
 _CREDENTIALS_FILE: typing.Final = _CREDENTIALS_DIR / "credentials"
 _GIT_CONFIG_GLOBAL_PATH: typing.Final = _CREDENTIALS_DIR / "gitconfig"
@@ -28,6 +30,7 @@ class GitAccessStatus(enum.StrEnum):
 class GitAccessResult(typing.TypedDict):
     accessible: bool
     access_status: str
+    reason_code: str | None
     message: str
 
 
@@ -122,6 +125,19 @@ async def list_configured_hosts() -> list[str]:
     return [_host_of_credentials_line(line) for line in _CREDENTIALS_FILE.read_text().splitlines() if line]
 
 
+async def delete_git_token(host: str) -> bool:
+    if not _CREDENTIALS_FILE.exists():
+        return False
+    existing_lines = _CREDENTIALS_FILE.read_text().splitlines()
+    kept_lines = [line for line in existing_lines if line and _host_of_credentials_line(line) != host]
+    if len(kept_lines) == len(existing_lines):
+        return False
+    content = "\n".join(kept_lines)
+    _CREDENTIALS_FILE.write_text(f"{content}\n" if content else "")
+    _CREDENTIALS_FILE.chmod(0o600)
+    return True
+
+
 def _classify_git_access_failure(stderr_text: str) -> GitAccessStatus:
     lowered = stderr_text.lower()
     if "timeout" in lowered:
@@ -131,21 +147,45 @@ def _classify_git_access_failure(stderr_text: str) -> GitAccessStatus:
     return GitAccessStatus.ERROR
 
 
+_ACCESS_STATUS_REASON_CODES: typing.Final[dict[GitAccessStatus, ReasonCode]] = {
+    GitAccessStatus.AUTH_FAILED: ReasonCode.GIT_ACCESS_AUTH_FAILED,
+    GitAccessStatus.TIMEOUT: ReasonCode.GIT_ACCESS_TIMEOUT,
+    GitAccessStatus.ERROR: ReasonCode.GIT_ACCESS_ERROR,
+}
+
+
 async def check_git_access(repository_url: str) -> GitAccessResult:
+    if not await list_configured_hosts():
+        return GitAccessResult(
+            accessible=False,
+            access_status=GitAccessStatus.AUTH_FAILED,
+            reason_code=ReasonCode.GIT_PAT_MISSING,
+            message="No Git personal access token is configured",
+        )
+
     await ensure_git_credentials_store()
 
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
-    exit_code, stderr_text = await _run_git_access_check(
-        ["git", "ls-remote", "--exit-code", repository_url, "HEAD"],
-        env=env,
-    )
+    try:
+        exit_code, stderr_text = await _run_git_access_check(
+            ["git", "ls-remote", "--exit-code", repository_url, "HEAD"],
+            env=env,
+        )
+    except FileNotFoundError:
+        return GitAccessResult(
+            accessible=False,
+            access_status=GitAccessStatus.ERROR,
+            reason_code=ReasonCode.GIT_BINARY_MISSING,
+            message="git binary is not available in this container",
+        )
 
     if exit_code == 0:
-        return GitAccessResult(accessible=True, access_status=GitAccessStatus.OK, message="ok")
+        return GitAccessResult(accessible=True, access_status=GitAccessStatus.OK, reason_code=None, message="ok")
 
     access_status = _classify_git_access_failure(stderr_text)
     return GitAccessResult(
         accessible=False,
         access_status=access_status,
+        reason_code=_ACCESS_STATUS_REASON_CODES[access_status],
         message=stderr_text.strip() or f"git ls-remote exited with code {exit_code}",
     )
