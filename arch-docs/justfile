@@ -1,7 +1,15 @@
 set dotenv-load
 
+# Поднять test Postgres контейнер тестового контура
+test-db-up:
+    docker compose -f docker-compose.test.yml up -d --wait
+
+# Остановить и удалить test Postgres контейнер
+test-db-down:
+    docker compose -f docker-compose.test.yml down -v
+
 # Полная проверка: линтер + типы + тесты с покрытием
-agent-check:
+agent-check: test-db-up
     uv run --extra dev ruff check .
     uv run --extra dev ruff format --check .
     uv run --extra dev python -m pytest --cov=app --cov-fail-under=74 -x
@@ -20,8 +28,8 @@ agent-fix-changed:
         uv run --extra dev ruff format $changed
     fi
 
-# Запуск тестов
-test *args:
+# Запуск тестов (требует test Postgres контейнер)
+test *args: test-db-up
     uv run --extra dev python -m pytest {{ args }}
 
 # Запуск dev-сервера локально
