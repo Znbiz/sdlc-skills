@@ -61,7 +61,10 @@ def _node_metadata(path: pathlib.Path, *, root: pathlib.Path) -> dict[str, typin
 def _build_node(path: pathlib.Path, *, root: pathlib.Path) -> dict[str, typing.Any]:
     metadata = _node_metadata(path, root=root)
     if path.is_dir():
-        children = sorted(path.iterdir(), key=lambda child: (child.is_file(), child.name))
+        children = sorted(
+            (child for child in path.iterdir() if not child.is_symlink()),
+            key=lambda child: (child.is_file(), child.name),
+        )
         return {
             **metadata,
             "node_type": "directory",
@@ -99,4 +102,9 @@ def read_docs_file(arch_repo_root: str, relative_path: str) -> dict[str, typing.
     if media_kind == MediaKind.UNSUPPORTED:
         return {**base, "content": None, "encoding": None}
 
-    return {**base, "content": resolved.read_text(encoding="utf-8"), "encoding": "utf-8"}
+    try:
+        content = resolved.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return {**base, "media_kind": MediaKind.UNSUPPORTED.value, "content": None, "encoding": None}
+
+    return {**base, "content": content, "encoding": "utf-8"}

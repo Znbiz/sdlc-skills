@@ -79,6 +79,24 @@ class TestBuildDocsTree:
         assert architecture["node_type"] == "directory"
         assert {c["name"] for c in architecture["children"]} == {"hld.md", "tech-stack.yaml"}
 
+    def test_excludes_symlink_pointing_outside_root(self, arch_repo, tmp_path):
+        outside_dir = tmp_path / "escape_target"
+        outside_dir.mkdir()
+        (arch_repo / "escape_link").symlink_to(outside_dir)
+
+        tree = build_docs_tree(str(arch_repo))
+
+        names = {child["name"] for child in tree["children"]}
+        assert "escape_link" not in names
+
+    def test_excludes_symlink_pointing_to_file_inside_root(self, arch_repo):
+        (arch_repo / "linked.md").symlink_to(arch_repo / "README.md")
+
+        tree = build_docs_tree(str(arch_repo))
+
+        names = {child["name"] for child in tree["children"]}
+        assert "linked.md" not in names
+
 
 class TestReadDocsFile:
     def test_reads_markdown_file_content(self, arch_repo):
@@ -91,6 +109,15 @@ class TestReadDocsFile:
 
     def test_returns_metadata_only_for_unsupported_binary(self, arch_repo):
         result = read_docs_file(str(arch_repo), "logo.png")
+
+        assert result["media_kind"] == "unsupported"
+        assert result["content"] is None
+        assert result["encoding"] is None
+
+    def test_degrades_to_unsupported_on_unicode_decode_error(self, arch_repo):
+        (arch_repo / "binary.md").write_bytes(b"\xff\xfe\x00\x01")
+
+        result = read_docs_file(str(arch_repo), "binary.md")
 
         assert result["media_kind"] == "unsupported"
         assert result["content"] is None
