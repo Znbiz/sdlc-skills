@@ -1,0 +1,111 @@
+# Верхнеуровневый reverse-proxy: SPA (arch-docs-front) на "/", API/SSE (arch-docs) на "/api/".
+# ${AUTH_SECRET} инжектится сюда через envsubst при старте контейнера, поэтому браузер
+# никогда не видит Bearer-токен backend'а — SPA не требует собственного runtime-секрета.
+
+limit_req_zone $binary_remote_addr zone=api_limit:10m rate=30r/m;
+limit_req_zone $binary_remote_addr zone=execute_limit:10m rate=10r/m;
+
+upstream arch_docs {
+    server arch-docs:8000;
+}
+
+upstream arch_docs_front {
+    server arch-docs-front:80;
+}
+
+server {
+    listen 80;
+    server_name _;
+
+    client_max_body_size 10m;
+
+    # Строгий лимит на execute и arch-op эндпоинты
+    location ~ ^/api/rpc/(execute|update-arch|query-arch)/ {
+        limit_req zone=execute_limit burst=5 nodelay;
+        limit_req_status 429;
+
+        proxy_pass http://arch_docs;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header Authorization "Bearer ${AUTH_SECRET}";
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+    }
+
+    # SSE эндпоинты — длинные соединения, без буферизации
+    location ~ /stream/ {
+        limit_req zone=api_limit burst=10 nodelay;
+        limit_req_status 429;
+
+        proxy_pass http://arch_docs;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header Authorization "Bearer ${AUTH_SECRET}";
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 3600s;
+        chunked_transfer_encoding on;
+    }
+
+    # MCP SSE транспорт
+    location /api/mcp/ {
+        proxy_pass http://arch_docs;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header Authorization "Bearer ${AUTH_SECRET}";
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 3600s;
+    }
+
+    # Остальные /api/* эндпоинты
+    location /api/ {
+        limit_req zone=api_limit burst=20 nodelay;
+        limit_req_status 429;
+
+        proxy_pass http://arch_docs;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header Authorization "Bearer ${AUTH_SECRET}";
+        proxy_read_timeout 30s;
+    }
+
+    # OpenAI-compatible facade (/v1/*, см. docs/backend/workflows/openai-facade.md).
+    # Ответы могут быть SSE (stream=true) без "/stream/" в пути, поэтому буферизация
+    # выключена так же, как для location ~ /stream/ выше.
+    location /v1/ {
+        limit_req zone=api_limit burst=20 nodelay;
+        limit_req_status 429;
+
+        proxy_pass http://arch_docs;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header Authorization "Bearer ${AUTH_SECRET}";
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 600s;
+    }
+
+    # Backend OpenAPI/Swagger — открытые пути (см. BearerAuthMiddleware._OPEN_PATHS)
+    location ~ ^/(docs|redoc|openapi\.json)$ {
+        proxy_pass http://arch_docs;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    # SPA и статические ассеты frontend
+    location / {
+        proxy_pass http://arch_docs_front;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}

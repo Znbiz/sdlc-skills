@@ -13,7 +13,7 @@ Source of truth остаётся backend runtime:
 
 OpenAI facade только адаптирует запрос/ответ и потоковые события.
 
-Реализация: [openai.py](../../app/api/openai.py), [init_arch_workflow.py](../../app/services/init_arch_workflow.py)
+Реализация: [openai.py](../../back/app/api/openai.py), [init_arch_workflow.py](../../back/app/services/init_arch_workflow.py)
 
 ## Endpoints
 
@@ -59,7 +59,7 @@ Facade маппит внутренние статусы:
 
 ### `POST /v1/chat/completions`
 
-Query-oriented surface для UI-клиентов вроде LibreChat / OpenWebUI.
+Query-oriented surface для OpenAI-compatible UI-клиентов вроде LibreChat.
 
 Текущий срез intentionally ограничен:
 

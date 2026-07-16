@@ -15,7 +15,7 @@ services:
     restart: unless-stopped
 
   arch-docs:
-    build: .
+    build: ./back
     expose:
       - "8000"
     environment:
@@ -35,7 +35,7 @@ services:
       - claude-auth:/home/appuser/.claude
       - git-credentials:/home/appuser/.config/git-credentials-store
       - workspace:/workspace
-      - ./skills:/app/skills:ro
+      - ./back/skills:/app/skills:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -43,29 +43,26 @@ services:
     command: >
       uv run --project /app granian --interface asgi app.main:app --host 0.0.0.0 --port 8000
 
+  arch-docs-front:
+    build:
+      context: ./front
+      args:
+        VITE_API_BASE_PATH: /api
+    expose:
+      - "80"
+    restart: unless-stopped
+
   nginx:
     image: nginx:alpine
     ports:
       - "80:80"
-    volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
-    depends_on:
-      - arch-docs
-    restart: unless-stopped
-
-  open-webui:
-    image: ghcr.io/open-webui/open-webui:main
-    ports:
-      - "3000:8080"
     environment:
-      - OPENAI_API_BASE_URLS=http://arch-docs:8000/v1
-      - OPENAI_API_KEYS=${AUTH_SECRET}
-      - ENABLE_OLLAMA_API=false
-      - WEBUI_AUTH=false
+      - AUTH_SECRET=${AUTH_SECRET}
     volumes:
-      - open-webui-data:/app/backend/data
+      - ./nginx-templates:/etc/nginx/templates:ro
     depends_on:
       - arch-docs
+      - arch-docs-front
     restart: unless-stopped
 
 volumes:
@@ -74,4 +71,3 @@ volumes:
   git-credentials:
   workspace:
   postgres-data:
-  open-webui-data:

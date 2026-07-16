@@ -19,7 +19,7 @@
 - `POST /api/rest/responses/{response_id}/actions/` проксирует `cancel`, `resume` и `answer_question` в тот же workflow runtime;
 - `workflow_type` уже покрывает `init_arch`, `update_arch` и `query`.
 
-Реализация: [rest/conversations.py](../../app/api/rest/conversations.py), [init_arch_workflow.py](../../app/services/init_arch_workflow.py)
+Реализация: [rest/conversations.py](../../back/app/api/rest/conversations.py), [init_arch_workflow.py](../../back/app/services/init_arch_workflow.py)
 
 ### OpenAI-Compatible Facade
 
@@ -30,13 +30,13 @@
 - `POST /v1/chat/completions` сейчас покрывает query-only сценарий для OpenAI-compatible chat clients;
 - streaming facade не меняет source of truth: conversation timeline и persisted execution dialog остаются внутренними.
 
-Реализация: [openai.py](../../app/api/openai.py)
+Реализация: [openai.py](../../back/app/api/openai.py)
 
 ### MCP
 
 `init_arch` теперь стартует тот же backend workflow runtime, что и HTTP transports, и возвращает workflow envelope (`workflow_id`, `workflow_status`, `current_step_id`, `created_at`), а не stdout legacy CLI prompt-path.
 
-Реализация: [mcp_server.py](../../app/mcp_server.py)
+Реализация: [mcp_server.py](../../back/app/mcp_server.py)
 
 ## State Machine
 
@@ -62,8 +62,8 @@ finalize_progress        -> зафиксировать завершение sess
 done                     -> terminal state
 ```
 
-Источник шагов: [steps.py](../../app/workflows/init_arch/domain/steps.py)  
-Сборка графа: [graph.py](../../app/workflows/init_arch/graph.py)
+Источник шагов: [steps.py](../../back/app/workflows/init_arch/domain/steps.py)  
+Сборка графа: [graph.py](../../back/app/workflows/init_arch/graph.py)
 
 ## Sequence Diagram
 
@@ -299,7 +299,7 @@ sequenceDiagram
 - response actions резюмируют и отменяют тот же backend runtime, не создавая отдельный workflow-specific transport;
 - MCP `init_arch` вызывает тот же service-layer и больше не обходит backend workflow через legacy prompt-path.
 
-Код: [init_arch_workflow.py](../../app/services/init_arch_workflow.py), [rest/conversations.py](../../app/api/rest/conversations.py), [mcp_server.py](../../app/mcp_server.py)
+Код: [init_arch_workflow.py](../../back/app/services/init_arch_workflow.py), [rest/conversations.py](../../back/app/api/rest/conversations.py), [mcp_server.py](../../back/app/mcp_server.py)
 
 ### Workflow Graph
 
@@ -308,7 +308,7 @@ sequenceDiagram
 - отправляет workflow в `handle_error` после исчерпания retry;
 - узел `confirm_next_temporal_window` — единственное исключение из линейного маршрута: маршрутизируется кастомным `_route_after_confirm_next_temporal_window()`, который либо зацикливает граф на `refresh_main_branches` для следующего temporal-окна, либо продолжает на `finalize_progress`.
 
-Код: [graph.py](../../app/workflows/init_arch/graph.py)
+Код: [graph.py](../../back/app/workflows/init_arch/graph.py)
 
 ### Nodes
 
@@ -316,7 +316,7 @@ sequenceDiagram
 - вызывают guard-service, historical service и LLM worker;
 - переводят service results обратно в `InitArchState`.
 
-Код: [nodes.py](../../app/workflows/init_arch/nodes.py)
+Код: [nodes.py](../../back/app/workflows/init_arch/nodes.py)
 
 ### Guard Service
 
@@ -324,7 +324,7 @@ sequenceDiagram
 - делает `advance_step`, repo lifecycle, finalize, validate;
 - пишет audit-события guard-уровня.
 
-Код: [guard.py](../../app/workflows/init_arch/guard.py)
+Код: [guard.py](../../back/app/workflows/init_arch/guard.py)
 
 ### Historical Prep Service
 
@@ -380,7 +380,7 @@ sequenceDiagram
 - `./skills:/app/skills:ro` — read-only skill bundle, не смешанный с runtime workspace;
 - PostgreSQL хранит execution dialog и task/workflow metadata независимо от volumes с checkout-данными.
 
-Код: [historical.py](../../app/workflows/init_arch/historical.py)
+Код: [historical.py](../../back/app/workflows/init_arch/historical.py)
 
 ### Knowledge Artifact Service
 
@@ -392,7 +392,7 @@ sequenceDiagram
 - запускает knowledge lint и публикует `artifact_written` audit events;
 - обновляет `session.artifacts` как typed artifact registry.
 
-Код: [knowledge.py](../../app/workflows/init_arch/knowledge.py), [knowledge_runtime.py](../../app/workflows/init_arch/knowledge_runtime.py)
+Код: [knowledge.py](../../back/app/workflows/init_arch/knowledge.py), [knowledge_runtime.py](../../back/app/workflows/init_arch/knowledge_runtime.py)
 
 ### Domain Layer
 
@@ -400,7 +400,7 @@ sequenceDiagram
 - проверяет required previous steps;
 - валидирует `historical_prep_is_complete()` перед дальнейшим анализом.
 
-Код: [models.py](../../app/workflows/init_arch/domain/models.py), [operations.py](../../app/workflows/init_arch/domain/operations.py)
+Код: [models.py](../../back/app/workflows/init_arch/domain/models.py), [operations.py](../../back/app/workflows/init_arch/domain/operations.py)
 
 ### Audit Layer
 
@@ -408,7 +408,7 @@ sequenceDiagram
 - асинхронно дублирует audit events в persisted `conversation_items`;
 - используется `nodes`, `guard` и worker services.
 
-Код: [audit.py](../../app/workflows/init_arch/audit.py)
+Код: [audit.py](../../back/app/workflows/init_arch/audit.py)
 
 ## Persisted Runtime Slice
 
@@ -680,7 +680,7 @@ Transport-контракт для этого подтверждения полн
 - для всех репозиториев выставлен `analysis_target_date`;
 - все target commit statuses входят в `{resolved, checked_out, missing}`.
 
-Код: [operations.py](../../app/workflows/init_arch/domain/operations.py)
+Код: [operations.py](../../back/app/workflows/init_arch/domain/operations.py)
 
 ### Target Gate For Diff-Aware Windows
 
@@ -934,6 +934,6 @@ Transport-level terminal states:
 
 ## Связанные Документы
 
-- [init-repo-arch-skill-gap-analysis.md](../init-repo-arch-skill-gap-analysis.md)
-- [init-repo-arch-skill-implementation-plan.md](../init-repo-arch-skill-implementation-plan.md)
-- [ТЗ — Arch Docs Service.md](../ТЗ%20—%20Arch%20Docs%20Service.md)
+- [init-repo-arch-skill-gap-analysis.md](../spec/init-repo-arch-skill-gap-analysis.md)
+- [init-repo-arch-skill-implementation-plan.md](../spec/init-repo-arch-skill-implementation-plan.md)
+- [ТЗ — Arch Docs Service.md](../spec/ТЗ%20—%20Arch%20Docs%20Service.md)

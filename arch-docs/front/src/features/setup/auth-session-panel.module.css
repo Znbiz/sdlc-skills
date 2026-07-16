@@ -1,0 +1,54 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.75rem;
+  border-radius: 8px;
+  background: var(--color-surface-muted);
+}
+
+.statusRow {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.degraded {
+  color: var(--color-warning-text);
+  font-size: 0.85rem;
+}
+
+.instructions {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.log {
+  margin: 0;
+  max-height: 8rem;
+  overflow-y: auto;
+  font-size: 0.75rem;
+  background: var(--color-surface);
+  padding: 0.5rem;
+  border-radius: 6px;
+  white-space: pre-wrap;
+}
+
+.codeForm {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.codeRow {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.codeRow input {
+  flex: 1;
+  padding: 0.4rem 0.6rem;
+  border-radius: 6px;
+  border: 1px solid var(--color-border);
+  font: inherit;
+}

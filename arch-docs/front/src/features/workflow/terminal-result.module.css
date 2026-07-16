@@ -1,0 +1,14 @@
+.docsLink {
+  display: inline-block;
+  align-self: flex-start;
+  padding: 0.45rem 0.9rem;
+  border-radius: 8px;
+  background: var(--color-accent);
+  color: var(--color-accent-contrast);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.docsLink:hover {
+  opacity: 0.9;
+}

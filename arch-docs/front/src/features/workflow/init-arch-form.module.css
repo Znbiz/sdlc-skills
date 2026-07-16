@@ -1,0 +1,74 @@
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.form > label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+.form input,
+.form select {
+  font: inherit;
+  padding: 0.4rem 0.6rem;
+  border-radius: 6px;
+  border: 1px solid var(--color-border);
+  color: var(--color-text);
+  background: var(--color-surface);
+}
+
+.repoList {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 0.6rem;
+}
+
+.repoList legend {
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+  padding: 0 0.3rem;
+}
+
+.repoRow {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.repoRow input {
+  flex: 1;
+}
+
+.advanced {
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 0.6rem;
+}
+
+.advanced summary {
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+.advanced label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+  margin-top: 0.6rem;
+}
+
+.validationError {
+  margin: 0;
+  color: var(--color-danger-text);
+  font-size: 0.85rem;
+}

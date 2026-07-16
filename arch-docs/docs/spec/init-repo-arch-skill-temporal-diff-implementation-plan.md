@@ -6,7 +6,7 @@
 
 **Проблема текущей реализации:** historical prep уже умеет выбрать `snapshot date`, найти commit не позже даты и перевести `.temp/<repo>` на этот commit, но последующий анализ читает в основном только содержимое checkout-состояния. Это даёт корректный срез состояния, но теряет важный сигнал: **что именно изменилось за период**, какие файлы/контракты/интеграции появились, удалились или были переименованы, и какие артефакты нужно пересмотреть в первую очередь.
 
-**Базовый ориентир:** текущие historical-этапы из [init-repo-arch-skill-implementation-plan.md](./init-repo-arch-skill-implementation-plan.md) и workflow-документация [workflows/init.md](./workflows/init.md), но с новой обязательной доменной гарантией: temporal analysis становится **range-aware**, а не только snapshot-aware.
+**Базовый ориентир:** текущие historical-этапы из [init-repo-arch-skill-implementation-plan.md](./init-repo-arch-skill-implementation-plan.md) и workflow-документация [workflows/init.md](../workflows/init.md), но с новой обязательной доменной гарантией: temporal analysis становится **range-aware**, а не только snapshot-aware.
 
 ## 2. Текущее состояние проекта
 

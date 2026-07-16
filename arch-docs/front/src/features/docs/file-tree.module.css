@@ -1,0 +1,29 @@
+.tree,
+.subtree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.nodeButton {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  font: inherit;
+  padding: 0.25rem 0.4rem;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--color-text);
+}
+
+.nodeButton:hover {
+  background: var(--color-surface-muted);
+}
+
+.active {
+  background: var(--color-info-bg);
+  color: var(--color-info-text);
+  font-weight: 600;
+}
