@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 
+import structlog.testing
 import yaml
 
 from app.workflows.init_arch import snapshot as snapshot_module
@@ -66,3 +67,47 @@ def test_dump_then_parse_snapshot_yaml_round_trips():
     restored = snapshot_module.parse_snapshot_yaml(yaml_text)
 
     assert restored == original
+
+
+def test_write_snapshot_file_writes_yaml_to_progress_file_path(tmp_path):
+    progress_file = tmp_path / "arch-doc" / "repo-initialization-progress.yaml"
+    state = _make_state()
+    state["progress_file_path"] = str(progress_file)
+
+    snapshot_module.write_snapshot_file(state)
+
+    assert progress_file.exists()
+    restored = snapshot_module.parse_snapshot_yaml(progress_file.read_text(encoding="utf-8"))
+    assert restored.workflow_id == "wf-1"
+
+
+def test_write_snapshot_file_overwrites_previous_content(tmp_path):
+    progress_file = tmp_path / "progress.yaml"
+    state = _make_state()
+    state["progress_file_path"] = str(progress_file)
+
+    snapshot_module.write_snapshot_file(state)
+    state["session"] = state["session"].model_copy(update={"current_step": StepId.REFRESH_MAIN_BRANCHES})
+    snapshot_module.write_snapshot_file(state)
+
+    restored = snapshot_module.parse_snapshot_yaml(progress_file.read_text(encoding="utf-8"))
+    assert restored.session.current_step is StepId.REFRESH_MAIN_BRANCHES
+
+
+def test_write_snapshot_file_noop_when_progress_file_path_missing():
+    state = _make_state()
+    state["progress_file_path"] = ""
+
+    snapshot_module.write_snapshot_file(state)  # не должно бросать исключение
+
+
+def test_write_snapshot_file_swallows_errors_and_logs_warning(tmp_path):
+    unwritable_dir = tmp_path / "not-a-directory"
+    unwritable_dir.write_text("i am a file, not a directory")
+    state = _make_state()
+    state["progress_file_path"] = str(unwritable_dir / "progress.yaml")
+
+    with structlog.testing.capture_logs() as captured:
+        snapshot_module.write_snapshot_file(state)  # не должно бросать исключение
+
+    assert any(entry["event"] == "workflow.snapshot_persist_failed" for entry in captured)

@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import datetime
+import pathlib
+import tempfile
 import typing
 
 import pydantic
+import structlog
 import yaml
 
 from app.workflows.init_arch.domain import WorkflowSessionRecord
+
+logger = structlog.get_logger()
 
 _SNAPSHOT_SCHEMA_VERSION: typing.Final[int] = 1
 
@@ -42,3 +47,25 @@ def dump_snapshot_yaml(snapshot: WorkflowSnapshot) -> str:
 def parse_snapshot_yaml(yaml_text: str) -> WorkflowSnapshot:
     payload = yaml.safe_load(yaml_text)
     return WorkflowSnapshot.model_validate(payload)
+
+
+def write_snapshot_file(state: typing.Mapping[str, typing.Any]) -> None:
+    progress_file_path = state.get("progress_file_path", "")
+    if not progress_file_path:
+        return
+    try:
+        yaml_text = dump_snapshot_yaml(build_snapshot(state))
+        target_path = pathlib.Path(progress_file_path)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            "w", dir=target_path.parent, delete=False, suffix=".tmp", encoding="utf-8"
+        ) as tmp_file:
+            tmp_file.write(yaml_text)
+            tmp_path = pathlib.Path(tmp_file.name)
+        tmp_path.replace(target_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "workflow.snapshot_persist_failed",
+            workflow_id=state.get("session_id", ""),
+            error=str(exc),
+        )
