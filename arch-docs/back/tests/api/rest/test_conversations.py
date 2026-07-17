@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -158,6 +158,29 @@ async def test_post_response_action_cancel_delegates_to_workflow(async_client, a
     data = resp.json()
     assert data["response_id"] == "wf-response-cancel"
     assert data["response_status"] == "cancelled"
+
+
+async def test_post_response_action_retry_delegates_to_workflow(async_client, auth_headers):
+    get_workflow_registry()["wf-response-retry"] = WorkflowRecord(
+        workflow_id="wf-response-retry",
+        conversation_id="conv-response-retry",
+        workflow_status=WorkflowStatus.INTERRUPTED,
+        pending_interrupt={"interrupt_type": "step_failed", "step_id": "clone_repositories"},
+    )
+
+    with patch("app.services.init_arch_workflow.schedule_resume") as mock_schedule_resume:
+        resp = await async_client.post(
+            "/api/rest/responses/wf-response-retry/actions/",
+            json={"action_type": "retry"},
+            headers=auth_headers,
+        )
+
+    assert resp.status_code == 202
+    data = resp.json()
+    assert data["response_id"] == "wf-response-retry"
+    mock_schedule_resume.assert_called_once_with(
+        get_workflow_registry()["wf-response-retry"], resume_value={"action": "retry"}
+    )
 
 
 async def test_create_response_update_arch_returns_202(async_client, auth_headers):

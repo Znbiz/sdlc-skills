@@ -617,3 +617,22 @@ def test_run_git_command_supports_empty_and_raises_on_error(monkeypatch, tmp_pat
 
     with pytest.raises(ValueError, match="boom"):
         service._run_git_command(tmp_path, ["git", "status"])
+
+
+def test_checkout_commit_does_not_raise_on_empty_stdout(tmp_path: Path) -> None:
+    # `git checkout <sha>` writes its status to stderr, not stdout - a successful checkout
+    # legitimately produces no stdout at all, and must not be mistaken for a failed command.
+    repo_path = tmp_path / "repo"
+    _init_real_git_repo(repo_path)
+    (repo_path / "a.txt").write_text("first")
+    _git(repo_path, "add", "a.txt")
+    _git(repo_path, "commit", "-m", "first commit")
+    first_commit = _git(repo_path, "rev-parse", "HEAD")
+    (repo_path / "a.txt").write_text("second")
+    _git(repo_path, "add", "a.txt")
+    _git(repo_path, "commit", "-m", "second commit")
+
+    service = HistoricalPrepService()
+    service._checkout_commit(repo_path, first_commit)
+
+    assert _git(repo_path, "rev-parse", "HEAD") == first_commit

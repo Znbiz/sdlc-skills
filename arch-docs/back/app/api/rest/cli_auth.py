@@ -40,6 +40,8 @@ class AuthSessionResponse(pydantic.BaseModel, frozen=True):
     cli_engine: str
     auth_flow_status: str
     instructions: str | None
+    verification_uri: str | None
+    user_code: str | None
 
 
 @router.get("/cli-auth/")
@@ -69,6 +71,8 @@ async def get_auth_session(auth_session_id: str) -> AuthSessionResponse:
         cli_engine=session.cli_engine,
         auth_flow_status=session.auth_flow_status,
         instructions=session.instructions,
+        verification_uri=session.verification_uri,
+        user_code=session.user_code,
     )
 
 

@@ -13,12 +13,11 @@ _NOT_APPLICABLE_RELEASE_NOTES_BLOCK: typing.Final[str] = "(не применим
 
 _WORKFLOW_ASSET_NAMESPACE = "init_arch"
 _SKILL_MD_RELATIVE_PATH = "SKILL.md"
-_REPOSITORY_LIST_STEPS: typing.Final[frozenset[str]] = frozenset({"prepare_temp_workspace", "clone_repositories"})
+_CLONE_REPOSITORIES_STEP_VALUE: typing.Final[str] = "clone_repositories"
 
 STEP_TO_REFERENCE: typing.Final[dict[str, str]] = {
     "define_scope": "",
     "request_repository_list": "",
-    "prepare_temp_workspace": "",
     "clone_repositories": "",
     "refresh_main_branches": "",
     "plan_repository_order": "",
@@ -228,7 +227,7 @@ def build_step_prompt(step_id: StepId | str, state: InitArchState, checklist_ite
         "Для каждого репозитория из раздела «Список репозиториев» с указанным URL выполни "
         "`git clone <url> <целевой путь>`. Если URL не указан, репозиторий уже должен существовать "
         "локально по целевому пути — просто убедись, что он там есть.\n"
-        if step_value == "clone_repositories"
+        if step_value == _CLONE_REPOSITORIES_STEP_VALUE
         else ""
     )
     open_questions = (
@@ -242,7 +241,7 @@ def build_step_prompt(step_id: StepId | str, state: InitArchState, checklist_ite
     raw_workspace_dir = state.get("raw_workspace_dir", f"{state['workspace_dir']}/.temp")
     repository_list_block = (
         _build_repository_list_block(state)
-        if step_value in _REPOSITORY_LIST_STEPS
+        if step_value == _CLONE_REPOSITORIES_STEP_VALUE
         else _NOT_APPLICABLE_RELEASE_NOTES_BLOCK
     )
 

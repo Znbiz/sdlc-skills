@@ -374,12 +374,15 @@ async def test_stream_chat_completion_async_raises_on_failed_terminal_event(monk
     )
 
     with pytest.raises(fastapi.HTTPException, match="worker failed"):
-        [chunk async for chunk in openai_module.stream_chat_completion_async(
-            model="arch-docs-query",
-            conversation_id="conv-1",
-            question="What is this?",
-            repo_path="/repo",
-        )]
+        [
+            chunk
+            async for chunk in openai_module.stream_chat_completion_async(
+                model="arch-docs-query",
+                conversation_id="conv-1",
+                question="What is this?",
+                repo_path="/repo",
+            )
+        ]
 
 
 async def test_create_openai_response_stream_returns_event_stream(async_client, auth_headers, monkeypatch):
@@ -481,6 +484,40 @@ async def test_submit_openai_response_action_confirms_temporal_window(async_clie
     assert captured["action_type"] == "confirm_temporal_window"
     assert captured["value"] == "continue_to_next_window"
     assert response.json()["metadata"]["current_step_id"] == "refresh_main_branches"
+
+
+async def test_submit_openai_response_action_retries_failed_step(async_client, auth_headers, monkeypatch):
+    captured: dict[str, object] = {}
+
+    async def _fake_submit_response_action_async(response_id: str, **kwargs):
+        captured["response_id"] = response_id
+        captured.update(kwargs)
+        return {
+            "response_id": response_id,
+            "conversation_id": "conv-retry",
+            "workflow_type": "init_arch",
+            "response_status": "running",
+            "current_step_id": "clone_repositories",
+            "current_repo_name": "",
+            "completed_steps": [],
+            "required_actions": [],
+            "created_at": "2026-07-09T10:00:00+00:00",
+            "updated_at": "2026-07-09T10:00:00+00:00",
+            "terminal_result": None,
+        }
+
+    monkeypatch.setattr("app.api.openai.submit_response_action_async", _fake_submit_response_action_async)
+
+    response = await async_client.post(
+        "/v1/responses/wf-retry/actions?model=arch-docs-init_arch",
+        json={"action_type": "retry"},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    assert captured["response_id"] == "wf-retry"
+    assert captured["action_type"] == "retry"
+    assert response.json()["metadata"]["current_step_id"] == "clone_repositories"
 
 
 async def test_submit_openai_response_action_returns_404_when_response_missing(async_client, auth_headers, monkeypatch):

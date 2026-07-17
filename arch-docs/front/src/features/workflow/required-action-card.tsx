@@ -84,6 +84,35 @@ export function RequiredActionCard({
             </div>
           </div>
         );
+      case "step_failed":
+        return (
+          <div className={styles.form}>
+            <p className={styles.question}>
+              Шаг «{String(action.payload.step_title ?? action.payload.step_id ?? "")}» завершился ошибкой
+            </p>
+            <p className={styles.stepMeta}>
+              step_id: {String(action.payload.step_id ?? "—")} · попыток исчерпано:{" "}
+              {String(action.payload.retry_count ?? "—")}
+            </p>
+            <pre className={styles.stepError}>{String(action.payload.error ?? "Неизвестная ошибка")}</pre>
+            <div className={styles.actions}>
+              <Button
+                variant="primary"
+                disabled={submitAction.isPending}
+                onClick={() => submitAction.mutate({ responseId, actionType: "retry" })}
+              >
+                Повторить
+              </Button>
+              <Button
+                variant="secondary"
+                disabled={submitAction.isPending}
+                onClick={() => submitAction.mutate({ responseId, actionType: "retry", value: "abort" })}
+              >
+                Прервать
+              </Button>
+            </div>
+          </div>
+        );
       default:
         return (
           <p className={styles.unsupported}>

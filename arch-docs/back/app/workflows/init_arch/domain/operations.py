@@ -16,6 +16,7 @@ from app.workflows.init_arch.domain.models import (
 from app.workflows.init_arch.domain.steps import STEP_DEFINITION_BY_ID
 
 TemporalWindowConfirmationAction = typing.Literal["continue_to_next_window", "finish_temporal_analysis"]
+StepFailureRecoveryAction = typing.Literal["retry", "abort"]
 
 if typing.TYPE_CHECKING:
     import datetime as dt

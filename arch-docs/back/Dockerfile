@@ -2,7 +2,7 @@ FROM node:22-bookworm-slim
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        git ca-certificates ripgrep curl gosu libpq5 \
+        git openssh-client ca-certificates ripgrep curl gosu libpq5 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g @openai/codex @anthropic-ai/claude-code

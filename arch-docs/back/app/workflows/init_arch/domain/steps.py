@@ -15,7 +15,7 @@ class StepDefinition(pydantic.BaseModel):
 
 
 STEP_DEFINITIONS: tuple[StepDefinition, ...] = (
-    StepDefinition(step_id=StepId.DEFINE_SCOPE, title="Define scope", uses_llm_worker=True),
+    StepDefinition(step_id=StepId.DEFINE_SCOPE, title="Define scope", uses_llm_worker=False),
     StepDefinition(
         step_id=StepId.REQUEST_REPOSITORY_LIST,
         title="Request repository list",
@@ -27,6 +27,7 @@ STEP_DEFINITIONS: tuple[StepDefinition, ...] = (
         step_id=StepId.PREPARE_TEMP_WORKSPACE,
         title="Prepare temp workspace",
         required_previous_steps=[StepId.REQUEST_REPOSITORY_LIST],
+        uses_llm_worker=False,
     ),
     StepDefinition(
         step_id=StepId.CLONE_REPOSITORIES,

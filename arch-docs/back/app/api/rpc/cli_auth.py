@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 import uuid
 
 import fastapi
@@ -24,6 +25,15 @@ _CLAUDE_AUTH_CMD: list[str] = ["claude", "auth", "login"]
 _SUCCESS_PHRASES: tuple[str, ...] = ("logged in", "authenticated", "success", "authorization complete")
 _FAILURE_PHRASES: tuple[str, ...] = ("error", "failed", "denied", "expired")
 
+_ANSI_ESCAPE_PATTERN: re.Pattern[str] = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+# device-flow codes look like `9WFG-D3I62` / `ABCD-1234`: two uppercase-alnum groups joined by a dash
+_DEVICE_CODE_PATTERN: re.Pattern[str] = re.compile(r"\b[A-Z0-9]{4}-[A-Z0-9]{4,8}\b")
+_VERIFICATION_URI_PATTERN: re.Pattern[str] = re.compile(r"https?://\S+")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_ESCAPE_PATTERN.sub("", text)
+
 
 class InitAuthRequest(pydantic.BaseModel, frozen=True):
     cli_engine: str
@@ -42,6 +52,8 @@ class InitAuthResponse(pydantic.BaseModel, frozen=True):
     cli_engine: str
     auth_flow_status: str
     instructions: str | None
+    verification_uri: str | None
+    user_code: str | None
     expires_at: str
 
 
@@ -54,13 +66,19 @@ async def _collect_auth_output(reader: asyncio.StreamReader, session: CliAuthSes
         raw = await reader.readline()
         if not raw:
             break
-        line = raw.decode().strip()
+        line = _strip_ansi(raw.decode()).strip()
         if not line:
             continue
         session.output_lines.append(line)
         line_lower = line.lower()
+
+        if session.verification_uri is None and (uri_match := _VERIFICATION_URI_PATTERN.search(line)):
+            session.verification_uri = uri_match.group(0)
+        if session.user_code is None and (code_match := _DEVICE_CODE_PATTERN.search(line)):
+            session.user_code = code_match.group(0)
         if session.instructions is None and ("http" in line_lower or "code" in line_lower):
             session.instructions = line
+
         if any(phrase in line_lower for phrase in _SUCCESS_PHRASES):
             session.auth_flow_status = AuthFlowStatus.SUCCESS
         elif any(phrase in line_lower for phrase in _FAILURE_PHRASES):
@@ -125,6 +143,8 @@ async def init_cli_auth(request: InitAuthRequest) -> InitAuthResponse:
         cli_engine=session.cli_engine,
         auth_flow_status=session.auth_flow_status,
         instructions=session.instructions,
+        verification_uri=session.verification_uri,
+        user_code=session.user_code,
         expires_at=session.expires_at.isoformat(),
     )
 
@@ -155,5 +175,7 @@ async def submit_auth_code(auth_session_id: str, request: SubmitAuthCodeRequest)
         cli_engine=session.cli_engine,
         auth_flow_status=session.auth_flow_status,
         instructions=session.instructions,
+        verification_uri=session.verification_uri,
+        user_code=session.user_code,
         expires_at=session.expires_at.isoformat(),
     )

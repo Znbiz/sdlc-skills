@@ -12,6 +12,7 @@ from app.services.task_runner import (
     LlmCliService,
     LlmTaskExecutionError,
     _build_cmd,
+    _extract_result_text,
     _is_auth_error,
     _is_limit_error,
     cancel_cli_task,
@@ -76,6 +77,20 @@ class TestBuildCmd:
         assert "-p" in cmd
         assert "test" in cmd
 
+    def test_claude_cmd_has_verbose_flag(self) -> None:
+        # claude CLI rejects --output-format=stream-json without --verbose when --print is used.
+        cli_task = _make_task(engine_name="claude", prompt_text="test")
+        cmd = _build_cmd(cli_task)
+        assert "--verbose" in cmd
+
+    def test_claude_cmd_bypasses_permissions(self) -> None:
+        # Non-interactive `-p` runs have nobody to approve tool calls; without this flag every
+        # write/Bash action (mkdir, git clone, ...) is silently denied while the CLI still exits 0.
+        cli_task = _make_task(engine_name="claude", prompt_text="test")
+        cmd = _build_cmd(cli_task)
+        assert "--permission-mode" in cmd
+        assert cmd[cmd.index("--permission-mode") + 1] == "bypassPermissions"
+
     def test_claude_cmd_includes_resume_when_session_id(self) -> None:
         cli_task = _make_task(engine_name="claude", session_id="sess-123")
         cmd = _build_cmd(cli_task)
@@ -107,6 +122,40 @@ class TestBuildCmd:
         cmd = _build_cmd(cli_task)
         assert "resume" not in cmd
         assert "--skip-git-repo-check" in cmd
+
+
+class TestExtractResultText:
+    def test_claude_uses_last_result_event(self) -> None:
+        lines = [
+            '{"type":"system","subtype":"init"}',
+            '{"type":"result","result":"first"}',
+            '{"type":"result","result":"final"}',
+        ]
+        assert _extract_result_text("claude", lines) == "final"
+
+    def test_claude_ignores_non_json_and_non_result_lines(self) -> None:
+        lines = [
+            "not json at all",
+            '{"type":"assistant","message":{}}',
+            '{"type":"result","result":"final"}',
+        ]
+        assert _extract_result_text("claude", lines) == "final"
+
+    def test_claude_returns_empty_when_no_result_event(self) -> None:
+        lines = ['{"type":"system","subtype":"init"}']
+        assert _extract_result_text("claude", lines) == ""
+
+    def test_codex_uses_last_agent_message(self) -> None:
+        lines = [
+            '{"type":"thread.started"}',
+            '{"type":"item.completed","item":{"type":"reasoning","text":"thinking"}}',
+            '{"type":"item.completed","item":{"type":"agent_message","text":"final"}}',
+        ]
+        assert _extract_result_text("codex", lines) == "final"
+
+    def test_unknown_engine_falls_back_to_joined_lines(self) -> None:
+        lines = ["line1", "line2"]
+        assert _extract_result_text("other", lines) == "line1\nline2"
 
 
 class TestIsAuthError:
@@ -150,7 +199,13 @@ class TestRunCliTask:
     async def test_success_sets_status_and_result(self) -> None:
         cli_task = _make_task(engine_name="claude")
         pool = _make_pool()
-        mock_proc = _make_mock_process(returncode=0, stdout=b"all good", stderr=b"")
+        # Mirrors real `claude --output-format stream-json --verbose` NDJSON output:
+        # a system init event, then the final answer in a `type: result` event.
+        stdout = (
+            b'{"type":"system","subtype":"init","session_id":"s-1"}\n'
+            b'{"type":"result","subtype":"success","is_error":false,"result":"all good","session_id":"s-1"}'
+        )
+        mock_proc = _make_mock_process(returncode=0, stdout=stdout, stderr=b"")
 
         with unittest.mock.patch("asyncio.create_subprocess_exec", return_value=mock_proc):
             await run_cli_task(cli_task, pool)
@@ -159,6 +214,25 @@ class TestRunCliTask:
         assert cli_task.task_result == "all good"
         assert cli_task.started_at is not None
         assert cli_task.finished_at is not None
+
+    async def test_success_extracts_final_agent_message_for_codex(self) -> None:
+        cli_task = _make_task(engine_name="codex")
+        pool = _make_pool()
+        # Mirrors real `codex exec --json` NDJSON output: lifecycle events plus the final
+        # agent answer in an `item.completed` event whose item type is `agent_message`.
+        stdout = (
+            b'{"type":"thread.started","thread_id":"t-1"}\n'
+            b'{"type":"turn.started"}\n'
+            b'{"type":"item.completed","item":{"type":"agent_message","text":"all good"}}\n'
+            b'{"type":"turn.completed"}'
+        )
+        mock_proc = _make_mock_process(returncode=0, stdout=stdout, stderr=b"")
+
+        with unittest.mock.patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            await run_cli_task(cli_task, pool)
+
+        assert cli_task.task_status == TaskStatus.SUCCESS
+        assert cli_task.task_result == "all good"
 
     async def test_nonzero_exit_sets_failed_status(self) -> None:
         cli_task = _make_task(engine_name="codex")

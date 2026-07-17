@@ -102,7 +102,7 @@ def test_build_step_prompt_includes_completed_steps():
         update={"completed_steps": [StepId.DEFINE_SCOPE, StepId.REQUEST_REPOSITORY_LIST]}
     )
     with patch.object(prompts_module, "_load_skill_md", return_value="SKILL"):
-        result = build_step_prompt("prepare_temp_workspace", state)
+        result = build_step_prompt("clone_repositories", state)
     assert "define_scope" in result
     assert "request_repository_list" in result
 

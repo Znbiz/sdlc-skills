@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import pathlib
 import typing
 
 import structlog
@@ -17,7 +18,8 @@ from app.workflows.init_arch.domain import (
     classify_diff_severity,
     route_checklist_items,
 )
-from app.workflows.init_arch.domain.operations import TemporalWindowConfirmationAction
+from app.workflows.init_arch.domain.operations import StepFailureRecoveryAction, TemporalWindowConfirmationAction
+from app.workflows.init_arch.domain.steps import STEP_DEFINITION_BY_ID
 from app.workflows.init_arch.guard import get_guard_service
 from app.workflows.init_arch.historical import HistoricalPrepResult, get_historical_prep_service
 from app.workflows.init_arch.knowledge import get_knowledge_artifact_service
@@ -114,7 +116,11 @@ def _record_workflow_event(
 
 
 async def node_define_scope(state: InitArchState) -> dict[str, typing.Any]:
-    logger.info("workflow.node.define_scope")
+    logger.info(
+        "workflow.node.define_scope",
+        workflow_id=state["session"].session_id,
+        current_step=state["session"].current_step.value,
+    )
     guard_service = get_guard_service()
     _record_workflow_event(state, EventType.WORKFLOW_STEP_STARTED, step_id=StepId.DEFINE_SCOPE)
     try:
@@ -122,7 +128,6 @@ async def node_define_scope(state: InitArchState) -> dict[str, typing.Any]:
             state["session"],
             progress_file_path=state["progress_file_path"],
         )
-        llm_result = await _run_step_worker(state, StepId.DEFINE_SCOPE)
         advance_result = await guard_service.advance_step(
             init_result.session,
             StepId.REQUEST_REPOSITORY_LIST,
@@ -145,22 +150,34 @@ async def node_define_scope(state: InitArchState) -> dict[str, typing.Any]:
     )
     return _session_update_payload(
         advance_result.session,
-        last_llm_result=llm_result,
         last_guard_output=init_result.bridge_output,
     )
 
 
 async def node_request_repository_list(state: InitArchState) -> dict[str, typing.Any]:
-    logger.info("workflow.node.request_repository_list")
+    logger.info(
+        "workflow.node.request_repository_list",
+        workflow_id=state["session"].session_id,
+        current_step=state["session"].current_step.value,
+    )
     _record_workflow_event(state, EventType.WORKFLOW_STEP_STARTED, step_id=StepId.REQUEST_REPOSITORY_LIST)
     if state["session"].repositories:
         guard_service = get_guard_service()
-        result = await guard_service.advance_step(
-            state["session"],
-            StepId.PREPARE_TEMP_WORKSPACE,
-            progress_file_path=state["progress_file_path"],
-            note=f"Репозитории: {', '.join(repo.repository_name for repo in state['session'].repositories)}",
-        )
+        try:
+            result = await guard_service.advance_step(
+                state["session"],
+                StepId.PREPARE_TEMP_WORKSPACE,
+                progress_file_path=state["progress_file_path"],
+                note=f"Репозитории: {', '.join(repo.repository_name for repo in state['session'].repositories)}",
+            )
+        except Exception as exc:  # noqa: BLE001
+            _record_workflow_event(
+                state,
+                EventType.WORKFLOW_STEP_FAILED,
+                step_id=StepId.REQUEST_REPOSITORY_LIST,
+                error=str(exc),
+            )
+            return {"step_error": str(exc), "retry_count": state.get("retry_count", 0) + 1}
         _record_workflow_event(
             state,
             EventType.WORKFLOW_STEP_COMPLETED,
@@ -213,18 +230,62 @@ async def _simple_llm_step(state: InitArchState, current_step: StepId, next_step
     )
 
 
+def _prepare_workspace_directories(state: InitArchState) -> list[str]:
+    raw_workspace_dir = state.get("raw_workspace_dir") or f"{state['workspace_dir']}/.temp"
+    directories = [state["workspace_dir"], raw_workspace_dir, state["arch_repo_dir"]]
+    for directory in directories:
+        pathlib.Path(directory).mkdir(parents=True, exist_ok=True)
+    return directories
+
+
 async def node_prepare_temp_workspace(state: InitArchState) -> dict[str, typing.Any]:
-    logger.info("workflow.node.prepare_temp_workspace")
-    return await _simple_llm_step(state, StepId.PREPARE_TEMP_WORKSPACE, StepId.CLONE_REPOSITORIES)
+    logger.info(
+        "workflow.node.prepare_temp_workspace",
+        workflow_id=state["session"].session_id,
+        current_step=state["session"].current_step.value,
+    )
+    guard_service = get_guard_service()
+    _record_workflow_event(state, EventType.WORKFLOW_STEP_STARTED, step_id=StepId.PREPARE_TEMP_WORKSPACE)
+    try:
+        created_directories = _prepare_workspace_directories(state)
+        result = await guard_service.advance_step(
+            state["session"],
+            StepId.CLONE_REPOSITORIES,
+            progress_file_path=state["progress_file_path"],
+            note=f"Prepared workspace directories: {', '.join(created_directories)}",
+        )
+    except Exception as exc:  # noqa: BLE001
+        _record_workflow_event(
+            state,
+            EventType.WORKFLOW_STEP_FAILED,
+            step_id=StepId.PREPARE_TEMP_WORKSPACE,
+            error=str(exc),
+        )
+        return {"step_error": str(exc), "retry_count": state.get("retry_count", 0) + 1}
+    _record_workflow_event(
+        state,
+        EventType.WORKFLOW_STEP_COMPLETED,
+        step_id=StepId.PREPARE_TEMP_WORKSPACE,
+        next_step=result.session.current_step.value,
+    )
+    return _session_update_payload(result.session, last_guard_output=result.bridge_output)
 
 
 async def node_clone_repositories(state: InitArchState) -> dict[str, typing.Any]:
-    logger.info("workflow.node.clone_repositories")
+    logger.info(
+        "workflow.node.clone_repositories",
+        workflow_id=state["session"].session_id,
+        current_step=state["session"].current_step.value,
+    )
     return await _simple_llm_step(state, StepId.CLONE_REPOSITORIES, StepId.REFRESH_MAIN_BRANCHES)
 
 
 async def node_refresh_main_branches(state: InitArchState) -> dict[str, typing.Any]:
-    logger.info("workflow.node.refresh_main_branches")
+    logger.info(
+        "workflow.node.refresh_main_branches",
+        workflow_id=state["session"].session_id,
+        current_step=state["session"].current_step.value,
+    )
     guard_service = get_guard_service()
     historical_service = get_historical_prep_service()
     _record_workflow_event(state, EventType.WORKFLOW_STEP_STARTED, step_id=StepId.REFRESH_MAIN_BRANCHES)
@@ -257,7 +318,11 @@ async def node_refresh_main_branches(state: InitArchState) -> dict[str, typing.A
 
 
 async def node_plan_repository_order(state: InitArchState) -> dict[str, typing.Any]:
-    logger.info("workflow.node.plan_repository_order")
+    logger.info(
+        "workflow.node.plan_repository_order",
+        workflow_id=state["session"].session_id,
+        current_step=state["session"].current_step.value,
+    )
     guard_service = get_guard_service()
     historical_service = get_historical_prep_service()
     _record_workflow_event(state, EventType.WORKFLOW_STEP_STARTED, step_id=StepId.PLAN_REPOSITORY_ORDER)
@@ -292,12 +357,20 @@ async def node_plan_repository_order(state: InitArchState) -> dict[str, typing.A
 
 
 async def node_assess_scope_and_domains(state: InitArchState) -> dict[str, typing.Any]:
-    logger.info("workflow.node.assess_scope_and_domains")
+    logger.info(
+        "workflow.node.assess_scope_and_domains",
+        workflow_id=state["session"].session_id,
+        current_step=state["session"].current_step.value,
+    )
     return await _simple_llm_step(state, StepId.ASSESS_SCOPE_AND_DOMAINS, StepId.ANALYZE_REPOSITORIES)
 
 
 async def node_analyze_repositories(state: InitArchState) -> dict[str, typing.Any]:
-    logger.info("workflow.node.analyze_repositories")
+    logger.info(
+        "workflow.node.analyze_repositories",
+        workflow_id=state["session"].session_id,
+        current_step=state["session"].current_step.value,
+    )
     guard_service = get_guard_service()
     knowledge_service = get_knowledge_artifact_service()
     _record_workflow_event(state, EventType.WORKFLOW_STEP_STARTED, step_id=StepId.ANALYZE_REPOSITORIES)
@@ -390,7 +463,11 @@ async def node_analyze_repositories(state: InitArchState) -> dict[str, typing.An
 
 
 async def node_interview_user(state: InitArchState) -> dict[str, typing.Any]:
-    logger.info("workflow.node.interview_user")
+    logger.info(
+        "workflow.node.interview_user",
+        workflow_id=state["session"].session_id,
+        current_step=state["session"].current_step.value,
+    )
     guard_service = get_guard_service()
     knowledge_service = get_knowledge_artifact_service()
     _record_workflow_event(state, EventType.WORKFLOW_STEP_STARTED, step_id=StepId.INTERVIEW_USER)
@@ -472,7 +549,11 @@ def _extract_question_answer(resume_payload: typing.Any) -> str:
 
 
 async def node_refine_features(state: InitArchState) -> dict[str, typing.Any]:
-    logger.info("workflow.node.refine_features")
+    logger.info(
+        "workflow.node.refine_features",
+        workflow_id=state["session"].session_id,
+        current_step=state["session"].current_step.value,
+    )
     guard_service = get_guard_service()
     knowledge_service = get_knowledge_artifact_service()
     _record_workflow_event(state, EventType.WORKFLOW_STEP_STARTED, step_id=StepId.REFINE_FEATURES)
@@ -515,7 +596,11 @@ async def node_refine_features(state: InitArchState) -> dict[str, typing.Any]:
 
 
 async def node_build_navigation_index(state: InitArchState) -> dict[str, typing.Any]:
-    logger.info("workflow.node.build_navigation_index")
+    logger.info(
+        "workflow.node.build_navigation_index",
+        workflow_id=state["session"].session_id,
+        current_step=state["session"].current_step.value,
+    )
     guard_service = get_guard_service()
     knowledge_service = get_knowledge_artifact_service()
     _record_workflow_event(state, EventType.WORKFLOW_STEP_STARTED, step_id=StepId.BUILD_NAVIGATION_INDEX)
@@ -548,7 +633,11 @@ async def node_build_navigation_index(state: InitArchState) -> dict[str, typing.
 
 
 async def node_run_knowledge_lint(state: InitArchState) -> dict[str, typing.Any]:
-    logger.info("workflow.node.run_knowledge_lint")
+    logger.info(
+        "workflow.node.run_knowledge_lint",
+        workflow_id=state["session"].session_id,
+        current_step=state["session"].current_step.value,
+    )
     guard_service = get_guard_service()
     knowledge_service = get_knowledge_artifact_service()
     _record_workflow_event(state, EventType.WORKFLOW_STEP_STARTED, step_id=StepId.RUN_KNOWLEDGE_LINT)
@@ -581,12 +670,20 @@ async def node_run_knowledge_lint(state: InitArchState) -> dict[str, typing.Any]
 
 
 async def node_validate_final(state: InitArchState) -> dict[str, typing.Any]:
-    logger.info("workflow.node.validate_final")
+    logger.info(
+        "workflow.node.validate_final",
+        workflow_id=state["session"].session_id,
+        current_step=state["session"].current_step.value,
+    )
     return await _simple_llm_step(state, StepId.VALIDATE_FINAL, StepId.GENERATE_RELEASE_NOTES)
 
 
 async def node_generate_release_notes(state: InitArchState) -> dict[str, typing.Any]:
-    logger.info("workflow.node.generate_release_notes")
+    logger.info(
+        "workflow.node.generate_release_notes",
+        workflow_id=state["session"].session_id,
+        current_step=state["session"].current_step.value,
+    )
     guard_service = get_guard_service()
     knowledge_service = get_knowledge_artifact_service()
     _record_workflow_event(state, EventType.WORKFLOW_STEP_STARTED, step_id=StepId.GENERATE_RELEASE_NOTES)
@@ -634,8 +731,19 @@ def _extract_window_confirmation_action(resume_payload: typing.Any) -> TemporalW
     return typing.cast("TemporalWindowConfirmationAction", action)
 
 
+def _extract_step_failure_recovery_action(resume_payload: typing.Any) -> StepFailureRecoveryAction:
+    action = resume_payload.get("action") if isinstance(resume_payload, dict) else resume_payload
+    if action not in {"retry", "abort"}:
+        raise ValueError("resume payload for step_failed must contain action 'retry' or 'abort'")
+    return typing.cast("StepFailureRecoveryAction", action)
+
+
 async def node_confirm_next_temporal_window(state: InitArchState) -> dict[str, typing.Any]:
-    logger.info("workflow.node.confirm_next_temporal_window")
+    logger.info(
+        "workflow.node.confirm_next_temporal_window",
+        workflow_id=state["session"].session_id,
+        current_step=state["session"].current_step.value,
+    )
     guard_service = get_guard_service()
     historical_service = get_historical_prep_service()
     _record_workflow_event(state, EventType.WORKFLOW_STEP_STARTED, step_id=StepId.CONFIRM_NEXT_TEMPORAL_WINDOW)
@@ -713,7 +821,11 @@ async def node_confirm_next_temporal_window(state: InitArchState) -> dict[str, t
 
 
 async def node_finalize_progress(state: InitArchState) -> dict[str, typing.Any]:
-    logger.info("workflow.node.finalize_progress")
+    logger.info(
+        "workflow.node.finalize_progress",
+        workflow_id=state["session"].session_id,
+        current_step=state["session"].current_step.value,
+    )
     guard_service = get_guard_service()
     _record_workflow_event(state, EventType.WORKFLOW_STEP_STARTED, step_id=StepId.FINALIZE_PROGRESS)
     try:
@@ -742,10 +854,27 @@ async def node_finalize_progress(state: InitArchState) -> dict[str, typing.Any]:
 
 
 async def node_handle_error(state: InitArchState) -> dict[str, typing.Any]:
+    step_id = state["session"].current_step
+    step_error = state.get("step_error")
+    retry_count = state.get("retry_count", 0)
     logger.error(
         "workflow.node.error",
-        step=state["session"].current_step.value,
-        error=state.get("step_error"),
-        retry_count=state.get("retry_count"),
+        step=step_id.value,
+        error=step_error,
+        retry_count=retry_count,
     )
-    return {}
+    resume_payload = interrupt(
+        {
+            "interrupt_type": "step_failed",
+            "step_id": step_id.value,
+            "step_title": STEP_DEFINITION_BY_ID[step_id].title,
+            "error": step_error,
+            "retry_count": retry_count,
+        }
+    )
+    action = _extract_step_failure_recovery_action(resume_payload)
+    if action == "retry":
+        logger.info("workflow.node.error.retry", step=step_id.value)
+        return {"step_error": None, "retry_count": 0}
+    logger.info("workflow.node.error.abort", step=step_id.value)
+    return {"step_error": step_error, "retry_count": retry_count}

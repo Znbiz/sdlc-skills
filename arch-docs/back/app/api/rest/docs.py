@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pathlib
 import typing
 
 import fastapi
@@ -42,9 +43,13 @@ class DocsFileResponse(pydantic.BaseModel, frozen=True):
     modified_at: str
 
 
+def _arch_repo_dir_exists(arch_repo_dir: str) -> bool:
+    return pathlib.Path(arch_repo_dir).expanduser().exists()
+
+
 async def _resolve_arch_repo_dir(response_id: str) -> str:
     try:
-        return await get_response_arch_repo_dir_async(response_id)
+        arch_repo_dir = await get_response_arch_repo_dir_async(response_id)
     except WorkflowNotFoundError as exc:
         raise fastapi.HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except ArchRepoNotAvailableError as exc:
@@ -52,6 +57,16 @@ async def _resolve_arch_repo_dir(response_id: str) -> str:
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"reason_code": ReasonCode.ARCH_REPO_MISSING_FOR_RESPONSE.value, "message": str(exc)},
         ) from exc
+
+    if not _arch_repo_dir_exists(arch_repo_dir):
+        raise fastapi.HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "reason_code": ReasonCode.ARCH_REPO_MISSING_FOR_RESPONSE.value,
+                "message": f"arch_repo_dir {arch_repo_dir!r} not found on disk for response {response_id!r}",
+            },
+        )
+    return arch_repo_dir
 
 
 @router.get("/responses/{response_id}/docs/tree/")

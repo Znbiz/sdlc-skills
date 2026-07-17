@@ -24,6 +24,7 @@ from app.main import app
 from app.services.agent_pool import init_agent_pool
 from app.services.cli_auth_session import reset_auth_session_registry
 from app.services.task_registry import reset_registry
+from app.workflows.init_arch.audit import get_workflow_audit_service
 
 _PREFLIGHT_HELP = (
     "arch-docs test suite требует запущенный Docker Postgres тестового контура. "
@@ -56,6 +57,11 @@ def _db_bootstrap() -> typing.Iterator[None]:
 @pytest.fixture(autouse=True)
 async def _truncate_tables_between_tests() -> typing.AsyncGenerator[None, None]:
     yield
+    # WorkflowAuditService.record() persists fire-and-forget: a write still in flight when
+    # TRUNCATE fires races it for locks on the same tables and deadlocks Postgres (see
+    # tests/helpers/db.py::truncate_all_tables). Draining first removes the race instead of
+    # just retrying around it.
+    await get_workflow_audit_service().wait_for_pending_persist()
     await truncate_all_tables(get_engine())
 
 

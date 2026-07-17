@@ -177,6 +177,113 @@ async def test_submit_response_action_async_requires_value_for_confirm_temporal_
         await workflow_module.submit_response_action_async("wf-no-value", action_type="confirm_temporal_window")
 
 
+async def test_retry_init_arch_workflow_schedules_resume():
+    record = WorkflowRecord(
+        workflow_id="wf-retry",
+        conversation_id="conv-retry",
+        workflow_status=WorkflowStatus.INTERRUPTED,
+        current_step_id="clone_repositories",
+        pending_interrupt={
+            "interrupt_type": "step_failed",
+            "step_id": "clone_repositories",
+            "error": "boom",
+            "retry_count": 3,
+        },
+    )
+    workflow_module.get_workflow_registry()["wf-retry"] = record
+
+    with (
+        patch("app.services.init_arch_workflow.schedule_resume") as mock_schedule_resume,
+        patch("app.services.init_arch_workflow.persist_workflow_record", new=AsyncMock()) as mock_persist,
+    ):
+        resolved = await workflow_module.retry_init_arch_workflow("wf-retry", action="retry")
+
+    assert resolved.workflow_id == "wf-retry"
+    mock_schedule_resume.assert_called_once_with(record, resume_value={"action": "retry"})
+    mock_persist.assert_awaited_once_with(record)
+
+
+async def test_retry_init_arch_workflow_requires_interrupted_status():
+    record = WorkflowRecord(workflow_id="wf-not-interrupted", workflow_status=WorkflowStatus.RUNNING)
+    workflow_module.get_workflow_registry()["wf-not-interrupted"] = record
+
+    with pytest.raises(workflow_module.WorkflowConflictError, match="not interrupted"):
+        await workflow_module.retry_init_arch_workflow("wf-not-interrupted")
+
+
+async def test_retry_init_arch_workflow_requires_step_failed_interrupt_type():
+    record = WorkflowRecord(
+        workflow_id="wf-wrong-interrupt-retry",
+        workflow_status=WorkflowStatus.INTERRUPTED,
+        pending_interrupt={"interrupt_type": "user_question", "question_id": "Q-1"},
+    )
+    workflow_module.get_workflow_registry()["wf-wrong-interrupt-retry"] = record
+
+    with pytest.raises(workflow_module.WorkflowConflictError, match="not waiting for a step failure recovery"):
+        await workflow_module.retry_init_arch_workflow("wf-wrong-interrupt-retry")
+
+
+async def test_retry_init_arch_workflow_rejects_invalid_action():
+    record = WorkflowRecord(
+        workflow_id="wf-bad-retry-action",
+        workflow_status=WorkflowStatus.INTERRUPTED,
+        pending_interrupt={"interrupt_type": "step_failed"},
+    )
+    workflow_module.get_workflow_registry()["wf-bad-retry-action"] = record
+
+    with pytest.raises(workflow_module.WorkflowValidationError, match="Unsupported step failure recovery action"):
+        await workflow_module.retry_init_arch_workflow("wf-bad-retry-action", action="not_a_real_action")
+
+
+def test_build_resume_value_supports_step_failed():
+    resume_value = workflow_module.build_resume_value(
+        interrupt_type="step_failed",
+        field=None,
+        value="abort",
+        answer=None,
+    )
+
+    assert resume_value == {"action": "abort"}
+
+
+async def test_submit_response_action_async_dispatches_retry():
+    record = WorkflowRecord(
+        workflow_id="wf-retry-dispatch",
+        workflow_status=WorkflowStatus.INTERRUPTED,
+        pending_interrupt={"interrupt_type": "step_failed"},
+    )
+    workflow_module.get_workflow_registry()["wf-retry-dispatch"] = record
+
+    with (
+        patch("app.services.init_arch_workflow.retry_init_arch_workflow", new=AsyncMock()) as mock_retry,
+        patch("app.services.init_arch_workflow.get_response_async", new=AsyncMock(return_value={"ok": True})),
+    ):
+        result = await workflow_module.submit_response_action_async("wf-retry-dispatch", action_type="retry")
+
+    mock_retry.assert_awaited_once_with("wf-retry-dispatch", action="retry")
+    assert result == {"ok": True}
+
+
+async def test_submit_response_action_async_dispatches_retry_with_explicit_abort_value():
+    record = WorkflowRecord(
+        workflow_id="wf-retry-abort-dispatch",
+        workflow_status=WorkflowStatus.INTERRUPTED,
+        pending_interrupt={"interrupt_type": "step_failed"},
+    )
+    workflow_module.get_workflow_registry()["wf-retry-abort-dispatch"] = record
+
+    with (
+        patch("app.services.init_arch_workflow.retry_init_arch_workflow", new=AsyncMock()) as mock_retry,
+        patch("app.services.init_arch_workflow.get_response_async", new=AsyncMock(return_value={"ok": True})),
+    ):
+        result = await workflow_module.submit_response_action_async(
+            "wf-retry-abort-dispatch", action_type="retry", value="abort"
+        )
+
+    mock_retry.assert_awaited_once_with("wf-retry-abort-dispatch", action="abort")
+    assert result == {"ok": True}
+
+
 async def test_list_workflow_events_async_reads_persisted_conversation_items():
     event = MagicMock()
     event.item_id = "evt-1"
@@ -423,6 +530,8 @@ async def test_start_init_arch_workflow_parses_urls_into_repository_name_and_url
     monkeypatch.setattr("app.services.init_arch_workflow.persist_workflow_record", AsyncMock())
     monkeypatch.setattr("app.services.init_arch_workflow.asyncio.create_task", _fake_create_task)
     monkeypatch.setattr("app.services.init_arch_workflow.run_workflow", AsyncMock())
+    # no host has a PAT configured here, so SSH-form URLs must be left untouched
+    monkeypatch.setattr("app.services.init_arch_workflow.list_configured_hosts", AsyncMock(return_value=[]))
 
     record = await workflow_module.start_init_arch_workflow(
         product_name="svc",
@@ -444,6 +553,49 @@ async def test_start_init_arch_workflow_parses_urls_into_repository_name_and_url
         "svc-a": "https://github.com/org/svc-a.git",
         "svc-b": "git@github.com:org/svc-b.git",
         "svc-c": "",
+    }
+    for task in created_tasks:
+        task.cancel()
+
+
+async def test_start_init_arch_workflow_rewrites_ssh_url_to_https_when_pat_configured(monkeypatch):
+    # A PAT only ever authenticates the HTTPS transport, so an SSH-form URL for a host that
+    # has a PAT (and no deploy key) must be rewritten, or cloning will always fail.
+    created_tasks = []
+    real_create_task = asyncio.create_task
+
+    def _fake_create_task(coro):
+        task = real_create_task(coro)
+        created_tasks.append(task)
+        return task
+
+    monkeypatch.setattr("app.services.init_arch_workflow.persist_workflow_record", AsyncMock())
+    monkeypatch.setattr("app.services.init_arch_workflow.asyncio.create_task", _fake_create_task)
+    monkeypatch.setattr("app.services.init_arch_workflow.run_workflow", AsyncMock())
+    monkeypatch.setattr(
+        "app.services.init_arch_workflow.list_configured_hosts", AsyncMock(return_value=["gt.tropass.me"])
+    )
+
+    record = await workflow_module.start_init_arch_workflow(
+        product_name="svc",
+        analysis_scope="full",
+        workspace_dir="/workspace",
+        arch_repo_dir="/workspace/arch",
+        repo_list=[
+            "git@gt.tropass.me:futureproject/frontend/admin.git",
+            "https://gt.tropass.me/futureproject/backend/billing",
+            "https://gt.tropass.me/futureproject/backend/cupol.git/",
+        ],
+        engine_name="claude",
+        timeout_seconds=30,
+        conversation_id="conv-start-pat",
+    )
+
+    repos = {repo.repository_name: repo.repository_url for repo in record.session.repositories}
+    assert repos == {
+        "admin": "https://gt.tropass.me/futureproject/frontend/admin.git",
+        "billing": "https://gt.tropass.me/futureproject/backend/billing.git",
+        "cupol": "https://gt.tropass.me/futureproject/backend/cupol.git",
     }
     for task in created_tasks:
         task.cancel()
@@ -653,6 +805,60 @@ async def test_run_workflow_failure_marks_record_failed(monkeypatch):
     assert record.workflow_status is WorkflowStatus.FAILED
     assert record.error_message == "graph boom"
     assert persisted_statuses == [WorkflowStatus.FAILED]
+
+
+async def test_run_workflow_marks_failed_when_graph_exhausts_retries_via_handle_error(monkeypatch):
+    # The graph's own routing (see graph.py `_route_after_node`) can exhaust step retries and
+    # route through the `handle_error` node straight to a clean END, with no Python exception
+    # raised. Before this fix `run_workflow` treated any clean `astream` completion as success.
+    session = WorkflowSessionRecord(session_id="wf-exhausted", product_name="arch-docs", analysis_scope="full")
+    record = WorkflowRecord(workflow_id="wf-exhausted", conversation_id="conv-exhausted", session=session)
+    persisted_statuses: list[WorkflowStatus] = []
+
+    class _Graph:
+        async def astream(self, _state, *, config):
+            assert config == {"configurable": {"thread_id": "wf-exhausted"}}
+            yield {
+                "define_scope": {
+                    "step_error": "Error: When using --print, --output-format=stream-json requires --verbose",
+                    "retry_count": 3,
+                }
+            }
+            # real LangGraph reports a node that returned `{}` as `None`, not `{}` (verified
+            # against langgraph 1.2.7) - mock the actual shape, not the intuitive one
+            yield {"handle_error": None}
+
+    async def _fake_persist(current: WorkflowRecord) -> None:
+        persisted_statuses.append(current.workflow_status)
+
+    def _compile_graph(checkpointer):
+        del checkpointer
+        return _Graph()
+
+    monkeypatch.setattr("app.services.init_arch_workflow.get_checkpointer", AsyncMock(return_value="checkpoint"))
+    monkeypatch.setattr("app.services.init_arch_workflow.compile_graph", _compile_graph)
+    monkeypatch.setattr("app.services.init_arch_workflow.persist_workflow_record", _fake_persist)
+
+    await workflow_module.run_workflow(
+        record,
+        workflow_module.InitArchState(
+            session_id=session.session_id,
+            session=session,
+            workspace_dir="/workspace",
+            arch_repo_dir="/workspace/arch-doc",
+            engine_name="claude",
+            timeout_seconds=60,
+            progress_file_path="/workspace/arch-doc/progress.yaml",
+            last_llm_result=None,
+            last_guard_output="",
+            step_error=None,
+            retry_count=0,
+        ),
+    )
+
+    assert record.workflow_status is WorkflowStatus.FAILED
+    assert record.error_message == "Error: When using --print, --output-format=stream-json requires --verbose"
+    assert persisted_statuses[-1] == WorkflowStatus.FAILED
 
 
 async def test_resume_and_answer_require_interrupted_workflow():

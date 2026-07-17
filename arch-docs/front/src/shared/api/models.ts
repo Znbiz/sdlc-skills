@@ -18,6 +18,8 @@ export interface AuthSessionResponse {
   cli_engine: CliEngine;
   auth_flow_status: AuthFlowStatus;
   instructions: string | null;
+  verification_uri: string | null;
+  user_code: string | null;
 }
 
 export interface InitAuthResponse {
@@ -25,6 +27,8 @@ export interface InitAuthResponse {
   cli_engine: CliEngine;
   auth_flow_status: AuthFlowStatus;
   instructions: string | null;
+  verification_uri: string | null;
+  user_code: string | null;
   expires_at: string;
 }
 
@@ -41,6 +45,8 @@ export interface CheckGitAccessResponse {
   message: string;
 }
 
+// action_type здесь всегда равен backend-овскому interrupt_type. Известные значения:
+// "user_question", "user_input", "temporal_window_confirmation", "step_failed".
 export interface RequiredActionResponse {
   action_type: string;
   question_id: string | null;

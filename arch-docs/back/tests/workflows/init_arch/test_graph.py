@@ -6,6 +6,7 @@ from app.workflows.init_arch.domain import STEP_DEFINITIONS, StepId, WorkflowSes
 from app.workflows.init_arch.graph import (
     _LINEAR_STEP_IDS,
     _route_after_confirm_next_temporal_window,
+    _route_after_handle_error,
     _route_after_node,
     build_graph,
     compile_graph,
@@ -140,6 +141,18 @@ def test_route_after_confirm_next_temporal_window_retries_on_error():
 def test_route_after_confirm_next_temporal_window_handles_error_after_max_retries():
     state = _make_session_state(current_step=StepId.FINALIZE_PROGRESS, step_error="boom", retry_count=3)
     assert _route_after_confirm_next_temporal_window(state) == "handle_error"
+
+
+def test_route_after_handle_error_retries_failed_node_when_step_error_cleared():
+    state = _make_session_state(current_step=StepId.CLONE_REPOSITORIES, step_error=None)
+    assert _route_after_handle_error(state) == "clone_repositories"
+
+
+def test_route_after_handle_error_aborts_to_end_when_step_error_kept():
+    from langgraph.graph import END
+
+    state = _make_session_state(current_step=StepId.CLONE_REPOSITORIES, step_error="boom", retry_count=3)
+    assert _route_after_handle_error(state) == END
 
 
 async def test_get_checkpointer_returns_cached():

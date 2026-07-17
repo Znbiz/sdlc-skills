@@ -81,6 +81,12 @@ def _route_after_confirm_next_temporal_window(state: InitArchState) -> str:
     return _FINALIZE_PROGRESS_NODE_NAME
 
 
+def _route_after_handle_error(state: InitArchState) -> str:
+    if state.get("step_error"):
+        return END
+    return state["session"].current_step.value
+
+
 def build_graph() -> StateGraph:
     graph = StateGraph(InitArchState)
 
@@ -100,7 +106,7 @@ def build_graph() -> StateGraph:
         "finalize_progress",
         lambda state: "handle_error" if state.get("step_error") and state.get("retry_count", 0) >= _MAX_RETRY else END,
     )
-    graph.add_edge("handle_error", END)
+    graph.add_conditional_edges("handle_error", _route_after_handle_error)
 
     return graph
 

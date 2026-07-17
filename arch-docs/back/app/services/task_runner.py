@@ -62,7 +62,21 @@ FAILURE_REASON_LIMIT_EXHAUSTED: typing.Final[str] = "limit_exhausted"
 
 def _build_cmd(cli_task: CliTask) -> list[str]:
     if cli_task.engine_name == "claude":
-        cmd = ["claude", "-p", cli_task.prompt_text, "--output-format", "stream-json"]
+        # Non-interactive (`-p`) runs have nobody to approve tool calls, so without this the
+        # agent silently fails every write/Bash action (mkdir, git clone, ...) and only reports
+        # the block in its final text answer - the CLI still exits 0, so callers see "success".
+        # The container's own filesystem/user isolation is the actual security boundary here,
+        # matching how `codex` is configured (see config.toml `approval_policy = "never"`).
+        cmd = [
+            "claude",
+            "-p",
+            cli_task.prompt_text,
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--permission-mode",
+            "bypassPermissions",
+        ]
         if cli_task.session_id:
             cmd.extend(["--resume", cli_task.session_id])
         return cmd
@@ -100,12 +114,55 @@ def _is_limit_error(engine_name: str, exit_code: int, stderr_text: str) -> bool:
     lowered = stderr_text.lower()
     if engine_name == "claude":
         return any(phrase in lowered for phrase in _CLAUDE_LIMIT_ERROR_SUBSTRINGS)
-    return exit_code in _CODEX_LIMIT_ERROR_EXIT_CODES or any(phrase in lowered for phrase in _CODEX_LIMIT_ERROR_SUBSTRINGS)
+    return exit_code in _CODEX_LIMIT_ERROR_EXIT_CODES or any(
+        phrase in lowered for phrase in _CODEX_LIMIT_ERROR_SUBSTRINGS
+    )
 
 
 def _clamp_timeout_seconds(timeout_seconds: int) -> int:
     max_timeout = get_gateway_settings().workflows.init.max_step_timeout_seconds
     return max(1, min(timeout_seconds, max_timeout))
+
+
+def _iter_json_lines(stdout_lines: list[str]) -> typing.Iterator[dict[str, typing.Any]]:
+    for line in stdout_lines:
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            yield payload
+
+
+def _extract_claude_result_text(stdout_lines: list[str]) -> str:
+    # claude --output-format stream-json emits one JSON object per line (system/assistant/result
+    # events); the final answer text lives in the last `type: result` event's `result` field.
+    result_text = ""
+    for payload in _iter_json_lines(stdout_lines):
+        if payload.get("type") == "result":
+            result_text = payload.get("result") or ""
+    return result_text
+
+
+def _extract_codex_result_text(stdout_lines: list[str]) -> str:
+    # codex exec --json emits one JSON object per line; the final agent answer arrives as an
+    # `item.completed` event whose item has type `agent_message`.
+    result_text = ""
+    for payload in _iter_json_lines(stdout_lines):
+        if payload.get("type") != "item.completed":
+            continue
+        item = payload.get("item") or {}
+        if item.get("type") == "agent_message":
+            result_text = item.get("text") or ""
+    return result_text
+
+
+def _extract_result_text(engine_name: str, stdout_lines: list[str]) -> str:
+    if engine_name == "claude":
+        return _extract_claude_result_text(stdout_lines)
+    if engine_name == "codex":
+        return _extract_codex_result_text(stdout_lines)
+    return "\n".join(stdout_lines)
 
 
 async def _drain_stream(reader: asyncio.StreamReader, lines: list[str]) -> None:
@@ -116,18 +173,22 @@ async def _drain_stream(reader: asyncio.StreamReader, lines: list[str]) -> None:
         lines.append(raw.decode().rstrip("\n"))
 
 
+def _task_log_context(cli_task: CliTask) -> dict[str, str | None]:
+    return {"task_id": cli_task.task_id, "workflow_id": cli_task.workflow_id, "step_id": cli_task.step_id}
+
+
 async def run_cli_task(cli_task: CliTask, agent_pool: AgentPool) -> None:
-    logger.info("cli_task.queued", task_id=cli_task.task_id, engine=cli_task.engine_name)
+    logger.info("cli_task.queued", **_task_log_context(cli_task), engine=cli_task.engine_name)
     await _persist_task(cli_task)
 
     async with agent_pool:
         if cli_task.task_status == TaskStatus.CANCELLED:
-            logger.info("cli_task.skipped_cancelled", task_id=cli_task.task_id)
+            logger.info("cli_task.skipped_cancelled", **_task_log_context(cli_task))
             return
 
         cli_task.task_status = TaskStatus.RUNNING
         cli_task.started_at = datetime.datetime.now(datetime.timezone.utc)
-        logger.info("cli_task.started", task_id=cli_task.task_id, engine=cli_task.engine_name)
+        logger.info("cli_task.started", **_task_log_context(cli_task), engine=cli_task.engine_name)
         await _persist_task(cli_task)
 
         cmd = _build_cmd(cli_task)
@@ -159,7 +220,7 @@ async def run_cli_task(cli_task: CliTask, agent_pool: AgentPool) -> None:
                 cli_task.task_status = TaskStatus.FAILED
                 cli_task.task_error = "Timeout exceeded"
                 cli_task.finished_at = datetime.datetime.now(datetime.timezone.utc)
-                logger.warning("cli_task.timeout", task_id=cli_task.task_id)
+                logger.warning("cli_task.timeout", **_task_log_context(cli_task))
                 await _persist_task(cli_task)
                 return
 
@@ -171,26 +232,26 @@ async def run_cli_task(cli_task: CliTask, agent_pool: AgentPool) -> None:
             if _is_auth_error(cli_task.engine_name, exit_code, stderr_text):
                 cli_task.task_status = TaskStatus.FAILED
                 cli_task.task_error = f"{FAILURE_REASON_AUTH_EXPIRED}: {stderr_text}"
-                logger.warning("cli_task.auth_error", task_id=cli_task.task_id)
+                logger.warning("cli_task.auth_error", **_task_log_context(cli_task))
             elif _is_limit_error(cli_task.engine_name, exit_code, stderr_text):
                 cli_task.task_status = TaskStatus.FAILED
                 cli_task.task_error = f"{FAILURE_REASON_LIMIT_EXHAUSTED}: {stderr_text}"
-                logger.warning("cli_task.limit_error", task_id=cli_task.task_id, engine=cli_task.engine_name)
+                logger.warning("cli_task.limit_error", **_task_log_context(cli_task), engine=cli_task.engine_name)
             elif exit_code != 0:
                 cli_task.task_status = TaskStatus.FAILED
                 cli_task.task_error = stderr_text or f"Exit code: {exit_code}"
-                logger.warning("cli_task.failed", task_id=cli_task.task_id, exit_code=exit_code)
+                logger.warning("cli_task.failed", **_task_log_context(cli_task), exit_code=exit_code)
             else:
-                cli_task.task_result = "\n".join(cli_task.stdout_lines)
+                cli_task.task_result = _extract_result_text(cli_task.engine_name, cli_task.stdout_lines)
                 cli_task.task_status = TaskStatus.SUCCESS
 
         except OSError as exc:
             cli_task.task_status = TaskStatus.FAILED
             cli_task.task_error = str(exc)
-            logger.error("cli_task.os_error", task_id=cli_task.task_id, error=str(exc))
+            logger.error("cli_task.os_error", **_task_log_context(cli_task), error=str(exc))
         finally:
             cli_task.finished_at = datetime.datetime.now(datetime.timezone.utc)
-            logger.info("cli_task.finished", task_id=cli_task.task_id, task_status=cli_task.task_status)
+            logger.info("cli_task.finished", **_task_log_context(cli_task), task_status=cli_task.task_status)
             await _persist_task(cli_task)
 
 

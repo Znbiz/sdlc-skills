@@ -15,15 +15,18 @@ logger = structlog.get_logger()
 class WorkflowAuditService:
     def __init__(self) -> None:
         self._events: dict[str, list[WorkflowEventRecord]] = collections.defaultdict(list)
+        self._pending_persist_tasks: set[asyncio.Task[None]] = set()
 
     def record(self, event: WorkflowEventRecord) -> None:
         if not event.session_id:
             return
         self._events[event.session_id].append(event)
         try:
-            asyncio.get_running_loop().create_task(self._persist_event(event))
+            task = asyncio.get_running_loop().create_task(self._persist_event(event))
         except RuntimeError:
             return
+        self._pending_persist_tasks.add(task)
+        task.add_done_callback(self._pending_persist_tasks.discard)
 
     def list_events(self, session_id: str) -> list[WorkflowEventRecord]:
         return list(self._events.get(session_id, []))
@@ -33,6 +36,18 @@ class WorkflowAuditService:
             self._events.clear()
             return
         self._events.pop(session_id, None)
+
+    async def wait_for_pending_persist(self) -> None:
+        """Await fire-and-forget `_persist_event` tasks spawned by `record()`.
+
+        `record()` intentionally doesn't await persistence so it stays a sync call usable from
+        anywhere. Callers that need every write flushed before proceeding (tests truncating
+        tables between runs, in particular - a lingering write racing a TRUNCATE deadlocks
+        Postgres) must drain the in-flight tasks explicitly via this method.
+        """
+        pending_tasks = list(self._pending_persist_tasks)
+        if pending_tasks:
+            await asyncio.gather(*pending_tasks, return_exceptions=True)
 
     async def _persist_event(self, event: WorkflowEventRecord) -> None:
         try:

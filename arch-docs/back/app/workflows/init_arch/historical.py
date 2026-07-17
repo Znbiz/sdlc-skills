@@ -466,7 +466,10 @@ class HistoricalPrepService:
         return completed.returncode == 0
 
     def _checkout_commit(self, repo_path: pathlib.Path, commit_sha: str) -> None:
-        self._run_git_command(repo_path, ["git", "checkout", commit_sha])
+        # `git checkout` writes its status ("HEAD is now at ...") to stderr, not stdout, so a
+        # successful checkout legitimately produces empty stdout - this must not be treated as
+        # a command failure the way an empty `rev-parse`/`log` result would be.
+        self._run_git_command(repo_path, ["git", "checkout", commit_sha], allow_empty=True)
 
     def _repository_path(self, repository_name: str, *, workspace_dir: str) -> pathlib.Path:
         temp_repo_path = pathlib.Path(workspace_dir) / ".temp" / repository_name

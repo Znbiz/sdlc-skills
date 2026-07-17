@@ -49,10 +49,9 @@ def _make_state(**kwargs) -> InitArchState:
     return base
 
 
-async def test_node_define_scope_uses_guard_and_worker_services() -> None:
+async def test_node_define_scope_uses_guard_service_without_llm() -> None:
     state = _make_state()
     guard_service = MagicMock()
-    llm_service = MagicMock()
     audit_service = MagicMock()
 
     initialized_session = state["session"].model_copy()
@@ -61,20 +60,18 @@ async def test_node_define_scope_uses_guard_and_worker_services() -> None:
     )
     guard_service.init_progress = AsyncMock(return_value=GuardOperationResult(session=initialized_session))
     guard_service.advance_step = AsyncMock(return_value=GuardOperationResult(session=advanced_session))
-    llm_service.run_task = AsyncMock(
-        return_value=LlmTaskResult(task_kind=LlmTaskKind.STEP_EXECUTION, step_id=StepId.DEFINE_SCOPE)
-    )
 
     with (
         patch("app.workflows.init_arch.nodes.get_guard_service", return_value=guard_service),
-        patch("app.workflows.init_arch.nodes.get_llm_worker_service", return_value=llm_service),
         patch("app.workflows.init_arch.nodes.get_workflow_audit_service", return_value=audit_service),
+        patch("app.workflows.init_arch.nodes.get_llm_worker_service") as llm_service,
     ):
         result = await nodes_module.node_define_scope(state)
 
     assert result["current_step_id"] == "request_repository_list"
     assert result["session"].current_step is StepId.REQUEST_REPOSITORY_LIST
-    llm_service.run_task.assert_awaited_once()
+    assert result["last_llm_result"] is None
+    llm_service.assert_not_called()
     guard_service.init_progress.assert_awaited_once()
     guard_service.advance_step.assert_awaited_once()
     recorded_events = [call.args[0] for call in audit_service.record.call_args_list]
@@ -106,6 +103,23 @@ async def test_node_request_repository_list_advances_when_repositories_exist() -
     assert result["current_step_id"] == "prepare_temp_workspace"
 
 
+async def test_node_request_repository_list_wraps_advance_step_failure_in_step_error() -> None:
+    state = _make_state()
+    guard_service = MagicMock()
+    audit_service = MagicMock()
+    guard_service.advance_step = AsyncMock(side_effect=RuntimeError("guard blew up"))
+
+    with (
+        patch("app.workflows.init_arch.nodes.get_guard_service", return_value=guard_service),
+        patch("app.workflows.init_arch.nodes.get_workflow_audit_service", return_value=audit_service),
+    ):
+        result = await nodes_module.node_request_repository_list(state)
+
+    assert result == {"step_error": "guard blew up", "retry_count": 1}
+    recorded_events = [call.args[0] for call in audit_service.record.call_args_list]
+    assert any(event.event_type == EventType.WORKFLOW_STEP_FAILED for event in recorded_events)
+
+
 async def test_node_request_repository_list_interrupts_without_repositories() -> None:
     session = WorkflowSessionRecord(session_id="wf-1", product_name="Prod", analysis_scope="full")
     state = _make_state(session=session)
@@ -114,6 +128,71 @@ async def test_node_request_repository_list_interrupts_without_repositories() ->
         with pytest.raises(Exception, match="interrupt called"):
             await nodes_module.node_request_repository_list(state)
         mock_interrupt.assert_called_once()
+
+
+async def test_node_prepare_temp_workspace_creates_directories_without_llm(tmp_path) -> None:
+    workspace_dir = tmp_path / "workspace"
+    raw_workspace_dir = workspace_dir / ".temp"
+    arch_repo_dir = workspace_dir / "arch-doc"
+    state = _make_state(
+        workspace_dir=str(workspace_dir),
+        raw_workspace_dir=str(raw_workspace_dir),
+        arch_repo_dir=str(arch_repo_dir),
+    )
+    guard_service = MagicMock()
+    audit_service = MagicMock()
+    advanced_session = state["session"].model_copy(
+        update={
+            "current_step": StepId.CLONE_REPOSITORIES,
+            "completed_steps": [
+                StepId.DEFINE_SCOPE,
+                StepId.REQUEST_REPOSITORY_LIST,
+                StepId.PREPARE_TEMP_WORKSPACE,
+            ],
+        }
+    )
+    guard_service.advance_step = AsyncMock(return_value=GuardOperationResult(session=advanced_session))
+
+    with (
+        patch("app.workflows.init_arch.nodes.get_guard_service", return_value=guard_service),
+        patch("app.workflows.init_arch.nodes.get_workflow_audit_service", return_value=audit_service),
+        patch("app.workflows.init_arch.nodes.get_llm_worker_service") as llm_service,
+    ):
+        result = await nodes_module.node_prepare_temp_workspace(state)
+
+    assert result["current_step_id"] == "clone_repositories"
+    assert result["last_llm_result"] is None
+    llm_service.assert_not_called()
+    assert workspace_dir.is_dir()
+    assert raw_workspace_dir.is_dir()
+    assert arch_repo_dir.is_dir()
+    recorded_events = [call.args[0] for call in audit_service.record.call_args_list]
+    assert [event.event_type for event in recorded_events] == [
+        EventType.WORKFLOW_STEP_STARTED,
+        EventType.WORKFLOW_STEP_COMPLETED,
+    ]
+
+
+async def test_node_prepare_temp_workspace_wraps_advance_step_failure_in_step_error(tmp_path) -> None:
+    workspace_dir = tmp_path / "workspace"
+    state = _make_state(
+        workspace_dir=str(workspace_dir),
+        raw_workspace_dir=str(workspace_dir / ".temp"),
+        arch_repo_dir=str(workspace_dir / "arch-doc"),
+    )
+    guard_service = MagicMock()
+    audit_service = MagicMock()
+    guard_service.advance_step = AsyncMock(side_effect=RuntimeError("guard blew up"))
+
+    with (
+        patch("app.workflows.init_arch.nodes.get_guard_service", return_value=guard_service),
+        patch("app.workflows.init_arch.nodes.get_workflow_audit_service", return_value=audit_service),
+    ):
+        result = await nodes_module.node_prepare_temp_workspace(state)
+
+    assert result == {"step_error": "guard blew up", "retry_count": 1}
+    recorded_events = [call.args[0] for call in audit_service.record.call_args_list]
+    assert any(event.event_type == EventType.WORKFLOW_STEP_FAILED for event in recorded_events)
 
 
 async def test_node_refresh_main_branches_uses_historical_service_without_llm() -> None:
@@ -249,7 +328,7 @@ async def test_node_plan_repository_order_blocks_when_checkout_done_but_temporal
                     "current_snapshot_at": None,
                     "ordered_repository_names": ["svc-a"],
                 }
-            )
+            ),
         }
     )
     resolved_session = planned_session.model_copy(
@@ -701,7 +780,9 @@ async def test_node_confirm_next_temporal_window_continues_and_resets_repository
     state["session"] = state["session"].model_copy(
         update={
             "repositories": [
-                state["session"].repositories[0].model_copy(
+                state["session"]
+                .repositories[0]
+                .model_copy(
                     update={"checklist_items_completed": ["repository_classification"], "analysis_status": "completed"}
                 )
             ]
@@ -783,7 +864,29 @@ def test_extract_question_answer_validates_and_normalizes_input() -> None:
         nodes_module._extract_question_answer({"answer": "   "})
 
 
-async def test_node_handle_error_returns_empty_payload() -> None:
-    result = await nodes_module.node_handle_error(_make_state(step_error="boom", retry_count=2))
+async def test_node_handle_error_retry_resets_step_error_and_retry_count() -> None:
+    state = _make_state(step_error="boom", retry_count=3)
 
-    assert result == {}
+    with patch("app.workflows.init_arch.nodes.interrupt", return_value={"action": "retry"}) as mock_interrupt:
+        result = await nodes_module.node_handle_error(state)
+
+    assert result == {"step_error": None, "retry_count": 0}
+    interrupt_payload = mock_interrupt.call_args.args[0]
+    assert interrupt_payload["interrupt_type"] == "step_failed"
+    assert interrupt_payload["step_id"] == state["session"].current_step.value
+    assert interrupt_payload["error"] == "boom"
+    assert interrupt_payload["retry_count"] == 3
+
+
+async def test_node_handle_error_abort_preserves_failure() -> None:
+    state = _make_state(step_error="boom", retry_count=3)
+
+    with patch("app.workflows.init_arch.nodes.interrupt", return_value={"action": "abort"}):
+        result = await nodes_module.node_handle_error(state)
+
+    assert result == {"step_error": "boom", "retry_count": 3}
+
+
+def test_extract_step_failure_recovery_action_rejects_unknown_action() -> None:
+    with pytest.raises(ValueError, match=r"retry.*abort"):
+        nodes_module._extract_step_failure_recovery_action({"action": "not_a_real_action"})

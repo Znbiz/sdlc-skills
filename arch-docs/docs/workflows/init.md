@@ -934,6 +934,7 @@ Transport-level terminal states:
 
 ## Связанные Документы
 
+- [init-graph-reference.md](init-graph-reference.md) — визуальная схема графа и разбор каждой ноды (LLM/не-LLM, промпты, output, error handling, логи)
 - [init-repo-arch-skill-gap-analysis.md](../spec/init-repo-arch-skill-gap-analysis.md)
 - [init-repo-arch-skill-implementation-plan.md](../spec/init-repo-arch-skill-implementation-plan.md)
 - [ТЗ — Arch Docs Service.md](../spec/ТЗ%20—%20Arch%20Docs%20Service.md)

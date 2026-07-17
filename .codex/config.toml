@@ -1,3 +1,0 @@
-[mcp_servers.codegraph]
-command = "/Users/aanekraso2/bin/codegraph-server"
-args = ["--mcp", "--workspace", "/Users/aanekraso2/github.com/znbiz/sdlc"]

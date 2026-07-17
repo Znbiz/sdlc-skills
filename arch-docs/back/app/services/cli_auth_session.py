@@ -24,6 +24,8 @@ class CliAuthSession:
     cli_engine: str
     auth_flow_status: AuthFlowStatus = AuthFlowStatus.PENDING
     instructions: str | None = None
+    verification_uri: str | None = None
+    user_code: str | None = None
     subprocess_handle: asyncio.subprocess.Process | None = None
     output_lines: list[str] = dataclasses.field(default_factory=list)
     created_at: datetime.datetime = dataclasses.field(

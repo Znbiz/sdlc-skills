@@ -4,6 +4,7 @@ import asyncio
 import datetime
 import json
 import pathlib
+import re
 import typing
 import uuid
 
@@ -21,6 +22,7 @@ from app.db.workflow_repo import (
     upsert_workflow_run,
 )
 from app.services.agent_pool import get_agent_pool
+from app.services.git_credentials import list_configured_hosts
 from app.services.task_registry import CliTask, TaskStatus
 from app.services.task_registry import get_registry as get_task_registry
 from app.services.task_runner import cancel_cli_task, run_cli_task
@@ -586,6 +588,8 @@ async def submit_response_action_async(
         if value is None:
             raise WorkflowValidationError("confirm_temporal_window requires a value")
         await confirm_init_arch_temporal_window(response_id, action=str(value))
+    elif action_type == "retry":
+        await retry_init_arch_workflow(response_id, action=str(value) if value is not None else "retry")
     else:
         raise WorkflowValidationError(f"Unsupported action_type: {action_type}")
     return await get_response_async(response_id)
@@ -721,6 +725,49 @@ async def stream_response_events_async(response_id: str) -> typing.AsyncGenerato
         yield chunk
 
 
+_GRAPH_ERROR_NODE_NAME: typing.Final[str] = "handle_error"
+
+
+async def _drive_graph_stream(
+    record: WorkflowRecord, graph: typing.Any, config: dict[str, typing.Any], stream_input: typing.Any
+) -> bool:
+    """Advance the graph until it interrupts or reaches END.
+
+    Returns True if the run should be treated as failed: the graph's own retry/error routing
+    (see `_route_after_node` in graph.py) can exhaust retries and route through the
+    `handle_error` node straight to END without raising a Python exception, so a clean
+    `astream` completion does not by itself mean the workflow succeeded.
+    """
+    reached_handle_error = False
+    last_step_error: str | None = None
+
+    async for event in graph.astream(stream_input, config=config):
+        for node_name, node_output in event.items():
+            if node_name == "__interrupt__":
+                apply_interrupt(record, node_output)
+                await persist_workflow_record(record)
+                logger.info(
+                    "workflow.interrupted",
+                    workflow_id=record.workflow_id,
+                    interrupt=record.pending_interrupt,
+                )
+                return False
+            # LangGraph reports a node that returned `{}` (no state update) as `None` here,
+            # not `{}` - so this must be checked before the isinstance/apply_node_output gate.
+            if node_name == _GRAPH_ERROR_NODE_NAME:
+                reached_handle_error = True
+            if not isinstance(node_output, dict):
+                continue
+            if node_output.get("step_error"):
+                last_step_error = node_output["step_error"]
+            apply_node_output(record, node_output)
+            await persist_workflow_record(record)
+
+    if reached_handle_error:
+        record.error_message = last_step_error or "Workflow step failed after exhausting retries"
+    return reached_handle_error
+
+
 async def run_workflow(record: WorkflowRecord, initial_state: InitArchState) -> None:
     registry = get_workflow_registry()
     try:
@@ -728,25 +775,17 @@ async def run_workflow(record: WorkflowRecord, initial_state: InitArchState) -> 
         graph = compile_graph(checkpointer=checkpointer)
         config = {"configurable": {"thread_id": record.workflow_id}}
 
-        async for event in graph.astream(initial_state, config=config):
-            for node_name, node_output in event.items():
-                if node_name == "__interrupt__":
-                    apply_interrupt(record, node_output)
-                    await persist_workflow_record(record)
-                    logger.info(
-                        "workflow.interrupted",
-                        workflow_id=record.workflow_id,
-                        interrupt=record.pending_interrupt,
-                    )
-                    return
-                if isinstance(node_output, dict):
-                    apply_node_output(record, node_output)
-                    await persist_workflow_record(record)
+        failed = await _drive_graph_stream(record, graph, config, initial_state)
+        if record.workflow_status == WorkflowStatus.INTERRUPTED:
+            return
 
-        record.workflow_status = WorkflowStatus.SUCCESS
+        record.workflow_status = WorkflowStatus.FAILED if failed else WorkflowStatus.SUCCESS
         record.updated_at = utcnow()
         await persist_workflow_record(record)
-        logger.info("workflow.completed", workflow_id=record.workflow_id)
+        if failed:
+            logger.error("workflow.failed", workflow_id=record.workflow_id, error=record.error_message)
+        else:
+            logger.info("workflow.completed", workflow_id=record.workflow_id)
     except asyncio.CancelledError:
         record.workflow_status = WorkflowStatus.CANCELLED
         record.error_message = "Workflow cancelled"
@@ -770,16 +809,12 @@ async def resume_workflow_task(record: WorkflowRecord, resume_value: typing.Any)
         checkpointer = await get_checkpointer()
         graph = compile_graph(checkpointer=checkpointer)
         config = {"configurable": {"thread_id": record.workflow_id}}
-        async for event in graph.astream(resume_value, config=config):
-            for node_name, node_output in event.items():
-                if node_name == "__interrupt__":
-                    apply_interrupt(record, node_output)
-                    await persist_workflow_record(record)
-                    return
-                if isinstance(node_output, dict):
-                    apply_node_output(record, node_output)
-                    await persist_workflow_record(record)
-        record.workflow_status = WorkflowStatus.SUCCESS
+
+        failed = await _drive_graph_stream(record, graph, config, resume_value)
+        if record.workflow_status == WorkflowStatus.INTERRUPTED:
+            return
+
+        record.workflow_status = WorkflowStatus.FAILED if failed else WorkflowStatus.SUCCESS
         record.updated_at = utcnow()
         await persist_workflow_record(record)
     except asyncio.CancelledError:
@@ -815,6 +850,8 @@ def build_resume_value(*, interrupt_type: str, field: str | None, value: typing.
         return {"answer": answer}
     if interrupt_type == "temporal_window_confirmation" and value is not None:
         return {"action": value}
+    if interrupt_type == "step_failed" and value is not None:
+        return {"action": value}
     raise WorkflowValidationError("Invalid resume payload for interrupt type")
 
 
@@ -845,12 +882,48 @@ def _resolve_init_arch_paths(
     return str(workspace_path), str(arch_repo_path), str(raw_workspace_path)
 
 
-def _parse_repo_list_entry(entry: str) -> RepositoryExecution:
+_SCP_LIKE_SSH_URL_PATTERN: typing.Final[re.Pattern[str]] = re.compile(r"^git@(?P<host>[^:/]+):(?P<path>.+)$")
+
+
+def _canonicalize_repo_path(path: str) -> str:
+    return path.strip().rstrip("/").removesuffix(".git")
+
+
+async def _normalize_repository_url(raw_url: str) -> str:
+    """Bring a user-submitted repository URL to a canonical clone URL.
+
+    Users paste this in two error-prone shapes: the SCP-like SSH form (`git@host:path.git`)
+    and a bare web address-bar copy (`https://host/path`, no `.git`, maybe a trailing slash).
+    A PAT is HTTPS-only — git's credential helper never applies to the SSH transport — so an
+    SSH-form URL for a host that only has a PAT configured (no deploy key) can never
+    authenticate. Rewrite it to HTTPS in that case; leave other SSH hosts alone since SSH
+    deploy-key auth (see app/services/git_ssh.py) is presumably what's intended there.
+    """
+    stripped = raw_url.strip()
+
+    scp_match = _SCP_LIKE_SSH_URL_PATTERN.match(stripped)
+    if scp_match:
+        host = scp_match.group("host")
+        configured_hosts = await list_configured_hosts()
+        if host not in configured_hosts:
+            return stripped
+        path = _canonicalize_repo_path(scp_match.group("path"))
+        return f"https://{host}/{path}.git"
+
+    if stripped.startswith(("http://", "https://")):
+        scheme, _, rest = stripped.partition("://")
+        path = _canonicalize_repo_path(rest)
+        return f"{scheme}://{path}.git"
+
+    return stripped
+
+
+async def _parse_repo_list_entry(entry: str) -> RepositoryExecution:
     stripped = entry.strip()
     if "://" in stripped or stripped.startswith("git@"):
-        repository_name = stripped.rstrip("/").rsplit("/", 1)[-1]
-        repository_name = repository_name.removesuffix(".git")
-        return RepositoryExecution(repository_name=repository_name, repository_url=stripped)
+        normalized_url = await _normalize_repository_url(stripped)
+        repository_name = _canonicalize_repo_path(normalized_url).rsplit("/", 1)[-1]
+        return RepositoryExecution(repository_name=repository_name, repository_url=normalized_url)
     return RepositoryExecution(repository_name=stripped)
 
 
@@ -871,11 +944,12 @@ async def start_init_arch_workflow(
     )
     workflow_id = str(uuid.uuid4())
     progress_file_path = f"{resolved_arch_repo_dir}/repo-initialization-progress.yaml"
+    repositories = [await _parse_repo_list_entry(repo_entry) for repo_entry in repo_list]
     session = WorkflowSessionRecord(
         session_id=workflow_id,
         product_name=product_name,
         analysis_scope=analysis_scope,
-        repositories=[_parse_repo_list_entry(repo_entry) for repo_entry in repo_list],
+        repositories=repositories,
     )
 
     record = WorkflowRecord(
@@ -963,6 +1037,23 @@ async def confirm_init_arch_temporal_window(workflow_id: str, *, action: str) ->
     schedule_resume(record, resume_value={"action": action})
     await persist_workflow_record(record)
     logger.info("workflow.temporal_window.confirmed", workflow_id=workflow_id, action=action)
+    return record
+
+
+async def retry_init_arch_workflow(workflow_id: str, *, action: str = "retry") -> WorkflowRecord:
+    record = await get_workflow_record_async(workflow_id)
+    if record.workflow_status != WorkflowStatus.INTERRUPTED:
+        raise WorkflowConflictError(f"Workflow is not interrupted (status: {record.workflow_status})")
+
+    pending_interrupt = record.pending_interrupt or {}
+    if pending_interrupt.get("interrupt_type") != "step_failed":
+        raise WorkflowConflictError("Workflow is not waiting for a step failure recovery decision")
+    if action not in {"retry", "abort"}:
+        raise WorkflowValidationError(f"Unsupported step failure recovery action: {action}")
+
+    schedule_resume(record, resume_value={"action": action})
+    await persist_workflow_record(record)
+    logger.info("workflow.step_failure.recovery", workflow_id=workflow_id, action=action)
     return record
 
 
