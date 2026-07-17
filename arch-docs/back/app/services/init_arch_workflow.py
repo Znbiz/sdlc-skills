@@ -31,6 +31,7 @@ from app.settings import GatewaySettings, get_gateway_settings
 from app.workflows.init_arch.checkpointer import get_checkpointer
 from app.workflows.init_arch.domain import RepositoryExecution, WorkflowSessionRecord
 from app.workflows.init_arch.graph import compile_graph
+from app.workflows.init_arch.snapshot import write_snapshot_file
 from app.workflows.init_arch.state import InitArchState
 
 logger = structlog.get_logger()
@@ -746,6 +747,7 @@ async def _drive_graph_stream(
             if node_name == "__interrupt__":
                 apply_interrupt(record, node_output)
                 await persist_workflow_record(record)
+                await _write_progress_snapshot(graph, config)
                 logger.info(
                     "workflow.interrupted",
                     workflow_id=record.workflow_id,
@@ -762,10 +764,16 @@ async def _drive_graph_stream(
                 last_step_error = node_output["step_error"]
             apply_node_output(record, node_output)
             await persist_workflow_record(record)
+            await _write_progress_snapshot(graph, config)
 
     if reached_handle_error:
         record.error_message = last_step_error or "Workflow step failed after exhausting retries"
     return reached_handle_error
+
+
+async def _write_progress_snapshot(graph: typing.Any, config: dict[str, typing.Any]) -> None:
+    state_snapshot = await graph.aget_state(config)
+    write_snapshot_file(state_snapshot.values)
 
 
 async def run_workflow(record: WorkflowRecord, initial_state: InitArchState) -> None:

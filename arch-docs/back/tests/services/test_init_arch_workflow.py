@@ -623,6 +623,78 @@ async def test_start_init_arch_workflow_rejects_arch_repo_inside_raw_workspace(m
         )
 
 
+async def test_run_workflow_writes_progress_snapshot_after_each_step(monkeypatch, tmp_path):
+    progress_file = tmp_path / "arch-doc" / "repo-initialization-progress.yaml"
+    initial_session = WorkflowSessionRecord(
+        session_id="wf-snapshot",
+        product_name="Prod",
+        analysis_scope="full",
+    )
+    advanced_session = initial_session.model_copy(
+        update={"current_step": StepId.REQUEST_REPOSITORY_LIST, "completed_steps": [StepId.DEFINE_SCOPE]}
+    )
+    final_session = advanced_session.model_copy(update={"current_step": StepId.DONE})
+    record = WorkflowRecord(workflow_id="wf-snapshot", conversation_id="conv-snapshot", session=initial_session)
+
+    state_after_define_scope = {
+        "session_id": "wf-snapshot",
+        "session": advanced_session,
+        "workspace_dir": str(tmp_path),
+        "arch_repo_dir": str(tmp_path / "arch-doc"),
+        "engine_name": "claude",
+        "timeout_seconds": 600,
+        "progress_file_path": str(progress_file),
+    }
+    state_after_finalize = {**state_after_define_scope, "session": final_session}
+
+    class _Graph:
+        def __init__(self) -> None:
+            self._states = iter([state_after_define_scope, state_after_finalize])
+
+        async def astream(self, _state, *, config):
+            assert config == {"configurable": {"thread_id": "wf-snapshot"}}
+            yield {"define_scope": {"session": advanced_session, "current_step_id": "request_repository_list"}}
+            yield {"finalize_progress": {"session": final_session, "current_step_id": "done"}}
+
+        async def aget_state(self, config):
+            del config
+            return types.SimpleNamespace(values=next(self._states))
+
+    async def _fake_persist(current: WorkflowRecord) -> None:
+        del current
+
+    def _compile_graph(checkpointer):
+        del checkpointer
+        return _Graph()
+
+    monkeypatch.setattr("app.services.init_arch_workflow.get_checkpointer", AsyncMock(return_value="checkpoint"))
+    monkeypatch.setattr("app.services.init_arch_workflow.compile_graph", _compile_graph)
+    monkeypatch.setattr("app.services.init_arch_workflow.persist_workflow_record", _fake_persist)
+
+    await workflow_module.run_workflow(
+        record,
+        workflow_module.InitArchState(
+            session_id=initial_session.session_id,
+            session=initial_session,
+            workspace_dir=str(tmp_path),
+            arch_repo_dir=str(tmp_path / "arch-doc"),
+            engine_name="claude",
+            timeout_seconds=600,
+            progress_file_path=str(progress_file),
+            last_llm_result=None,
+            last_guard_output="",
+            step_error=None,
+            retry_count=0,
+        ),
+    )
+
+    assert progress_file.exists()
+    from app.workflows.init_arch.snapshot import parse_snapshot_yaml
+
+    restored = parse_snapshot_yaml(progress_file.read_text(encoding="utf-8"))
+    assert restored.session.current_step is StepId.DONE
+
+
 async def test_run_workflow_happy_path_persists_node_progress_and_terminal_success(monkeypatch):
     initial_session = WorkflowSessionRecord(
         session_id="wf-happy",
@@ -660,6 +732,10 @@ async def test_run_workflow_happy_path_persists_node_progress_and_terminal_succe
                     "current_step_id": "done",
                 }
             }
+
+        async def aget_state(self, config):
+            del config
+            return types.SimpleNamespace(values={})
 
     async def _fake_persist(current: WorkflowRecord) -> None:
         persisted_states.append((current.current_step_id, current.workflow_status))
@@ -725,6 +801,10 @@ async def test_run_workflow_interrupt_persists_pending_question(monkeypatch):
                 ]
             }
 
+        async def aget_state(self, config):
+            del config
+            return types.SimpleNamespace(values={})
+
     async def _fake_persist(current: WorkflowRecord) -> None:
         persisted_statuses.append(current.workflow_status)
 
@@ -773,6 +853,10 @@ async def test_run_workflow_failure_marks_record_failed(monkeypatch):
             if False:
                 yield {}
             raise ValueError("graph boom")
+
+        async def aget_state(self, config):
+            del config
+            return types.SimpleNamespace(values={})
 
     async def _fake_persist(current: WorkflowRecord) -> None:
         persisted_statuses.append(current.workflow_status)
@@ -827,6 +911,10 @@ async def test_run_workflow_marks_failed_when_graph_exhausts_retries_via_handle_
             # real LangGraph reports a node that returned `{}` as `None`, not `{}` (verified
             # against langgraph 1.2.7) - mock the actual shape, not the intuitive one
             yield {"handle_error": None}
+
+        async def aget_state(self, config):
+            del config
+            return types.SimpleNamespace(values={})
 
     async def _fake_persist(current: WorkflowRecord) -> None:
         persisted_statuses.append(current.workflow_status)
