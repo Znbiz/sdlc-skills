@@ -776,14 +776,20 @@ async def _write_progress_snapshot(graph: typing.Any, config: dict[str, typing.A
     write_snapshot_file(state_snapshot.values)
 
 
-async def run_workflow(record: WorkflowRecord, initial_state: InitArchState) -> None:
+async def run_workflow(record: WorkflowRecord, initial_state: InitArchState, *, as_node: str | None = None) -> None:
     registry = get_workflow_registry()
     try:
         checkpointer = await get_checkpointer()
         graph = compile_graph(checkpointer=checkpointer)
         config = {"configurable": {"thread_id": record.workflow_id}}
 
-        failed = await _drive_graph_stream(record, graph, config, initial_state)
+        if as_node is not None:
+            await graph.aupdate_state(config, dict(initial_state), as_node=as_node)
+            stream_input: typing.Any = None
+        else:
+            stream_input = initial_state
+
+        failed = await _drive_graph_stream(record, graph, config, stream_input)
         if record.workflow_status == WorkflowStatus.INTERRUPTED:
             return
 

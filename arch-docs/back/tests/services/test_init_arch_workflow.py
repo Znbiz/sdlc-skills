@@ -949,6 +949,63 @@ async def test_run_workflow_marks_failed_when_graph_exhausts_retries_via_handle_
     assert persisted_statuses[-1] == WorkflowStatus.FAILED
 
 
+async def test_run_workflow_seeds_checkpoint_via_aupdate_state_when_as_node_given(monkeypatch):
+    session = WorkflowSessionRecord(
+        session_id="wf-seed",
+        product_name="Prod",
+        analysis_scope="full",
+        current_step=StepId.CLONE_REPOSITORIES,
+        completed_steps=[StepId.DEFINE_SCOPE, StepId.REQUEST_REPOSITORY_LIST, StepId.PREPARE_TEMP_WORKSPACE],
+    )
+    record = WorkflowRecord(workflow_id="wf-seed", conversation_id="conv-seed", session=session)
+    final_session = session.model_copy(update={"current_step": StepId.DONE})
+    aupdate_state_calls = []
+
+    class _Graph:
+        async def aupdate_state(self, config, values, *, as_node):
+            aupdate_state_calls.append((config, values, as_node))
+
+        async def astream(self, state_input, *, config):
+            del config
+            assert state_input is None
+            yield {"finalize_progress": {"session": final_session, "current_step_id": "done"}}
+
+        async def aget_state(self, config):
+            del config
+            return types.SimpleNamespace(values={})
+
+    def _compile_graph(checkpointer):
+        del checkpointer
+        return _Graph()
+
+    monkeypatch.setattr("app.services.init_arch_workflow.get_checkpointer", AsyncMock(return_value="checkpoint"))
+    monkeypatch.setattr("app.services.init_arch_workflow.compile_graph", _compile_graph)
+    monkeypatch.setattr("app.services.init_arch_workflow.persist_workflow_record", AsyncMock())
+
+    initial_state = workflow_module.InitArchState(
+        session_id=session.session_id,
+        session=session,
+        workspace_dir="/workspace",
+        arch_repo_dir="/workspace/arch-doc",
+        engine_name="claude",
+        timeout_seconds=60,
+        progress_file_path="/workspace/arch-doc/progress.yaml",
+        last_llm_result=None,
+        last_guard_output="",
+        step_error=None,
+        retry_count=0,
+    )
+
+    await workflow_module.run_workflow(record, initial_state, as_node="prepare_temp_workspace")
+
+    assert len(aupdate_state_calls) == 1
+    seeded_config, seeded_values, seeded_as_node = aupdate_state_calls[0]
+    assert seeded_config == {"configurable": {"thread_id": "wf-seed"}}
+    assert seeded_values["session"] == session
+    assert seeded_as_node == "prepare_temp_workspace"
+    assert record.workflow_status is WorkflowStatus.SUCCESS
+
+
 async def test_resume_and_answer_require_interrupted_workflow():
     record = WorkflowRecord(workflow_id="wf-status", workflow_status=WorkflowStatus.RUNNING)
     workflow_module.get_workflow_registry()["wf-status"] = record
