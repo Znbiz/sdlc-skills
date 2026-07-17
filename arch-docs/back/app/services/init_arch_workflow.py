@@ -29,9 +29,9 @@ from app.services.task_runner import cancel_cli_task, run_cli_task
 from app.services.workflow_registry import WorkflowRecord, WorkflowStatus, get_workflow_registry
 from app.settings import GatewaySettings, get_gateway_settings
 from app.workflows.init_arch.checkpointer import get_checkpointer
-from app.workflows.init_arch.domain import RepositoryExecution, WorkflowSessionRecord
+from app.workflows.init_arch.domain import RepositoryExecution, StepId, WorkflowSessionRecord
 from app.workflows.init_arch.graph import compile_graph
-from app.workflows.init_arch.snapshot import write_snapshot_file
+from app.workflows.init_arch.snapshot import parse_snapshot_yaml, write_snapshot_file
 from app.workflows.init_arch.state import InitArchState
 
 logger = structlog.get_logger()
@@ -998,6 +998,76 @@ async def start_init_arch_workflow(
     task.add_done_callback(_background_tasks.discard)
 
     logger.info("workflow.init.started", workflow_id=workflow_id, product=product_name)
+    return record
+
+
+async def resume_init_arch_workflow_from_snapshot(
+    yaml_text: str,
+    *,
+    workspace_dir: str | None = None,
+    arch_repo_dir: str | None = None,
+    engine_name: str | None = None,
+    timeout_seconds: int | None = None,
+    conversation_id: str | None = None,
+) -> WorkflowRecord:
+    snapshot = parse_snapshot_yaml(yaml_text)
+    resolved_workspace_dir, resolved_arch_repo_dir, resolved_raw_workspace_dir = _resolve_init_arch_paths(
+        workspace_dir=workspace_dir or snapshot.workspace_dir,
+        arch_repo_dir=arch_repo_dir or snapshot.arch_repo_dir,
+    )
+    workflow_id = str(uuid.uuid4())
+    progress_file_path = f"{resolved_arch_repo_dir}/repo-initialization-progress.yaml"
+    session = snapshot.session.model_copy(update={"session_id": workflow_id})
+
+    record = WorkflowRecord(
+        workflow_id=workflow_id,
+        conversation_id=conversation_id or workflow_id,
+        session=session,
+        workspace_dir=resolved_workspace_dir,
+        arch_repo_dir=resolved_arch_repo_dir,
+        current_step_id=session.current_step.value,
+        completed_steps=[step.value for step in session.completed_steps],
+    )
+    registry = get_workflow_registry()
+    registry[workflow_id] = record
+    await persist_workflow_record(record)
+
+    if session.current_step is StepId.DONE:
+        record.workflow_status = WorkflowStatus.SUCCESS
+        record.updated_at = utcnow()
+        await persist_workflow_record(record)
+        logger.info(
+            "workflow.rehydrated_already_done", workflow_id=workflow_id, source_workflow_id=snapshot.workflow_id
+        )
+        return record
+
+    initial_state = InitArchState(
+        session_id=session.session_id,
+        session=session,
+        workspace_dir=resolved_workspace_dir,
+        raw_workspace_dir=resolved_raw_workspace_dir,
+        arch_repo_dir=resolved_arch_repo_dir,
+        engine_name=engine_name or snapshot.engine_name,
+        timeout_seconds=timeout_seconds or snapshot.timeout_seconds,
+        progress_file_path=progress_file_path,
+        last_llm_result=None,
+        last_guard_output="",
+        step_error=None,
+        retry_count=0,
+    )
+    as_node = session.completed_steps[-1].value if session.completed_steps else None
+
+    task = asyncio.create_task(run_workflow(record, initial_state, as_node=as_node))
+    record.asyncio_task = task
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+    logger.info(
+        "workflow.rehydrated",
+        workflow_id=workflow_id,
+        source_workflow_id=snapshot.workflow_id,
+        as_node=as_node,
+    )
     return record
 
 

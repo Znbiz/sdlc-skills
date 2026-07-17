@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import types
+import unittest.mock
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -10,7 +12,12 @@ import pytest
 from app.services import init_arch_workflow as workflow_module
 from app.services.task_registry import CliTask, TaskStatus
 from app.services.workflow_registry import WorkflowRecord, WorkflowStatus, reset_workflow_registry
-from app.workflows.init_arch.domain import OpenQuestionRecord, StepId, WorkflowSessionRecord
+from app.workflows.init_arch.domain import (
+    OpenQuestionRecord,
+    RepositoryExecution,
+    StepId,
+    WorkflowSessionRecord,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -1073,3 +1080,85 @@ async def test_get_response_arch_repo_dir_async_raises_when_missing(monkeypatch)
 
     with pytest.raises(workflow_module.ArchRepoNotAvailableError):
         await workflow_module.get_response_arch_repo_dir_async("wf-3")
+
+
+def _make_snapshot_yaml(*, current_step: StepId, completed_steps: list[StepId]) -> str:
+    from app.workflows.init_arch.snapshot import WorkflowSnapshot, dump_snapshot_yaml
+
+    session = WorkflowSessionRecord(
+        session_id="wf-original",
+        product_name="Prod",
+        analysis_scope="full",
+        current_step=current_step,
+        completed_steps=completed_steps,
+        repositories=[RepositoryExecution(repository_name="svc-a")],
+    )
+    snapshot = WorkflowSnapshot(
+        workflow_id="wf-original",
+        workspace_dir="/old/workspace",
+        arch_repo_dir="/old/workspace/arch-doc",
+        engine_name="claude",
+        timeout_seconds=600,
+        updated_at=datetime.datetime.now(datetime.timezone.utc),
+        session=session,
+    )
+    return dump_snapshot_yaml(snapshot)
+
+
+async def test_resume_init_arch_workflow_from_snapshot_schedules_task_with_as_node(monkeypatch):
+    yaml_text = _make_snapshot_yaml(
+        current_step=StepId.CLONE_REPOSITORIES,
+        completed_steps=[StepId.DEFINE_SCOPE, StepId.REQUEST_REPOSITORY_LIST, StepId.PREPARE_TEMP_WORKSPACE],
+    )
+    created_tasks = []
+    real_create_task = asyncio.create_task
+
+    def _fake_create_task(coro):
+        task = real_create_task(coro)
+        created_tasks.append(task)
+        return task
+
+    monkeypatch.setattr("app.services.init_arch_workflow.persist_workflow_record", AsyncMock())
+    monkeypatch.setattr("app.services.init_arch_workflow.asyncio.create_task", _fake_create_task)
+    run_workflow_mock = AsyncMock()
+    monkeypatch.setattr("app.services.init_arch_workflow.run_workflow", run_workflow_mock)
+
+    record = await workflow_module.resume_init_arch_workflow_from_snapshot(
+        yaml_text,
+        workspace_dir="/new/workspace",
+        arch_repo_dir="/new/workspace/arch-doc",
+    )
+
+    assert record.workflow_id != "wf-original"
+    assert record.session.session_id == record.workflow_id
+    assert record.session.current_step is StepId.CLONE_REPOSITORIES
+    assert [repo.repository_name for repo in record.session.repositories] == ["svc-a"]
+    assert created_tasks
+    # `asyncio.create_task` only schedules the task; give the event loop one tick so the
+    # (fully-mocked) `run_workflow` coroutine actually runs and records the await before assertions.
+    await asyncio.sleep(0)
+    run_workflow_mock.assert_awaited_once()
+    _, kwargs = run_workflow_mock.await_args
+    assert kwargs["as_node"] == "prepare_temp_workspace"
+    for task in created_tasks:
+        task.cancel()
+
+
+async def test_resume_init_arch_workflow_from_snapshot_already_done_marks_success_without_task(monkeypatch):
+    yaml_text = _make_snapshot_yaml(
+        current_step=StepId.DONE,
+        completed_steps=[StepId.FINALIZE_PROGRESS],
+    )
+
+    monkeypatch.setattr("app.services.init_arch_workflow.persist_workflow_record", AsyncMock())
+    create_task_mock = unittest.mock.MagicMock()
+    monkeypatch.setattr("app.services.init_arch_workflow.asyncio.create_task", create_task_mock)
+
+    record = await workflow_module.resume_init_arch_workflow_from_snapshot(
+        yaml_text,
+        workspace_dir="/new/workspace",
+        arch_repo_dir="/new/workspace/arch-doc",
+    )
+
+    assert record.workflow_status == WorkflowStatus.SUCCESS
+    create_task_mock.assert_not_called()
