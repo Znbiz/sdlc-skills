@@ -35,7 +35,7 @@
 
 ---
 
-### Задача 1: Модель `WorkflowSnapshot` + чистые функции dump/parse
+### Task 1: Модель `WorkflowSnapshot` + чистые функции dump/parse
 
 **Файлы:**
 - Создать: `arch-docs/back/app/workflows/init_arch/snapshot.py`
@@ -196,7 +196,7 @@ git commit -m "feat(arch-docs): добавить WorkflowSnapshot модель �
 
 ---
 
-### Задача 2: Атомарная запись файла с best-effort обработкой ошибок
+### Task 2: Атомарная запись файла с best-effort обработкой ошибок
 
 **Файлы:**
 - Изменить: `arch-docs/back/app/workflows/init_arch/snapshot.py`
@@ -320,7 +320,7 @@ git commit -m "feat(arch-docs): атомарная запись WorkflowSnapshot
 
 ---
 
-### Задача 3: Хук записи снепшота в `_drive_graph_stream`
+### Task 3: Хук записи снепшота в `_drive_graph_stream`
 
 **Файлы:**
 - Изменить: `arch-docs/back/app/services/init_arch_workflow.py:731-768` (`_drive_graph_stream`)
@@ -514,7 +514,7 @@ git commit -m "feat(arch-docs): писать progress-снепшот в arch_rep
 
 ---
 
-### Задача 4: `run_workflow` умеет сидировать checkpoint через `as_node`
+### Task 4: `run_workflow` умеет сидировать checkpoint через `as_node`
 
 **Файлы:**
 - Изменить: `arch-docs/back/app/services/init_arch_workflow.py:771-805` (`run_workflow`)
@@ -665,7 +665,7 @@ git commit -m "feat(arch-docs): run_workflow умеет сидировать Lan
 
 ---
 
-### Задача 5: Сервисная функция `resume_init_arch_workflow_from_snapshot`
+### Task 5: Сервисная функция `resume_init_arch_workflow_from_snapshot`
 
 **Файлы:**
 - Изменить: `arch-docs/back/app/services/init_arch_workflow.py`
@@ -874,7 +874,7 @@ git commit -m "feat(arch-docs): resume_init_arch_workflow_from_snapshot — во
 
 ---
 
-### Задача 6: MCP-инструмент `resume_init_arch_from_snapshot`
+### Task 6: MCP-инструмент `resume_init_arch_from_snapshot`
 
 **Файлы:**
 - Изменить: `arch-docs/back/app/mcp_server.py`
@@ -1004,7 +1004,7 @@ git commit -m "feat(arch-docs): MCP-инструмент resume_init_arch_from_s
 
 ---
 
-### Задача 7: Обновить документацию
+### Task 7: Обновить документацию
 
 **Файлы:**
 - Изменить: `arch-docs/docs/workflows/init-graph-reference.md` (раздел «Compatibility-поле `progress_file_path`» и пункт 6 в «Известные несостыковки»)
