@@ -792,18 +792,45 @@ retry вообще. Это по-прежнему единственный по-�
 может либо попробовать тот же шаг ещё раз (например, после того как почитал права доступа к репозиторию),
 либо осознанно прервать прогон.
 
-## Compatibility-поле `progress_file_path`
+## Progress-снепшот `progress_file_path` и восстановление на другой машине
 
-Отдельно стоит явно зафиксировать, раз тема всплывала: `progress_file_path`
-(`{arch_repo_dir}/repo-initialization-progress.yaml`, формируется один раз в
-[init_arch_workflow.py:946](../../back/app/services/init_arch_workflow.py#L946)) **не создаётся и не
-пишется ни одной нодой графа**. Путь прокидывается как metadata-поле во все `_record_guard_event(...)`
-вызовы ([guard.py](../../back/app/workflows/init_arch/guard.py)) и один раз показывается агенту в промпте
-как informational bridge ([prompts.py:302](../../back/app/workflows/init_arch/prompts.py#L302)) с прямой
-оговоркой "не используй его как источник решений". Ни `yaml.dump`, ни `write_text` рядом с этим путём в
-кодовой базе нет. Canonical state — это `WorkflowSessionRecord`, персистентный через `workflow_runs` (см.
-общий паттерн «В базе» в начале документа), а не YAML-файл в workspace. Поле выглядит как хвост миграции с
-legacy standalone CLI (`init-repo-arch-skill/scripts/analysis_guard/`), который такой файл реально пишет.
+`progress_file_path` (`{arch_repo_dir}/repo-initialization-progress.yaml`, формируется один раз в
+[init_arch_workflow.py:946](../../back/app/services/init_arch_workflow.py#L946)) реально пишется —
+не самой нодой графа, а централизованным хуком в `_drive_graph_stream()`
+([init_arch_workflow.py](../../back/app/services/init_arch_workflow.py)), который срабатывает после
+**каждого** node output и на каждом `__interrupt__`, тем же способом, каким пишется `workflow_runs`
+(`persist_workflow_record`). Формат — YAML-сериализация
+[`WorkflowSnapshot`](../../back/app/workflows/init_arch/snapshot.py): `schema_version`,
+`workflow_id`, `workspace_dir`, `arch_repo_dir`, `engine_name`, `timeout_seconds`, `updated_at`,
+`session` (полный `WorkflowSessionRecord`). Запись — best-effort и атомарная (временный файл +
+`os.replace()`); ошибка логируется как `workflow.snapshot_persist_failed` и не прерывает workflow —
+тот же паттерн, что и `workflow.persist_failed` у `persist_workflow_record`.
+
+**Canonical state по-прежнему Postgres** (`workflow_runs` + LangGraph checkpointer) — этот файл не
+участвует в retry/interrupt/resume рантайме **текущего** запуска. Его основное назначение —
+человекочитаемый, диффуемый, коммитящийся в git снепшот прогресса рядом с остальными
+knowledge-артефактами в `arch_repo_dir`.
+
+**Восстановление на другой машине.** MCP-инструмент
+[`resume_init_arch_from_snapshot`](../../back/app/mcp_server.py) читает этот файл с диска и вызывает
+[`resume_init_arch_workflow_from_snapshot()`](../../back/app/services/init_arch_workflow.py), которая:
+
+1. парсит YAML в `WorkflowSnapshot`;
+2. создаёт **новый** `workflow_id`/`WorkflowRecord` (старый `thread_id` в checkpointer'е новой
+   машины/БД всё равно недоступен);
+3. если `session.current_step` уже `DONE` — сразу помечает запись `SUCCESS`, фоновую задачу не
+   запускает;
+4. иначе вычисляет `as_node = session.completed_steps[-1]` и запускает
+   `run_workflow(record, initial_state, as_node=as_node)`.
+
+`run_workflow` при заданном `as_node` сначала вызывает `graph.aupdate_state(config, values,
+as_node=as_node)` — это досоздаёт LangGraph checkpoint нового `thread_id` «как будто» узел
+`as_node` только что отработал, — и только потом стримит дальше с `stream_input=None` (LangGraph
+продолжает с последнего checkpoint). Это принципиально не то же самое, что заново прогнать граф с
+`START`, подставив уже заполненный `session`: `plan_repository_order` (`historical.py`) безусловно
+сбрасывает per-repo поля анализа на каждый прогон, поэтому наивный replay уничтожил бы уже
+накопленный прогресс. Сидирование через `as_node` этого избегает — уже пройденные узлы не
+выполняются повторно, граф стартует ровно с `session.current_step`.
 
 ## Известные несостыковки, найденные при разборе
 
@@ -828,6 +855,7 @@ legacy standalone CLI (`init-repo-arch-skill/scripts/analysis_guard/`), кото
    шага говорит о `domain_map` ([checklist-scope-and-domain-assessment.md:5](../../back/app/workflows/shared_assets/init_arch/references/checklist-scope-and-domain-assessment.md#L5)) —
    это терминология legacy standalone CLI (`analysis_guard.py`), не текущей backend-модели данных. Результат
    разбиения на домены сейчас нигде структурно не сохраняется.
-6. `progress_file_path` (`repo-initialization-progress.yaml`) формируется как строка один раз при старте
-   workflow, но ни одна нода/сервис его не создаёт и не пишет — см. отдельный раздел
-   «Compatibility-поле `progress_file_path`» выше.
+6. ~~`progress_file_path` не создаётся и не пишется~~ — исправлено: `_drive_graph_stream()` пишет
+   YAML-снепшот на каждый шаг, а `resume_init_arch_from_snapshot` умеет по нему восстановить
+   workflow на другой машине — см. раздел «Progress-снепшот `progress_file_path` и восстановление
+   на другой машине» выше.
