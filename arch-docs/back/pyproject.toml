@@ -48,7 +48,7 @@ ignore = ["EM", "FBT", "TRY003", "D1", "D203", "D213", "G004", "FA", "COM812", "
 [tool.ruff.lint.extend-per-file-ignores]
 "tests/*.py" = ["S101", "S106", "S311", "PLR2004", "ARG001", "SLF001", "PLC0415", "SIM117", "SIM105", "C408", "RUF006", "RUF012", "E501"]
 "tests/**/*.py" = ["S101", "S106", "S311", "PLR2004", "ARG001", "SLF001", "PLC0415", "SIM117", "SIM105", "C408", "RUF006", "RUF012", "E501"]
-"app/mcp_server.py" = ["PLR0913"]
+"app/mcp_server.py" = ["PLR0913", "RUF002"]
 "app/services/init_arch_workflow.py" = ["C901", "PLR0913"]
 "app/workflows/init_arch/knowledge_runtime.py" = [
     "ARG001",

@@ -4,7 +4,14 @@ import unittest.mock
 
 import pytest
 
-from app.mcp_server import UPDATE_ARCH_PROMPT_BASE, init_arch, query, run_cli_subprocess, update_arch
+from app.mcp_server import (
+    UPDATE_ARCH_PROMPT_BASE,
+    init_arch,
+    query,
+    resume_init_arch_from_snapshot,
+    run_cli_subprocess,
+    update_arch,
+)
 
 
 def _make_mock_process(returncode: int = 0, stdout: bytes = b"", stderr: bytes = b"") -> unittest.mock.MagicMock:
@@ -182,3 +189,34 @@ class TestQuery:
         cmd = captured[0]
         prompt_arg = next(arg for arg in cmd if "arch-doc/" in arg)
         assert "How does auth work?" in prompt_arg
+
+
+class TestResumeInitArchFromSnapshot:
+    async def test_reads_snapshot_and_delegates_to_backend(self, tmp_path) -> None:
+        arch_repo_dir = tmp_path / "arch-doc"
+        arch_repo_dir.mkdir()
+        progress_file = arch_repo_dir / "repo-initialization-progress.yaml"
+        progress_file.write_text("schema_version: 1\n", encoding="utf-8")
+
+        with unittest.mock.patch(
+            "app.mcp_server.resume_init_arch_workflow_from_snapshot", new_callable=unittest.mock.AsyncMock
+        ) as mock_resume:
+            mock_resume.return_value = types.SimpleNamespace(
+                workflow_id="wf-resumed",
+                workflow_status="running",
+                current_step_id="clone_repositories",
+                created_at=types.SimpleNamespace(isoformat=lambda: "2026-07-18T00:00:00+00:00"),
+            )
+
+            result = await resume_init_arch_from_snapshot(repo_path=str(tmp_path), arch_repo_dir=str(arch_repo_dir))
+
+        assert result["workflow_id"] == "wf-resumed"
+        assert result["current_step_id"] == "clone_repositories"
+        mock_resume.assert_awaited_once()
+        kwargs = mock_resume.await_args.kwargs
+        assert kwargs["arch_repo_dir"] == str(arch_repo_dir)
+        assert kwargs["workspace_dir"] == str(tmp_path)
+
+    async def test_raises_when_snapshot_file_missing(self, tmp_path) -> None:
+        with pytest.raises(FileNotFoundError):
+            await resume_init_arch_from_snapshot(repo_path=str(tmp_path))

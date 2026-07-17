@@ -6,7 +6,7 @@ import typing
 import fastmcp
 import structlog
 
-from app.services.init_arch_workflow import start_init_arch_workflow
+from app.services.init_arch_workflow import resume_init_arch_workflow_from_snapshot, start_init_arch_workflow
 
 logger = structlog.get_logger()
 
@@ -74,6 +74,46 @@ async def init_arch(
         workspace_dir=workspace_dir or str(repo_dir),
         arch_repo_dir=arch_repo_dir or str(repo_dir / "arch-doc"),
         repo_list=repo_list or [repo_dir.name],
+        engine_name=engine_name,
+        timeout_seconds=timeout_seconds,
+    )
+    return {
+        "workflow_id": record.workflow_id,
+        "workflow_status": record.workflow_status,
+        "current_step_id": record.current_step_id,
+        "created_at": record.created_at.isoformat(),
+    }
+
+
+@mcp_server.tool()
+async def resume_init_arch_from_snapshot(
+    repo_path: str,
+    arch_repo_dir: str | None = None,
+    workspace_dir: str | None = None,
+    engine_name: str | None = None,
+    timeout_seconds: int | None = None,
+) -> dict:
+    """Продолжает backend workflow init_arch с YAML-снепшота прогресса.
+
+    (repo-initialization-progress.yaml) — например, после переноса
+    арх-репозитория на другую машину.
+    """
+    repo_dir = pathlib.Path(repo_path)
+    resolved_arch_repo_dir = pathlib.Path(arch_repo_dir) if arch_repo_dir else repo_dir / "arch-doc"
+    progress_file = resolved_arch_repo_dir / "repo-initialization-progress.yaml"
+    logger.info(
+        "mcp.resume_init_arch_from_snapshot.called",
+        repo_path=repo_path,
+        progress_file=str(progress_file),
+    )
+    if not progress_file.exists():
+        raise FileNotFoundError(f"progress snapshot not found: {progress_file}")
+
+    yaml_text = progress_file.read_text(encoding="utf-8")
+    record = await resume_init_arch_workflow_from_snapshot(
+        yaml_text,
+        workspace_dir=workspace_dir or str(repo_dir),
+        arch_repo_dir=str(resolved_arch_repo_dir),
         engine_name=engine_name,
         timeout_seconds=timeout_seconds,
     )
