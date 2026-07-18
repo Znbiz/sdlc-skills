@@ -7,6 +7,9 @@
     "test:headed": "playwright test --headed"
   },
   "devDependencies": {
-    "@playwright/test": "^1.48.0"
+    "@playwright/test": "^1.48.0",
+    "@types/js-yaml": "^4.0.9",
+    "js-yaml": "^4.3.0",
+    "typescript": "^5.9.3"
   }
 }
