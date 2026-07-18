@@ -2,12 +2,17 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const execFileAsync = promisify(execFile);
 
+// Пакет собран как ESM ("type": "module"), поэтому __dirname недоступен —
+// вычисляем каталог модуля из import.meta.url.
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+
 // Все команды выполняются относительно корня arch-docs/ (там лежит docker-compose.yml
 // и .env.docker), т.к. e2e-пакет живёт в arch-docs/e2e/.
-const COMPOSE_CWD = path.resolve(__dirname, "..", "..");
+const COMPOSE_CWD = path.resolve(MODULE_DIR, "..", "..");
 const COMPOSE_SERVICE = "arch-docs";
 
 async function dockerComposeExec(args: string[]): Promise<string> {
@@ -39,6 +44,11 @@ export async function seedRepositoriesIntoWorkspace(
       { cwd: COMPOSE_CWD },
     );
   }
+
+  // `docker compose exec` и `docker cp` создают каталоги/файлы от root, а backend в контейнере
+  // работает под непривилегированным пользователем и не сможет создать arch_repo_dir / писать
+  // снепшот внутри root-овного workspace. Делаем засеянное дерево доступным на запись backend-у.
+  await dockerComposeExec(["chmod", "-R", "0777", workspaceDir]);
 
   return { workspaceDir, archRepoDir };
 }
