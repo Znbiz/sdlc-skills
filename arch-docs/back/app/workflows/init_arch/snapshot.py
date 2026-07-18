@@ -53,6 +53,7 @@ def write_snapshot_file(state: typing.Mapping[str, typing.Any]) -> None:
     progress_file_path = state.get("progress_file_path", "")
     if not progress_file_path:
         return
+    tmp_path: pathlib.Path | None = None
     try:
         yaml_text = dump_snapshot_yaml(build_snapshot(state))
         target_path = pathlib.Path(progress_file_path)
@@ -64,6 +65,10 @@ def write_snapshot_file(state: typing.Mapping[str, typing.Any]) -> None:
             tmp_path = pathlib.Path(tmp_file.name)
         tmp_path.replace(target_path)
     except Exception as exc:  # noqa: BLE001
+        # Убрать временный файл, если он успел создаться, но запись в arch_repo_dir
+        # (git-tracked каталог) после этого сорвалась, например на шаге replace().
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
         logger.warning(
             "workflow.snapshot_persist_failed",
             workflow_id=state.get("session_id", ""),

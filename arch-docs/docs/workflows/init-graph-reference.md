@@ -794,8 +794,12 @@ retry вообще. Это по-прежнему единственный по-�
 
 ## Progress-снепшот `progress_file_path` и восстановление на другой машине
 
-`progress_file_path` (`{arch_repo_dir}/repo-initialization-progress.yaml`, формируется один раз в
-[init_arch_workflow.py:946](../../back/app/services/init_arch_workflow.py#L946)) реально пишется —
+`progress_file_path` (`{arch_repo_dir}/repo-initialization-progress.yaml`, формируется в
+[init_arch_workflow.py:960](../../back/app/services/init_arch_workflow.py#L960) для обычного запуска
+`start_init_arch_workflow`; для восстановленного из снепшота workflow тот же путь независимо
+формируется ещё раз в
+[init_arch_workflow.py:1037](../../back/app/services/init_arch_workflow.py#L1037) внутри
+`resume_init_arch_workflow_from_snapshot`) реально пишется —
 не самой нодой графа, а централизованным хуком в `_drive_graph_stream()`
 ([init_arch_workflow.py](../../back/app/services/init_arch_workflow.py)), который срабатывает после
 **каждого** node output и на каждом `__interrupt__`, тем же способом, каким пишется `workflow_runs`

@@ -1144,6 +1144,75 @@ async def test_resume_init_arch_workflow_from_snapshot_schedules_task_with_as_no
         task.cancel()
 
 
+async def test_resume_init_arch_workflow_from_snapshot_raises_when_active_workflow_shares_arch_repo_dir(
+    monkeypatch,
+):
+    yaml_text = _make_snapshot_yaml(
+        current_step=StepId.CLONE_REPOSITORIES,
+        completed_steps=[StepId.DEFINE_SCOPE, StepId.REQUEST_REPOSITORY_LIST, StepId.PREPARE_TEMP_WORKSPACE],
+    )
+    _, resolved_arch_repo_dir, _ = workflow_module._resolve_init_arch_paths(
+        workspace_dir="/new/workspace", arch_repo_dir="/new/workspace/arch-doc"
+    )
+    workflow_module.get_workflow_registry()["wf-active"] = WorkflowRecord(
+        workflow_id="wf-active",
+        arch_repo_dir=resolved_arch_repo_dir,
+        workflow_status=WorkflowStatus.RUNNING,
+    )
+
+    monkeypatch.setattr("app.services.init_arch_workflow.persist_workflow_record", AsyncMock())
+    create_task_mock = unittest.mock.MagicMock()
+    monkeypatch.setattr("app.services.init_arch_workflow.asyncio.create_task", create_task_mock)
+
+    with pytest.raises(workflow_module.WorkflowConflictError, match="wf-active"):
+        await workflow_module.resume_init_arch_workflow_from_snapshot(
+            yaml_text,
+            workspace_dir="/new/workspace",
+            arch_repo_dir="/new/workspace/arch-doc",
+        )
+
+    create_task_mock.assert_not_called()
+
+
+async def test_resume_init_arch_workflow_from_snapshot_allows_when_active_workflow_has_different_arch_repo_dir(
+    monkeypatch,
+):
+    yaml_text = _make_snapshot_yaml(
+        current_step=StepId.CLONE_REPOSITORIES,
+        completed_steps=[StepId.DEFINE_SCOPE, StepId.REQUEST_REPOSITORY_LIST, StepId.PREPARE_TEMP_WORKSPACE],
+    )
+    workflow_module.get_workflow_registry()["wf-other"] = WorkflowRecord(
+        workflow_id="wf-other",
+        arch_repo_dir="/some/other/arch-doc",
+        workflow_status=WorkflowStatus.RUNNING,
+    )
+
+    monkeypatch.setattr("app.services.init_arch_workflow.persist_workflow_record", AsyncMock())
+    real_create_task = asyncio.create_task
+    created_tasks: list[asyncio.Task[None]] = []
+
+    def _fake_create_task(coro):
+        task = real_create_task(coro)
+        created_tasks.append(task)
+        return task
+
+    monkeypatch.setattr("app.services.init_arch_workflow.asyncio.create_task", _fake_create_task)
+    run_workflow_mock = AsyncMock()
+    monkeypatch.setattr("app.services.init_arch_workflow.run_workflow", run_workflow_mock)
+
+    record = await workflow_module.resume_init_arch_workflow_from_snapshot(
+        yaml_text,
+        workspace_dir="/new/workspace",
+        arch_repo_dir="/new/workspace/arch-doc",
+    )
+
+    assert record.workflow_id != "wf-other"
+    await asyncio.sleep(0)
+    run_workflow_mock.assert_awaited_once()
+    for task in created_tasks:
+        task.cancel()
+
+
 async def test_resume_init_arch_workflow_from_snapshot_already_done_marks_success_without_task(monkeypatch):
     yaml_text = _make_snapshot_yaml(
         current_step=StepId.DONE,

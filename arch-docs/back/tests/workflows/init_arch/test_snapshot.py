@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import pathlib
 
 import structlog.testing
 import yaml
@@ -111,3 +112,22 @@ def test_write_snapshot_file_swallows_errors_and_logs_warning(tmp_path):
         snapshot_module.write_snapshot_file(state)  # не должно бросать исключение
 
     assert any(entry["event"] == "workflow.snapshot_persist_failed" for entry in captured)
+
+
+def test_write_snapshot_file_cleans_up_tmp_file_when_replace_fails(tmp_path, monkeypatch):
+    arch_repo_dir = tmp_path / "arch-doc"
+    arch_repo_dir.mkdir()
+    state = _make_state()
+    state["progress_file_path"] = str(arch_repo_dir / "repo-initialization-progress.yaml")
+
+    def _boom(self, target):
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr(pathlib.Path, "replace", _boom)
+
+    with structlog.testing.capture_logs() as captured:
+        snapshot_module.write_snapshot_file(state)  # не должно бросать исключение
+
+    assert any(entry["event"] == "workflow.snapshot_persist_failed" for entry in captured)
+    leftover_tmp_files = list(arch_repo_dir.glob("*.tmp"))
+    assert leftover_tmp_files == []

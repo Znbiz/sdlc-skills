@@ -1015,6 +1015,24 @@ async def resume_init_arch_workflow_from_snapshot(
         workspace_dir=workspace_dir or snapshot.workspace_dir,
         arch_repo_dir=arch_repo_dir or snapshot.arch_repo_dir,
     )
+    # Защита от параллельного/повторного restore того же arch_repo_dir: если в in-memory
+    # registry уже есть активный (RUNNING/INTERRUPTED) workflow для того же arch_repo_dir,
+    # два фоновых run_workflow будут одновременно писать repo-initialization-progress.yaml
+    # и гонять CLI-агентов по одному и тому же workspace, затирая друг друга.
+    # Ограничение: этот guard видит только воркфлоу текущего процесса — параллельный restore,
+    # запущенный из другого процесса/инстанса сервиса, он не поймает (это не cross-process lock).
+    for existing_record in get_workflow_registry().values():
+        if existing_record.arch_repo_dir != resolved_arch_repo_dir:
+            continue
+        if existing_record.workflow_status not in (WorkflowStatus.RUNNING, WorkflowStatus.INTERRUPTED):
+            continue
+        raise WorkflowConflictError(
+            f"Workflow {existing_record.workflow_id!r} is already active "
+            f"(status={existing_record.workflow_status}) for arch_repo_dir {resolved_arch_repo_dir!r}; "
+            "refusing to start a concurrent restore. This check only covers workflows tracked "
+            "by this process's in-memory registry, not other processes/instances."
+        )
+
     workflow_id = str(uuid.uuid4())
     progress_file_path = f"{resolved_arch_repo_dir}/repo-initialization-progress.yaml"
     session = snapshot.session.model_copy(update={"session_id": workflow_id})
@@ -1055,6 +1073,9 @@ async def resume_init_arch_workflow_from_snapshot(
         step_error=None,
         retry_count=0,
     )
+    # Инвариант: completed_steps заполняется в порядке прохождения графа (append-only), поэтому
+    # последний элемент — это узел, непосредственно предшествующий session.current_step.
+    # Гарантируется append-поведением advance_step (app/workflows/init_arch/domain/operations.py).
     as_node = session.completed_steps[-1].value if session.completed_steps else None
 
     task = asyncio.create_task(run_workflow(record, initial_state, as_node=as_node))
