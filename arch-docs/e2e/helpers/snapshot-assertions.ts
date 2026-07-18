@@ -49,7 +49,7 @@ export type NextWindowConfirmationStatusType =
   | "confirmed"
   | "stopped";
 
-export type ArtifactStatusType = "open" | "answered" | "closed";
+export type OpenQuestionStatusType = "open" | "answered" | "closed";
 
 // Domain-related types
 export interface DomainDefinitionShape {
@@ -117,7 +117,7 @@ export interface ArtifactRecordShape {
 export interface OpenQuestionRecordShape {
   question_id: string;
   question_text: string;
-  status?: ArtifactStatusType;
+  status?: OpenQuestionStatusType;
   target_artifacts?: string[];
   related_repositories?: string[];
   answer_text?: string;
@@ -126,8 +126,8 @@ export interface OpenQuestionRecordShape {
 // Session record (contains workflow state)
 export interface WorkflowSessionShape {
   session_id: string;
-  product_name?: string;
-  analysis_scope?: string;
+  product_name: string;
+  analysis_scope: string;
   status?: WorkflowStatusType;
   current_step?: StepIdType;
   completed_steps?: StepIdType[];
