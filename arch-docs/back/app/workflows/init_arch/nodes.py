@@ -69,19 +69,22 @@ def _session_update_payload(
     }
 
 
-def _build_task_request(
+def _build_task_request(  # noqa: PLR0913
     state: InitArchState,
     step_id: StepId,
     *,
     task_kind: LlmTaskKind,
     checklist_item_id: str = "",
     repository_name: str = "",
+    autofix_findings: list[str] | None = None,
 ) -> LlmTaskRequest:
     return LlmTaskRequest(
         session_id=state["session"].session_id,
         task_kind=task_kind,
         step_id=step_id,
-        prompt_text=build_step_prompt(step_id, state, checklist_item_id=checklist_item_id),
+        prompt_text=build_step_prompt(
+            step_id, state, checklist_item_id=checklist_item_id, autofix_findings=autofix_findings
+        ),
         workspace_dir=state["workspace_dir"],
         timeout_seconds=state["timeout_seconds"],
         expected_schema_name="init_arch_v1",
@@ -89,13 +92,14 @@ def _build_task_request(
     )
 
 
-async def _run_step_worker(
+async def _run_step_worker(  # noqa: PLR0913
     state: InitArchState,
     step_id: StepId,
     *,
     task_kind: LlmTaskKind = LlmTaskKind.STEP_EXECUTION,
     checklist_item_id: str = "",
     repository_name: str = "",
+    autofix_findings: list[str] | None = None,
 ):
     worker_service = get_llm_worker_service()
     request = _build_task_request(
@@ -104,8 +108,14 @@ async def _run_step_worker(
         task_kind=task_kind,
         checklist_item_id=checklist_item_id,
         repository_name=repository_name,
+        autofix_findings=autofix_findings,
     )
     return await worker_service.run_task(request, engine_name=state["engine_name"])
+
+
+def _raise_if_blocking(prefix: str, blocking_issues: list[str]) -> None:
+    if blocking_issues:
+        raise ValueError(f"{prefix}: " + "; ".join(blocking_issues))
 
 
 def _record_workflow_event(
@@ -741,6 +751,7 @@ async def node_interview_user(state: InitArchState) -> dict[str, typing.Any]:
                 answer_result.session,
                 step_id=StepId.INTERVIEW_USER,
                 created_artifacts=llm_result.created_artifacts,
+                arch_repo_dir=state["arch_repo_dir"],
             )
             closed_result = await guard_service.close_user_question(
                 knowledge_result.session,
@@ -788,6 +799,7 @@ async def node_refine_features(state: InitArchState) -> dict[str, typing.Any]:
             bootstrap_result.session,
             step_id=StepId.REFINE_FEATURES,
             created_artifacts=llm_result.created_artifacts,
+            arch_repo_dir=state["arch_repo_dir"],
         )
         result = await guard_service.advance_step(
             knowledge_result.session,
@@ -825,11 +837,34 @@ async def node_build_navigation_index(state: InitArchState) -> dict[str, typing.
     guard_service = get_guard_service()
     knowledge_service = get_knowledge_artifact_service()
     _record_workflow_event(state, EventType.WORKFLOW_STEP_STARTED, step_id=StepId.BUILD_NAVIGATION_INDEX)
+    llm_result = None
     try:
         compile_result = await knowledge_service.compile_navigation(
             state["session"],
             arch_repo_dir=state["arch_repo_dir"],
         )
+        blocking_issues = compile_result.lint_issues
+        if blocking_issues:
+            llm_result = await _run_step_worker(
+                {**state, "session": compile_result.session},
+                StepId.BUILD_NAVIGATION_INDEX,
+                task_kind=LlmTaskKind.KNOWLEDGE_LINT_AUTOFIX,
+                autofix_findings=blocking_issues,
+            )
+            knowledge_result = await knowledge_service.collect_worker_artifacts(
+                compile_result.session,
+                step_id=StepId.BUILD_NAVIGATION_INDEX,
+                created_artifacts=llm_result.created_artifacts,
+                arch_repo_dir=state["arch_repo_dir"],
+            )
+            # Recompile over the (possibly fixed) documents so wiki/index.md + compile-report.md written
+            # below reflect the post-autofix graph, not the stale pre-fix one.
+            compile_result = await knowledge_service.compile_navigation(
+                knowledge_result.session,
+                arch_repo_dir=state["arch_repo_dir"],
+            )
+            blocking_issues = compile_result.lint_issues
+        _raise_if_blocking("KNOWLEDGE_COMPILE_BLOCKED_AFTER_AUTOFIX", blocking_issues)
         result = await guard_service.advance_step(
             compile_result.session,
             StepId.RUN_KNOWLEDGE_LINT,
@@ -850,7 +885,7 @@ async def node_build_navigation_index(state: InitArchState) -> dict[str, typing.
         step_id=StepId.BUILD_NAVIGATION_INDEX,
         next_step=result.session.current_step.value,
     )
-    return _session_update_payload(result.session, last_guard_output=result.bridge_output)
+    return _session_update_payload(result.session, last_llm_result=llm_result, last_guard_output=result.bridge_output)
 
 
 async def node_run_knowledge_lint(state: InitArchState) -> dict[str, typing.Any]:
@@ -862,11 +897,39 @@ async def node_run_knowledge_lint(state: InitArchState) -> dict[str, typing.Any]
     guard_service = get_guard_service()
     knowledge_service = get_knowledge_artifact_service()
     _record_workflow_event(state, EventType.WORKFLOW_STEP_STARTED, step_id=StepId.RUN_KNOWLEDGE_LINT)
+    llm_result = None
     try:
         lint_result = await knowledge_service.lint_knowledge(
             state["session"],
             arch_repo_dir=state["arch_repo_dir"],
         )
+        blocking_issues = [issue for issue in lint_result.lint_issues if issue.startswith("ERROR:")]
+        if blocking_issues:
+            llm_result = await _run_step_worker(
+                {**state, "session": lint_result.session},
+                StepId.RUN_KNOWLEDGE_LINT,
+                task_kind=LlmTaskKind.KNOWLEDGE_LINT_AUTOFIX,
+                autofix_findings=blocking_issues,
+            )
+            knowledge_result = await knowledge_service.collect_worker_artifacts(
+                lint_result.session,
+                step_id=StepId.RUN_KNOWLEDGE_LINT,
+                created_artifacts=llm_result.created_artifacts,
+                arch_repo_dir=state["arch_repo_dir"],
+            )
+            # Resync wiki/index.md + compile-report.md with the fixed documents before re-linting, otherwise
+            # the drift check (_lint_wiki_compile_drift) would report a brand-new ERROR instead of the fix
+            # actually clearing the original one.
+            compile_result = await knowledge_service.compile_navigation(
+                knowledge_result.session,
+                arch_repo_dir=state["arch_repo_dir"],
+            )
+            lint_result = await knowledge_service.lint_knowledge(
+                compile_result.session,
+                arch_repo_dir=state["arch_repo_dir"],
+            )
+            blocking_issues = [issue for issue in lint_result.lint_issues if issue.startswith("ERROR:")]
+        _raise_if_blocking("KNOWLEDGE_LINT_BLOCKED_AFTER_AUTOFIX", blocking_issues)
         result = await guard_service.advance_step(
             lint_result.session,
             StepId.VALIDATE_FINAL,
@@ -887,7 +950,7 @@ async def node_run_knowledge_lint(state: InitArchState) -> dict[str, typing.Any]
         step_id=StepId.RUN_KNOWLEDGE_LINT,
         next_step=result.session.current_step.value,
     )
-    return _session_update_payload(result.session, last_guard_output=result.bridge_output)
+    return _session_update_payload(result.session, last_llm_result=llm_result, last_guard_output=result.bridge_output)
 
 
 async def node_validate_final(state: InitArchState) -> dict[str, typing.Any]:
@@ -914,6 +977,7 @@ async def node_generate_release_notes(state: InitArchState) -> dict[str, typing.
             state["session"],
             step_id=StepId.GENERATE_RELEASE_NOTES,
             created_artifacts=llm_result.created_artifacts,
+            arch_repo_dir=state["arch_repo_dir"],
         )
         result = await guard_service.advance_step(
             knowledge_result.session,

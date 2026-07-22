@@ -801,6 +801,19 @@ def _lint_open_questions_with_graph(
     return issues
 
 
+def graph_blocking_issues(compile_result: CompileResult) -> list[str]:
+    """Blocking (``ERROR:``) issues derivable from the compiled graph alone.
+
+    Reused by both `build_navigation_index` (step 11, checked right after compiling, before the
+    graph has been written to disk) and `run_knowledge_lint` (step 12, via `_lint_graph_awareness`)
+    so the two steps never define the same quality-gate thresholds twice.
+    """
+    issues: list[str] = []
+    issues.extend(_lint_missing_related_references(compile_result.unresolved_references))
+    issues.extend(_lint_compile_quality_gates(compile_result))
+    return issues
+
+
 def _lint_graph_awareness(
     arch_repo_path: Path,
     layout_paths: LayoutPaths,
@@ -808,7 +821,7 @@ def _lint_graph_awareness(
     documents: list[KnowledgeDocument],
 ) -> list[str]:
     issues: list[str] = []
-    issues.extend(_lint_missing_related_references(compile_result.unresolved_references))
+    issues.extend(graph_blocking_issues(compile_result))
     issues.extend(_lint_orphan_pages(compile_result.weakly_linked_pages))
     issues.extend(_lint_stale_low_confidence_pages(documents))
     issues.extend(_lint_repository_domain_conflicts(documents))
@@ -819,7 +832,6 @@ def _lint_graph_awareness(
             compile_result=compile_result,
         )
     )
-    issues.extend(_lint_compile_quality_gates(compile_result))
     return issues
 
 

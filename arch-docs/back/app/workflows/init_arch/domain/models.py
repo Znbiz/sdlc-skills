@@ -90,6 +90,7 @@ class LlmTaskKind(str, enum.Enum):
     REPOSITORY_CHECKLIST_ITEM = "repository_checklist_item"
     KNOWLEDGE_SYNTHESIS = "knowledge_synthesis"
     INTERVIEW_RECONCILIATION = "interview_reconciliation"
+    KNOWLEDGE_LINT_AUTOFIX = "knowledge_lint_autofix"
 
 
 class DomainDefinition(pydantic.BaseModel):

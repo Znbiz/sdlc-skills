@@ -53,6 +53,7 @@ STEP_TO_REFERENCE: typing.Final[dict[str, str]] = {
 }
 
 CHECKLIST_ITEM_TO_REFERENCE: typing.Final[dict[str, str]] = {
+    "deleted_functionality_cleanup": "references/checklist-deleted-functionality-cleanup.md",
     "repository_classification": "references/checklist-repository-classification.md",
     "repository_structure_mapping": "references/checklist-repository-structure-mapping.md",
     "entrypoints_and_interfaces": "references/checklist-entrypoints-and-interfaces.md",
@@ -186,6 +187,12 @@ def _build_domain_context_block(repository: RepositoryExecution | None) -> str:
     return "\n".join(lines)
 
 
+def _build_autofix_findings_block(autofix_findings: list[str] | None) -> str:
+    if not autofix_findings:
+        return _NOT_APPLICABLE_BLOCK
+    return "\n".join(f"- {finding}" for finding in autofix_findings)
+
+
 def _build_release_notes_context_block(state: InitArchState) -> str:
     session = state["session"]
     historical = session.historical_analysis
@@ -234,7 +241,13 @@ def _build_release_notes_context_block(state: InitArchState) -> str:
     return "\n".join(lines)
 
 
-def build_step_prompt(step_id: StepId | str, state: InitArchState, checklist_item_id: str = "") -> str:
+def build_step_prompt(
+    step_id: StepId | str,
+    state: InitArchState,
+    checklist_item_id: str = "",
+    *,
+    autofix_findings: list[str] | None = None,
+) -> str:
     step_value = step_id.value if isinstance(step_id, StepId) else step_id
     skill_md = _load_skill_md()
     reference_path_rel = STEP_TO_REFERENCE.get(step_value, "")
@@ -266,6 +279,14 @@ def build_step_prompt(step_id: StepId | str, state: InitArchState, checklist_ite
         if step_value == _ANALYZE_REPOSITORIES_STEP_VALUE
         else ""
     )
+    autofix_instruction = (
+        "Раздел «Найденные проблемы для исправления» выше — результат детерминированной проверки knowledge-слоя. "
+        "Правь только файлы, упомянутые в этих issues, не трогай другие. "
+        "Не редактируй wiki/index.md и wiki/maps/compile-report.md напрямую — они перезаписываются механически "
+        "после твоего вызова, ручная правка потеряется.\n"
+        if autofix_findings
+        else ""
+    )
     open_questions = (
         "\n".join(
             f"- {question.question_id} [{question.status}]: {question.question_text}"
@@ -278,6 +299,7 @@ def build_step_prompt(step_id: StepId | str, state: InitArchState, checklist_ite
     domain_assessment_instruction = (
         _DOMAIN_ASSESSMENT_CONTRACT_BLOCK if step_value == _DOMAIN_ASSESSMENT_STEP_VALUE else ""
     )
+    autofix_findings_block = _build_autofix_findings_block(autofix_findings)
 
     return f"""# Контекст навыка
 
@@ -318,6 +340,12 @@ Raw layer: {raw_workspace_dir}
 
 ---
 
+# Найденные проблемы для исправления
+
+{autofix_findings_block}
+
+---
+
 # Reference-чеклист для этого шага
 
 {reference_text or "(нет дополнительного reference — следуй SKILL.md)"}
@@ -335,7 +363,8 @@ Raw checkout-слой расположен в {raw_workspace_dir}; исполь�
 Сервис оркестрирует workflow и сам управляет progress state.
 Если нужен progress bridge, его путь: {state["progress_file_path"]}; не используй его как источник решений.
 Разделяй выводы: какие из них опираются на temporal delta (diff), а какие — на итоговое snapshot-состояние.
-{domain_context_instruction}Выведи краткий структурированный JSON-отчёт о выполненных действиях в формате:
+{domain_context_instruction}{autofix_instruction}
+Выведи краткий структурированный JSON-отчёт о выполненных действиях в формате:
 {{
   "completed_actions": ["..."],
   "created_artifacts": ["..."],

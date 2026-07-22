@@ -1,4 +1,4 @@
-import { useCallback, useReducer } from "react";
+import { useCallback, useReducer, useState } from "react";
 import { useParams } from "react-router-dom";
 import { Button } from "../../shared/ui/button";
 import { Card } from "../../shared/ui/card";
@@ -22,6 +22,7 @@ export function InitWorkflowPage() {
   const items = useConversationItems(conversationId);
   const createResponse = useCreateInitArchResponse();
   const submitAction = useSubmitResponseAction(conversationId);
+  const [showRestartConfirm, setShowRestartConfirm] = useState(false);
 
   const [streamState, dispatch] = useReducer(reduceStreamEvent, INITIAL_STREAM_STATE);
 
@@ -53,9 +54,13 @@ export function InitWorkflowPage() {
 
       {!activeResponse && (
         <Card title="Запуск init_arch">
+          {conversation.data?.previous_init_input && (
+            <p className={styles.empty}>Форма предзаполнена данными предыдущего (удалённого) прогона.</p>
+          )}
           <InitArchForm
             isSubmitting={createResponse.isPending}
             onSubmit={(input) => createResponse.mutate({ conversationId, input })}
+            previousInput={conversation.data?.previous_init_input}
           />
           {createResponse.isError && <ErrorBanner error={createResponse.error} />}
         </Card>
@@ -81,9 +86,43 @@ export function InitWorkflowPage() {
                   Остановить
                 </Button>
               )}
+              <Button
+                variant="danger"
+                disabled={submitAction.isPending}
+                onClick={() => setShowRestartConfirm(true)}
+              >
+                Начать анализ заново
+              </Button>
             </div>
             {submitAction.isError && <ErrorBanner error={submitAction.error} onRetry={() => {}} />}
           </Card>
+
+          {showRestartConfirm && (
+            <Card title="Начать анализ заново?">
+              <p>Это действие необратимо и удалит для этого прогона:</p>
+              <ul>
+                <li>весь прогресс и историю (шаги, лог событий, действия);</li>
+                <li>все вызовы LLM и их полный вывод;</li>
+                <li>склонированные репозитории на диске;</li>
+                <li>всю сгенерированную документацию на диске (features/, architecture/ и т.д.).</li>
+              </ul>
+              <div className={styles.statusRow}>
+                <Button variant="secondary" disabled={submitAction.isPending} onClick={() => setShowRestartConfirm(false)}>
+                  Отмена
+                </Button>
+                <Button
+                  variant="danger"
+                  disabled={submitAction.isPending}
+                  onClick={() => {
+                    submitAction.mutate({ responseId: activeResponse.response_id, actionType: "restart" });
+                    setShowRestartConfirm(false);
+                  }}
+                >
+                  Да, удалить всё и начать заново
+                </Button>
+              </div>
+            </Card>
+          )}
 
           {activeResponse.response_status === "paused" && (
             <Card title="Workflow на паузе">

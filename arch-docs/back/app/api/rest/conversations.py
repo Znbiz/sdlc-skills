@@ -46,11 +46,20 @@ class ResponseStatusResponse(pydantic.BaseModel, frozen=True):
     terminal_result: dict[str, typing.Any] | None = None
 
 
+class PreviousInitInputResponse(pydantic.BaseModel, frozen=True):
+    product_name: str
+    analysis_scope: str
+    workspace_dir: str
+    arch_repo_dir: str
+    repo_list: list[str]
+
+
 class ConversationResponse(pydantic.BaseModel, frozen=True):
     conversation_id: str
     created_at: str
     updated_at: str
     active_response: ResponseStatusResponse | None
+    previous_init_input: PreviousInitInputResponse | None = None
 
 
 class ConversationItemResponse(pydantic.BaseModel, frozen=True):
@@ -190,7 +199,9 @@ async def get_response(response_id: str) -> ResponseStatusResponse:
 
 
 @router.post("/responses/{response_id}/actions/", status_code=status.HTTP_202_ACCEPTED)
-async def submit_response_action(response_id: str, request: ResponseActionRequest) -> ResponseStatusResponse:
+async def submit_response_action(
+    response_id: str, request: ResponseActionRequest
+) -> ResponseStatusResponse | ConversationResponse:
     try:
         payload = await submit_response_action_async(
             response_id,
@@ -204,4 +215,20 @@ async def submit_response_action(response_id: str, request: ResponseActionReques
         raise _not_found(exc) from exc
     except WorkflowValidationError as exc:
         raise fastapi.HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+
+    # `restart` deletes the WorkflowRecord entirely and returns a conversation-shaped payload
+    # (active_response: None) instead of a ResponseStatusResponse - see
+    # restart_init_arch_workflow() / arch-docs/docs/spec/2026-07-22-realtime-workflow-observability.md §8.
+    if "active_response" in payload:
+        active_response = payload.get("active_response")
+        previous_init_input = payload.get("previous_init_input")
+        return ConversationResponse(
+            conversation_id=payload["conversation_id"],
+            created_at=payload["created_at"],
+            updated_at=payload["updated_at"],
+            active_response=_response_model(active_response) if isinstance(active_response, dict) else None,
+            previous_init_input=PreviousInitInputResponse.model_validate(previous_init_input)
+            if isinstance(previous_init_input, dict)
+            else None,
+        )
     return _response_model(payload)

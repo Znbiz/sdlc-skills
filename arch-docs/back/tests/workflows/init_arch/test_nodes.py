@@ -1242,7 +1242,7 @@ async def test_node_refine_features_bootstraps_and_registers_worker_artifacts() 
     llm_service.run_task.assert_awaited_once()
 
 
-async def test_node_build_navigation_index_uses_knowledge_service_without_llm() -> None:
+async def test_node_build_navigation_index_skips_llm_when_no_blocking_issues() -> None:
     state = _make_state()
     guard_service = MagicMock()
     knowledge_service = MagicMock()
@@ -1254,7 +1254,7 @@ async def test_node_build_navigation_index_uses_knowledge_service_without_llm() 
         }
     )
     knowledge_service.compile_navigation = AsyncMock(
-        return_value=KnowledgeArtifactResult(session=compiled_session, summary="compiled")
+        return_value=KnowledgeArtifactResult(session=compiled_session, summary="compiled", lint_issues=[])
     )
     guard_service.advance_step = AsyncMock(return_value=GuardOperationResult(session=next_session))
 
@@ -1270,7 +1270,95 @@ async def test_node_build_navigation_index_uses_knowledge_service_without_llm() 
     llm_service.assert_not_called()
 
 
-async def test_node_run_knowledge_lint_uses_knowledge_service_without_llm() -> None:
+async def test_node_build_navigation_index_autofix_success() -> None:
+    state = _make_state()
+    guard_service = MagicMock()
+    knowledge_service = MagicMock()
+    llm_service = MagicMock()
+
+    first_compiled_session = state["session"].model_copy()
+    collected_session = first_compiled_session.model_copy()
+    second_compiled_session = collected_session.model_copy()
+    next_session = second_compiled_session.model_copy(
+        update={
+            "current_step": StepId.RUN_KNOWLEDGE_LINT,
+            "completed_steps": [StepId.BUILD_NAVIGATION_INDEX],
+        }
+    )
+    knowledge_service.compile_navigation = AsyncMock(
+        side_effect=[
+            KnowledgeArtifactResult(
+                session=first_compiled_session,
+                summary="compiled",
+                lint_issues=["ERROR: missing related reference features/a.md -> features/b.md"],
+            ),
+            KnowledgeArtifactResult(session=second_compiled_session, summary="compiled clean", lint_issues=[]),
+        ]
+    )
+    knowledge_service.collect_worker_artifacts = AsyncMock(
+        return_value=KnowledgeArtifactResult(session=collected_session, summary="registered")
+    )
+    llm_service.run_task = AsyncMock(
+        return_value=LlmTaskResult(
+            task_kind=LlmTaskKind.KNOWLEDGE_LINT_AUTOFIX,
+            step_id=StepId.BUILD_NAVIGATION_INDEX,
+            created_artifacts=["features/a.md"],
+        )
+    )
+    guard_service.advance_step = AsyncMock(return_value=GuardOperationResult(session=next_session))
+
+    with (
+        patch("app.workflows.init_arch.nodes.get_guard_service", return_value=guard_service),
+        patch("app.workflows.init_arch.nodes.get_knowledge_artifact_service", return_value=knowledge_service),
+        patch("app.workflows.init_arch.nodes.get_llm_worker_service", return_value=llm_service),
+    ):
+        result = await nodes_module.node_build_navigation_index(state)
+
+    assert result["current_step_id"] == "run_knowledge_lint"
+    assert knowledge_service.compile_navigation.await_count == 2
+    llm_service.run_task.assert_awaited_once()
+    assert llm_service.run_task.await_args.args[0].task_kind is LlmTaskKind.KNOWLEDGE_LINT_AUTOFIX
+    knowledge_service.collect_worker_artifacts.assert_awaited_once()
+
+
+async def test_node_build_navigation_index_autofix_failure_blocks_step() -> None:
+    state = _make_state()
+    guard_service = MagicMock()
+    knowledge_service = MagicMock()
+    llm_service = MagicMock()
+
+    compiled_session = state["session"].model_copy()
+    still_blocking_issue = "ERROR: missing related reference features/a.md -> features/b.md"
+    knowledge_service.compile_navigation = AsyncMock(
+        return_value=KnowledgeArtifactResult(
+            session=compiled_session, summary="compiled", lint_issues=[still_blocking_issue]
+        )
+    )
+    knowledge_service.collect_worker_artifacts = AsyncMock(
+        return_value=KnowledgeArtifactResult(session=compiled_session, summary="registered")
+    )
+    llm_service.run_task = AsyncMock(
+        return_value=LlmTaskResult(
+            task_kind=LlmTaskKind.KNOWLEDGE_LINT_AUTOFIX,
+            step_id=StepId.BUILD_NAVIGATION_INDEX,
+            created_artifacts=[],
+        )
+    )
+
+    with (
+        patch("app.workflows.init_arch.nodes.get_guard_service", return_value=guard_service),
+        patch("app.workflows.init_arch.nodes.get_knowledge_artifact_service", return_value=knowledge_service),
+        patch("app.workflows.init_arch.nodes.get_llm_worker_service", return_value=llm_service),
+    ):
+        result = await nodes_module.node_build_navigation_index(state)
+
+    assert result["step_error"].startswith("KNOWLEDGE_COMPILE_BLOCKED_AFTER_AUTOFIX:")
+    assert still_blocking_issue in result["step_error"]
+    assert result["retry_count"] == 1
+    guard_service.advance_step.assert_not_called()
+
+
+async def test_node_run_knowledge_lint_skips_llm_when_no_blocking_issues() -> None:
     state = _make_state()
     guard_service = MagicMock()
     knowledge_service = MagicMock()
@@ -1282,7 +1370,7 @@ async def test_node_run_knowledge_lint_uses_knowledge_service_without_llm() -> N
         }
     )
     knowledge_service.lint_knowledge = AsyncMock(
-        return_value=KnowledgeArtifactResult(session=linted_session, summary="lint clean")
+        return_value=KnowledgeArtifactResult(session=linted_session, summary="lint clean", lint_issues=[])
     )
     guard_service.advance_step = AsyncMock(return_value=GuardOperationResult(session=next_session))
 
@@ -1296,6 +1384,133 @@ async def test_node_run_knowledge_lint_uses_knowledge_service_without_llm() -> N
     assert result["current_step_id"] == "validate_final"
     knowledge_service.lint_knowledge.assert_awaited_once()
     llm_service.assert_not_called()
+
+
+async def test_node_run_knowledge_lint_autofix_success() -> None:
+    state = _make_state()
+    guard_service = MagicMock()
+    knowledge_service = MagicMock()
+    llm_service = MagicMock()
+
+    first_linted_session = state["session"].model_copy()
+    collected_session = first_linted_session.model_copy()
+    compiled_session = collected_session.model_copy()
+    second_linted_session = compiled_session.model_copy()
+    next_session = second_linted_session.model_copy(
+        update={
+            "current_step": StepId.VALIDATE_FINAL,
+            "completed_steps": [StepId.RUN_KNOWLEDGE_LINT],
+        }
+    )
+    knowledge_service.lint_knowledge = AsyncMock(
+        side_effect=[
+            KnowledgeArtifactResult(
+                session=first_linted_session,
+                summary="lint found issues",
+                lint_issues=["ERROR: features-index.md ссылается на отсутствующий файл features/ghost.md", "WARN: gap"],
+            ),
+            KnowledgeArtifactResult(session=second_linted_session, summary="lint clean", lint_issues=[]),
+        ]
+    )
+    knowledge_service.collect_worker_artifacts = AsyncMock(
+        return_value=KnowledgeArtifactResult(session=collected_session, summary="registered")
+    )
+    knowledge_service.compile_navigation = AsyncMock(
+        return_value=KnowledgeArtifactResult(session=compiled_session, summary="compiled", lint_issues=[])
+    )
+    llm_service.run_task = AsyncMock(
+        return_value=LlmTaskResult(
+            task_kind=LlmTaskKind.KNOWLEDGE_LINT_AUTOFIX,
+            step_id=StepId.RUN_KNOWLEDGE_LINT,
+            created_artifacts=["features-index.md"],
+        )
+    )
+    guard_service.advance_step = AsyncMock(return_value=GuardOperationResult(session=next_session))
+
+    with (
+        patch("app.workflows.init_arch.nodes.get_guard_service", return_value=guard_service),
+        patch("app.workflows.init_arch.nodes.get_knowledge_artifact_service", return_value=knowledge_service),
+        patch("app.workflows.init_arch.nodes.get_llm_worker_service", return_value=llm_service),
+    ):
+        result = await nodes_module.node_run_knowledge_lint(state)
+
+    assert result["current_step_id"] == "validate_final"
+    assert knowledge_service.lint_knowledge.await_count == 2
+    llm_service.run_task.assert_awaited_once()
+    passed_findings = llm_service.run_task.await_args.args[0].prompt_text
+    assert "features-index.md" in passed_findings
+    assert "WARN: gap" not in passed_findings
+    knowledge_service.compile_navigation.assert_awaited_once()
+
+    # The mandatory resync (compile_navigation) must happen after the autofix collected its artifacts and
+    # before the second lint_knowledge call — otherwise the drift check would report a fresh ERROR instead
+    # of the original one clearing (see spec "Последствия", п. 1).
+    call_names = [call_item[0] for call_item in knowledge_service.mock_calls]
+    assert call_names == [
+        "lint_knowledge",
+        "collect_worker_artifacts",
+        "compile_navigation",
+        "lint_knowledge",
+    ]
+
+
+async def test_node_run_knowledge_lint_autofix_failure_blocks_step() -> None:
+    state = _make_state()
+    guard_service = MagicMock()
+    knowledge_service = MagicMock()
+    llm_service = MagicMock()
+
+    linted_session = state["session"].model_copy()
+    still_blocking_issue = "ERROR: features-index.md ссылается на отсутствующий файл features/ghost.md"
+    knowledge_service.lint_knowledge = AsyncMock(
+        return_value=KnowledgeArtifactResult(
+            session=linted_session, summary="lint found issues", lint_issues=[still_blocking_issue]
+        )
+    )
+    knowledge_service.collect_worker_artifacts = AsyncMock(
+        return_value=KnowledgeArtifactResult(session=linted_session, summary="registered")
+    )
+    knowledge_service.compile_navigation = AsyncMock(
+        return_value=KnowledgeArtifactResult(session=linted_session, summary="compiled", lint_issues=[])
+    )
+    llm_service.run_task = AsyncMock(
+        return_value=LlmTaskResult(
+            task_kind=LlmTaskKind.KNOWLEDGE_LINT_AUTOFIX,
+            step_id=StepId.RUN_KNOWLEDGE_LINT,
+            created_artifacts=[],
+        )
+    )
+
+    with (
+        patch("app.workflows.init_arch.nodes.get_guard_service", return_value=guard_service),
+        patch("app.workflows.init_arch.nodes.get_knowledge_artifact_service", return_value=knowledge_service),
+        patch("app.workflows.init_arch.nodes.get_llm_worker_service", return_value=llm_service),
+    ):
+        result = await nodes_module.node_run_knowledge_lint(state)
+
+    assert result["step_error"].startswith("KNOWLEDGE_LINT_BLOCKED_AFTER_AUTOFIX:")
+    assert still_blocking_issue in result["step_error"]
+    assert result["retry_count"] == 1
+    guard_service.advance_step.assert_not_called()
+
+
+async def test_node_run_knowledge_lint_infra_exception_skips_autofix() -> None:
+    state = _make_state()
+    guard_service = MagicMock()
+    knowledge_service = MagicMock()
+    knowledge_service.lint_knowledge = AsyncMock(side_effect=RuntimeError("disk read failed"))
+
+    with (
+        patch("app.workflows.init_arch.nodes.get_guard_service", return_value=guard_service),
+        patch("app.workflows.init_arch.nodes.get_knowledge_artifact_service", return_value=knowledge_service),
+        patch("app.workflows.init_arch.nodes.get_llm_worker_service") as llm_service,
+    ):
+        result = await nodes_module.node_run_knowledge_lint(state)
+
+    assert result["step_error"] == "disk read failed"
+    assert not result["step_error"].startswith("KNOWLEDGE_LINT_BLOCKED_AFTER_AUTOFIX:")
+    llm_service.assert_not_called()
+    knowledge_service.collect_worker_artifacts.assert_not_called()
 
 
 async def test_node_generate_release_notes_registers_artifact_and_advances() -> None:
@@ -1340,6 +1555,7 @@ async def test_node_generate_release_notes_registers_artifact_and_advances() -> 
         state["session"],
         step_id=StepId.GENERATE_RELEASE_NOTES,
         created_artifacts=["release-notes/window-0-2024-07-10.md"],
+        arch_repo_dir=state["arch_repo_dir"],
     )
     guard_service.advance_step.assert_awaited_once()
 

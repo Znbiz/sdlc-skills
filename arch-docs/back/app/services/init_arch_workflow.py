@@ -1,19 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime
 import json
 import pathlib
 import re
+import shutil
 import typing
 import uuid
 
 import structlog
 
 from app.db.session import get_session
-from app.db.task_repo import get_cli_task, list_cli_tasks_for_conversation
+from app.db.task_repo import delete_cli_tasks_for_workflow, get_cli_task, list_cli_tasks_for_conversation
 from app.db.workflow_repo import (
     create_conversation,
+    delete_workflow_run,
     get_conversation,
     get_workflow_run,
     list_conversation_items,
@@ -578,9 +581,13 @@ async def submit_response_action_async(
         await cancel_cli_task(task.task_id, registry)
         return _task_response_payload(registry.get(task.task_id, task))
 
-    if action_type == "cancel":
-        await cancel_init_arch_workflow(response_id)
-    elif action_type == "pause":
+    if action_type == "restart":
+        # Unlike every other action, restart deletes the WorkflowRecord entirely - there's nothing
+        # left for get_response_async(response_id) to return afterward, so this returns early with
+        # the conversation payload (active_response: None) instead of falling through below.
+        return await restart_init_arch_workflow(response_id)
+
+    if action_type == "pause":
         await pause_init_arch_workflow(response_id)
     elif action_type == "continue":
         await continue_init_arch_workflow(response_id)
@@ -855,10 +862,11 @@ async def _write_progress_snapshot(graph: typing.Any, config: dict[str, typing.A
 async def _handle_workflow_cancellation(record: WorkflowRecord) -> None:
     """Shared `except asyncio.CancelledError` handling for `run_workflow`/`resume_workflow_task`.
 
-    A cancelled asyncio.Task means either a hard `cancel_init_arch_workflow()` (terminal,
-    `CANCELLED`) or a `pause_init_arch_workflow()` (resumable, `PAUSED` - see
-    `continue_init_arch_workflow()` and arch-docs/docs/spec/2026-07-22-realtime-workflow-observability.md §7).
-    `record.pause_requested`, set by the pause path right before cancelling, is what tells the two apart.
+    A cancelled asyncio.Task means either `pause_init_arch_workflow()` (resumable, `PAUSED` - see
+    `continue_init_arch_workflow()`) or some other, non-pause cancellation (terminal, `CANCELLED` -
+    e.g. the planned `restart_init_arch_workflow()`'s pre-delete cancellation). `record.pause_requested`,
+    set by the pause path right before cancelling, is what tells the two apart. See spec sections
+    7-8 in arch-docs/docs/spec/2026-07-22-realtime-workflow-observability.md.
     """
     if record.pause_requested:
         record.workflow_status = WorkflowStatus.PAUSED
@@ -1250,33 +1258,19 @@ async def retry_init_arch_workflow(workflow_id: str, *, action: str = "retry") -
     return record
 
 
-async def cancel_init_arch_workflow(workflow_id: str) -> WorkflowRecord:
-    record = await get_workflow_record_async(workflow_id)
-    if record.workflow_status in (WorkflowStatus.SUCCESS, WorkflowStatus.FAILED, WorkflowStatus.CANCELLED):
-        raise WorkflowConflictError(f"Workflow is not cancellable (status: {record.workflow_status})")
-
-    task = record.asyncio_task
-    if task is not None and not task.done():
-        task.cancel()
-
-    record.workflow_status = WorkflowStatus.CANCELLED
-    record.pending_interrupt = None
-    record.error_message = "Workflow cancelled"
-    record.updated_at = utcnow()
-    await persist_workflow_record(record)
-    logger.info("workflow.cancel.requested", workflow_id=workflow_id)
-    return record
-
-
 async def pause_init_arch_workflow(workflow_id: str) -> WorkflowRecord:
     """Stop a running workflow at the next node boundary without discarding progress.
 
-    Unlike `cancel_init_arch_workflow()` (terminal `CANCELLED`), this sets `PAUSED`, a resumable
-    status - `continue_init_arch_workflow()` picks it back up from the LangGraph checkpoint for
-    this `workflow_id`'s `thread_id`. If the pause lands mid-LLM-call, that one node re-runs from
-    scratch on resume (the same durability the checkpointer already provides across process
-    restarts - see `resume_init_arch_workflow_from_snapshot()`'s `as_node` handling); everything
-    before it is untouched. See arch-docs/docs/spec/2026-07-22-realtime-workflow-observability.md §7.
+    This sets `PAUSED`, a resumable status - `continue_init_arch_workflow()` picks it back up from
+    the LangGraph checkpoint for this `workflow_id`'s `thread_id`. If the pause lands mid-LLM-call,
+    that one node re-runs from scratch on resume (the same durability the checkpointer already
+    provides across process restarts - see `resume_init_arch_workflow_from_snapshot()`'s `as_node`
+    handling); everything before it is untouched. `WorkflowStatus.CANCELLED` still exists as an
+    internal fallback status inside `_handle_workflow_cancellation()` for any future task
+    cancellation that isn't a pause (e.g. the planned `restart_init_arch_workflow()`'s pre-delete
+    cancellation - see spec section 8), but there is no longer a standalone user-facing "cancel"
+    action - `pause` covers what it used to. See spec sections 7-8 in
+    arch-docs/docs/spec/2026-07-22-realtime-workflow-observability.md.
     """
     record = await get_workflow_record_async(workflow_id)
     if record.workflow_status != WorkflowStatus.RUNNING:
@@ -1288,11 +1282,10 @@ async def pause_init_arch_workflow(workflow_id: str) -> WorkflowRecord:
         task.cancel()
 
     # Set PAUSED immediately rather than waiting for the cancelled task to unwind into
-    # `_handle_workflow_cancellation()` - mirrors `cancel_init_arch_workflow()`'s optimistic update,
-    # so a client polling right after this call sees "paused", not a stale "running". If a live
-    # task exists, its cancellation handler re-affirms the same status once it unwinds (idempotent);
-    # if there is none (e.g. record rehydrated in a process that isn't running it), this is the
-    # only place PAUSED gets set at all.
+    # `_handle_workflow_cancellation()` - an optimistic update so a client polling right after this
+    # call sees "paused", not a stale "running". If a live task exists, its cancellation handler
+    # re-affirms the same status once it unwinds (idempotent); if there is none (e.g. record
+    # rehydrated in a process that isn't running it), this is the only place PAUSED gets set at all.
     record.workflow_status = WorkflowStatus.PAUSED
     record.updated_at = utcnow()
     await persist_workflow_record(record)
@@ -1316,3 +1309,77 @@ async def continue_init_arch_workflow(workflow_id: str) -> WorkflowRecord:
     await persist_workflow_record(record)
     logger.info("workflow.continued", workflow_id=workflow_id)
     return record
+
+
+async def restart_init_arch_workflow(workflow_id: str) -> dict[str, typing.Any]:
+    """Wipe every artifact of a workflow run so the same conversation can start `init_arch` again.
+
+    Deletes files, DB rows, and the LangGraph checkpoint. Available from *any* status
+    (`RUNNING`/`PAUSED`/`INTERRUPTED`/`FAILED`/`SUCCESS`/`CANCELLED`) - unlike `pause`, this isn't a
+    stop, it's "I don't want this run anymore." See spec section 8 in
+    arch-docs/docs/spec/2026-07-22-realtime-workflow-observability.md.
+
+    Deliberately does *not* return a `WorkflowRecord` - there is no longer one. Returns the same
+    shape `get_conversation_async()` already returns for a conversation with nothing running
+    (`active_response: None`), plus a `previous_init_input` field so the frontend can pre-fill the
+    "start init_arch" form with the product name/analysis scope/repo list the user typed in when
+    creating this run - those live only inside this same `WorkflowRecord.session` (see
+    `WorkflowSessionRecord`), so they must be captured before the delete below or they're gone for
+    good and the user has to retype the whole repo list from scratch.
+    """
+    record = await get_workflow_record_async(workflow_id)
+    conversation_id = record.conversation_id or workflow_id
+    previous_init_input = _capture_init_input_for_restart(record)
+
+    task = record.asyncio_task
+    if task is not None and not task.done():
+        task.cancel()
+        # Must actually wait for the task to unwind (not just fire the cancel and move on, like
+        # pause does) - run_cli_task()'s CancelledError cleanup (§7) needs to finish terminating any
+        # in-flight CLI subprocess *before* we start deleting the workspace/arch-repo directories
+        # that subprocess may still be writing into underneath it.
+        with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+            await asyncio.wait_for(task, timeout=10.0)
+
+    # Re-derive the same two workflow-owned subdirectories `start_init_arch_workflow()` resolved at
+    # creation time - never touch `workspace_dir` itself, it's user-supplied and may be shared.
+    _, resolved_arch_repo_dir, resolved_raw_workspace_dir = _resolve_init_arch_paths(
+        workspace_dir=record.workspace_dir,
+        arch_repo_dir=record.arch_repo_dir,
+    )
+    shutil.rmtree(resolved_raw_workspace_dir, ignore_errors=True)
+    shutil.rmtree(resolved_arch_repo_dir, ignore_errors=True)
+
+    checkpointer = await get_checkpointer()
+    await checkpointer.adelete_thread(workflow_id)
+
+    async with get_session() as session:
+        await delete_cli_tasks_for_workflow(session, workflow_id)
+        await delete_workflow_run(session, workflow_id)
+
+    get_workflow_registry().pop(workflow_id, None)
+    task_registry = get_task_registry()
+    for task_id in [tid for tid, cli_task in task_registry.items() if cli_task.workflow_id == workflow_id]:
+        task_registry.pop(task_id, None)
+
+    logger.info("workflow.restarted", workflow_id=workflow_id, conversation_id=conversation_id)
+    payload = await get_conversation_async(conversation_id)
+    payload["previous_init_input"] = previous_init_input
+    return payload
+
+
+def _capture_init_input_for_restart(record: WorkflowRecord) -> dict[str, typing.Any] | None:
+    session = record.session
+    if session is None:
+        return None
+    repo_list = [repo.repository_url or repo.repository_name for repo in session.repositories]
+    return {
+        "product_name": session.product_name,
+        "analysis_scope": session.analysis_scope,
+        "workspace_dir": record.workspace_dir,
+        "arch_repo_dir": record.arch_repo_dir,
+        "repo_list": repo_list,
+        # engine_name/timeout_seconds are only ever kept in the transient InitArchState passed to
+        # `run_workflow()`, never persisted on WorkflowRecord/WorkflowSessionRecord - there is no
+        # value to recover here, so these are left for the form's own defaults.
+    }

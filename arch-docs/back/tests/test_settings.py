@@ -25,6 +25,7 @@ def test_gateway_settings_expose_hardening_defaults() -> None:
     assert settings.audit.max_prompt_chars == 12000
     assert settings.audit.max_output_chars == 16000
     assert settings.audit.max_error_chars == 8000
+    assert settings.audit.max_diff_chars == 16000
 
 
 def test_gateway_settings_support_nested_hardening_overrides() -> None:
@@ -42,6 +43,7 @@ def test_gateway_settings_support_nested_hardening_overrides() -> None:
             "max_prompt_chars": 2048,
             "max_output_chars": 4096,
             "max_error_chars": 1024,
+            "max_diff_chars": 3072,
         },
     )
 
@@ -51,3 +53,4 @@ def test_gateway_settings_support_nested_hardening_overrides() -> None:
     assert settings.audit.max_prompt_chars == 2048
     assert settings.audit.max_output_chars == 4096
     assert settings.audit.max_error_chars == 1024
+    assert settings.audit.max_diff_chars == 3072

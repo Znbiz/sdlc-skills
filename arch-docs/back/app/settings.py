@@ -21,6 +21,7 @@ class AuditSettings(pydantic.BaseModel):
     max_prompt_chars: int = 12_000
     max_output_chars: int = 16_000
     max_error_chars: int = 8_000
+    max_diff_chars: int = 16_000
 
 
 class GatewaySettings(BaseSettings):

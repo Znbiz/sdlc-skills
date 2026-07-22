@@ -134,6 +134,10 @@ def test_llm_task_request_and_result_are_typed() -> None:
     assert result.created_artifacts == ["features/service-a.md"]
 
 
+def test_llm_task_kind_has_knowledge_lint_autofix_variant() -> None:
+    assert LlmTaskKind.KNOWLEDGE_LINT_AUTOFIX.value == "knowledge_lint_autofix"
+
+
 def test_workflow_event_record_captures_actor_and_event_type() -> None:
     event = WorkflowEventRecord(
         event_type=EventType.LLM_TASK_COMPLETED,

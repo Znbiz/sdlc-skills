@@ -99,6 +99,28 @@ def test_build_step_prompt_release_notes_block_not_applicable_for_other_steps():
     assert "(не применимо для этого шага)" in result
 
 
+def test_build_step_prompt_autofix_findings_not_applicable_when_absent():
+    with patch.object(prompts_module, "_load_skill_md", return_value="SKILL"):
+        result = build_step_prompt("run_knowledge_lint", _make_state())
+
+    assert "# Найденные проблемы для исправления" in result
+    assert "(не применимо для этого шага)" in result
+    assert "Правь только файлы, упомянутые" not in result
+
+
+def test_build_step_prompt_autofix_findings_rendered_as_list():
+    with patch.object(prompts_module, "_load_skill_md", return_value="SKILL"):
+        result = build_step_prompt(
+            "run_knowledge_lint",
+            _make_state(),
+            autofix_findings=["ERROR: missing related reference a -> b", "ERROR: quality gate failed"],
+        )
+
+    assert "- ERROR: missing related reference a -> b" in result
+    assert "- ERROR: quality gate failed" in result
+    assert "Правь только файлы, упомянутые" in result
+
+
 def test_build_step_prompt_includes_domain_assessment_contract_for_its_step():
     with patch.object(prompts_module, "_load_skill_md", return_value="SKILL"):
         result = build_step_prompt("assess_scope_and_domains", _make_state())

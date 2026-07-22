@@ -422,6 +422,13 @@ async def get_openai_response(response_id: str, model: str) -> dict[str, typing.
 async def submit_openai_response_action(
     response_id: str, request: OpenAIResponseActionRequest, model: str
 ) -> dict[str, typing.Any]:
+    if request.action_type == "restart":
+        # `restart` deletes the workflow_run entirely and returns a conversation-shaped payload
+        # (see arch-docs/docs/spec/2026-07-22-realtime-workflow-observability.md §8) that doesn't
+        # map onto the OpenAI Responses API's per-response shape `_build_openai_response_payload()`
+        # expects. This facade is a curated surface for external clients (LibreChat/OpenWebUI) -
+        # they don't need this internal-tooling action; the REST endpoint supports it directly.
+        _raise_validation_error("restart is not supported via the OpenAI-compatible facade")
     try:
         response_payload = await submit_response_action_async(
             response_id,

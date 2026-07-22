@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import datetime as dt
+import difflib
 import pathlib
 from typing import Final
 
 import pydantic
 import yaml
 
+from app.services.text_sanitization import truncate_text
+from app.settings import get_gateway_settings
 from app.workflows.init_arch.audit import WorkflowAuditService, get_workflow_audit_service
 from app.workflows.init_arch.domain import (
     ArtifactRecord,
@@ -22,9 +25,12 @@ from app.workflows.init_arch.knowledge_runtime import (
     build_knowledge_log_stub,
     build_navigation_index,
     compile_knowledge_graph,
+    graph_blocking_issues,
     run_knowledge_lint,
 )
 from app.workflows.shared_assets import WorkflowAssetLoader, get_workflow_asset_loader
+
+_ARTIFACT_SNAPSHOT_DIRNAME: Final[str] = ".artifact-snapshots"
 
 _ROOT_ARTIFACT_PATHS: Final[tuple[str, ...]] = (
     "features-index.md",
@@ -107,6 +113,7 @@ class KnowledgeArtifactService:
             written_artifacts=written_artifacts,
             step_id=StepId.REFINE_FEATURES,
             source_refs=["service:knowledge_bootstrap"],
+            arch_repo_dir=arch_repo_dir,
         )
         return KnowledgeArtifactResult(
             session=updated_session,
@@ -120,6 +127,7 @@ class KnowledgeArtifactService:
         *,
         step_id: StepId,
         created_artifacts: list[str],
+        arch_repo_dir: str,
     ) -> KnowledgeArtifactResult:
         normalized_paths = sorted({path for path in created_artifacts if path})
         updated_session = self._register_artifacts(
@@ -127,6 +135,7 @@ class KnowledgeArtifactService:
             written_artifacts=normalized_paths,
             step_id=step_id,
             source_refs=["llm_worker"],
+            arch_repo_dir=arch_repo_dir,
         )
         return KnowledgeArtifactResult(
             session=updated_session,
@@ -156,6 +165,7 @@ class KnowledgeArtifactService:
             written_artifacts=written_artifacts,
             step_id=StepId.BUILD_NAVIGATION_INDEX,
             source_refs=["service:knowledge_compile"],
+            arch_repo_dir=arch_repo_dir,
         )
         return KnowledgeArtifactResult(
             session=updated_session,
@@ -166,6 +176,7 @@ class KnowledgeArtifactService:
                 f"weak_links={len(compile_result.weakly_linked_pages)}"
             ),
             written_artifacts=written_artifacts,
+            lint_issues=graph_blocking_issues(compile_result),
         )
 
     async def write_domain_map(
@@ -203,6 +214,7 @@ class KnowledgeArtifactService:
             written_artifacts=written_artifacts,
             step_id=StepId.ASSESS_SCOPE_AND_DOMAINS,
             source_refs=["service:domain_assessment"],
+            arch_repo_dir=arch_repo_dir,
         )
         return KnowledgeArtifactResult(
             session=updated_session,
@@ -217,19 +229,16 @@ class KnowledgeArtifactService:
         arch_repo_dir: str,
     ) -> KnowledgeArtifactResult:
         issues = run_knowledge_lint(pathlib.Path(arch_repo_dir))
-        blocking_issues = [issue for issue in issues if issue.startswith("ERROR:")]
-        if blocking_issues:
-            raise ValueError("knowledge lint failed: " + "; ".join(blocking_issues))
-
         updated_session = self._register_artifacts(
             session,
             written_artifacts=[],
             step_id=StepId.RUN_KNOWLEDGE_LINT,
             source_refs=["service:knowledge_lint"],
+            arch_repo_dir=arch_repo_dir,
         )
         return KnowledgeArtifactResult(
             session=updated_session,
-            summary=f"Knowledge lint passed with {len(issues)} issues",
+            summary=f"Knowledge lint completed with {len(issues)} issues",
             lint_issues=issues,
         )
 
@@ -249,6 +258,7 @@ class KnowledgeArtifactService:
             written_artifacts=["open-questions.md"],
             step_id=session.current_step,
             source_refs=["service:open_questions_sync"],
+            arch_repo_dir=arch_repo_dir,
         )
         return KnowledgeArtifactResult(
             session=updated_session,
@@ -321,7 +331,10 @@ class KnowledgeArtifactService:
         written_artifacts: list[str],
         step_id: StepId,
         source_refs: list[str],
+        arch_repo_dir: str,
     ) -> WorkflowSessionRecord:
+        arch_repo_path = pathlib.Path(arch_repo_dir)
+        snapshot_dir = arch_repo_path.parent / _ARTIFACT_SNAPSHOT_DIRNAME
         updated_session = session
         today = dt.datetime.now(dt.UTC).date().isoformat()
         for artifact_path in written_artifacts:
@@ -333,16 +346,44 @@ class KnowledgeArtifactService:
                 last_updated_window_index=session.historical_analysis.window_index,
             )
             updated_session = register_artifact(updated_session, artifact=artifact)
+            diff_text = self._diff_against_snapshot(arch_repo_path, snapshot_dir, artifact_path)
             self._audit_service.record(
                 WorkflowEventRecord(
                     event_type=EventType.ARTIFACT_WRITTEN,
                     actor=AuditActor.SERVICE,
                     session_id=updated_session.session_id,
                     step_id=step_id,
-                    payload={"artifact_path": artifact_path, "artifact_kind": artifact.artifact_kind},
+                    payload={
+                        "artifact_path": artifact_path,
+                        "artifact_kind": artifact.artifact_kind,
+                        "diff": diff_text,
+                    },
                 )
             )
         return updated_session
+
+    @staticmethod
+    def _diff_against_snapshot(arch_repo_path: pathlib.Path, snapshot_dir: pathlib.Path, artifact_path: str) -> str:
+        current_path = arch_repo_path / artifact_path
+        current_content = current_path.read_text(encoding="utf-8") if current_path.exists() else ""
+
+        snapshot_path = snapshot_dir / artifact_path
+        previous_content = snapshot_path.read_text(encoding="utf-8") if snapshot_path.exists() else ""
+
+        diff_text = "".join(
+            difflib.unified_diff(
+                previous_content.splitlines(keepends=True),
+                current_content.splitlines(keepends=True),
+                fromfile=f"a/{artifact_path}",
+                tofile=f"b/{artifact_path}",
+            )
+        )
+
+        snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+        snapshot_path.write_text(current_content, encoding="utf-8")
+
+        settings = get_gateway_settings()
+        return truncate_text(diff_text, max_chars=settings.audit.max_diff_chars)
 
     @staticmethod
     def _artifact_kind_from_path(artifact_path: str) -> str:

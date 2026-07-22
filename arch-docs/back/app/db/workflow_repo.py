@@ -304,6 +304,21 @@ async def get_workflow_run(session: async_sa.AsyncSession, workflow_id: str) -> 
     return _workflow_record_from_model(model)
 
 
+async def delete_workflow_run(session: async_sa.AsyncSession, workflow_id: str) -> bool:
+    """Delete a `workflow_runs` row - used by `restart_init_arch_workflow()`.
+
+    `conversation_items`/`required_actions`/`workflow_step_transitions`/`artifact_events` all FK to
+    `workflow_runs.workflow_id` with `ondelete="CASCADE"` (see db/models.py), so this one delete
+    wipes the entire event/timeline/artifact history for the run too. It does *not* touch
+    `conversations` (the parent, not a child, of `workflow_runs`) - the caller keeps the same
+    conversation/URL. `cli_tasks` has no such FK and needs `delete_cli_tasks_for_workflow()`
+    separately (task_repo.py). Returns True if a row existed and was deleted.
+    """
+    result = await session.execute(sa.delete(WorkflowRunModel).where(WorkflowRunModel.workflow_id == workflow_id))
+    await session.commit()
+    return result.rowcount > 0
+
+
 async def create_conversation(
     session: async_sa.AsyncSession,
     *,

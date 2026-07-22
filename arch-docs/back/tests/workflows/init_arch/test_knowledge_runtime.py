@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 from app.workflows.init_arch import knowledge_runtime as runtime
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 def _write(path: Path, content: str) -> None:
@@ -194,6 +191,45 @@ def test_lint_graph_awareness_aggregates_quality_issues(tmp_path: Path) -> None:
     assert "quality gate" in joined
 
 
+def test_graph_blocking_issues_combines_missing_references_and_quality_gates() -> None:
+    layout_paths = runtime.resolve_layout_paths(Path("arch"))
+    compile_result = runtime.CompileResult(
+        layout_paths=layout_paths,
+        index_content="index",
+        compile_report_content="report",
+        unresolved_references=("features/auth.md -> features/missing.md",),
+        weakly_linked_pages=(),
+        total_documents=2,
+        documents_requiring_metadata=2,
+        documents_with_frontmatter=0,
+        documents_with_related=0,
+    )
+
+    issues = runtime.graph_blocking_issues(compile_result)
+
+    assert all(issue.startswith("ERROR:") for issue in issues)
+    joined = "\n".join(issues)
+    assert "missing related reference" in joined
+    assert "quality gate" in joined
+
+
+def test_graph_blocking_issues_empty_when_graph_is_clean() -> None:
+    layout_paths = runtime.resolve_layout_paths(Path("arch"))
+    compile_result = runtime.CompileResult(
+        layout_paths=layout_paths,
+        index_content="index",
+        compile_report_content="report",
+        unresolved_references=(),
+        weakly_linked_pages=(),
+        total_documents=0,
+        documents_requiring_metadata=0,
+        documents_with_frontmatter=0,
+        documents_with_related=0,
+    )
+
+    assert runtime.graph_blocking_issues(compile_result) == []
+
+
 def test_lint_knowledge_log_and_output_sections_report_errors(tmp_path: Path) -> None:
     arch_repo = tmp_path / "arch"
     log_path = arch_repo / "wiki" / "log.md"
@@ -243,9 +279,7 @@ def test_parse_helpers_extract_references_and_table_rows(tmp_path: Path) -> None
         "[Doc](../wiki/x.md)\n[[Security]]",
         ["wiki/y.md"],
     )
-    rows = runtime._parse_markdown_table(
-        "| A | B |\n| --- | --- |\n| `x` | ./doc.md |\n"
-    )
+    rows = runtime._parse_markdown_table("| A | B |\n| --- | --- |\n| `x` | ./doc.md |\n")
 
     assert frontmatter["title"] == "Auth"
     assert body.startswith("# Body")
@@ -258,22 +292,30 @@ def test_reference_resolution_and_document_type_helpers(tmp_path: Path) -> None:
     _write(arch_repo / "features" / "auth.md", "# Auth\n")
     doc = _doc("features/auth.md", title="Auth")
 
-    assert runtime._resolve_document_reference(
-        "wiki/concepts/page.md",
-        "features/auth.md",
-        arch_repo,
-        {"features/auth.md": doc},
-        {"Auth": doc},
-    ) == "features/auth.md"
-    assert runtime._resolve_document_reference(
-        "wiki/concepts/page.md",
-        "Auth",
-        arch_repo,
-        {"features/auth.md": doc},
-        {"Auth": doc},
-    ) == "features/auth.md"
+    assert (
+        runtime._resolve_document_reference(
+            "wiki/concepts/page.md",
+            "features/auth.md",
+            arch_repo,
+            {"features/auth.md": doc},
+            {"Auth": doc},
+        )
+        == "features/auth.md"
+    )
+    assert (
+        runtime._resolve_document_reference(
+            "wiki/concepts/page.md",
+            "Auth",
+            arch_repo,
+            {"features/auth.md": doc},
+            {"Auth": doc},
+        )
+        == "features/auth.md"
+    )
     assert runtime._infer_document_type(arch_repo / "glossary.md", arch_repo, {}) == "glossary"
-    assert runtime._extract_open_question_target_artifacts({"Целевые артефакты": "`features/auth.md`, ./wiki/x.md"}) == {
+    assert runtime._extract_open_question_target_artifacts(
+        {"Целевые артефакты": "`features/auth.md`, ./wiki/x.md"}
+    ) == {
         "features/auth.md",
         "wiki/x.md",
     }

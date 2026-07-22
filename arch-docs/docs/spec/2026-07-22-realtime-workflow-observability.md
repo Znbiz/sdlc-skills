@@ -388,12 +388,23 @@ payload при записи `conversation_items` (сейчас `WorkflowAuditSer
   `PAUSED` вместо `RequiredActionCard`/формы — карточка с меткой "На паузе на шаге: {step_label} ({repo_name})"
   и кнопкой «Продолжить».
 
-**Открытый вопрос**: нужно ли продуктово различать «Пауза» (`PAUSED`, ожидаемо возобновляемая) и «Отмена»
-(`CANCELLED`, безвозвратная — как сейчас) как две разные кнопки, или пользователю достаточно одной кнопки
-«Остановить», после которой всегда доступно «Продолжить» (то есть сегодняшний `cancel` целиком заменяется на
-`pause`, а по-настоящему безвозвратное удаление workflow — отдельное, более редкое действие, например
-удаление conversation целиком). Второй вариант проще для пользователя, но меняет семантику уже существующего
-`action_type="cancel"` — нужно решить до реализации, а не в процессе.
+**Открытый вопрос — решено.** Продукту нужны три разных действия, не два:
+
+1. **Пауза** (`PAUSED`) — останавливаемся на текущем шаге графа, прогресс цел, доступно **Продолжить**.
+2. **Продолжить** — возобновление ровно с шага, на котором остановились (см. выше).
+3. **Начать анализ заново** — полный деструктивный сброс: удаляются вообще все артефакты этого прогона
+   (файлы + БД + лог событий + LangGraph checkpoint), после чего на этой же conversation можно запустить
+   `init_arch` с нуля. Это **не** то же самое, что было раньше у `cancel` (который просто помечал run как
+   `CANCELLED` и ничего не удалял) — см. новый раздел 8 ниже.
+
+**Дополнительное решение продукта: отдельного `cancel` для графового workflow больше не нужно вообще** —
+`pause` полностью закрывает роль "остановить прогон", а `restart` закрывает роль "он мне больше не нужен,
+начинаю заново". Держать третью, полутерминальную кнопку («просто отменить, без удаления и без возможности
+продолжить») было бы избыточно и путало бы пользователя. `action_type="cancel"` для init_arch-графа удалён —
+подробности в дополнении к мини-отчёту §7 ниже. Итоговый набор кнопок на фронте: **Остановить** (pause) /
+**Продолжить** (continue) / **Начать заново** (restart), плюс существующие `retry`/`answer_question`/... через
+`RequiredActionCard`. (`cancel` для task-backed `update_arch`/`query`-ответов — отдельный, более простой
+код-путь без графа/паузы/чекпоинтов; его это решение не касается.)
 
 > **Мини-отчёт.**
 >
@@ -452,6 +463,253 @@ payload при записи `conversation_items` (сейчас `WorkflowAuditSer
 > этой фазы), логика вынесена в уже покрытые `stream-events.ts`/`status-mapping.ts`, а JSX-обвязка кнопок
 > тривиальна. Полный `pytest` (653 теста) и `npm test` (57 тестов) зелёные, `ruff check`/`ruff format --check`
 > чистые (кроме pre-existing baseline-issues вне этой ветки правок), `npx tsc -b` без ошибок.
+>
+> **Дополнение (после продуктового решения выше): `cancel` для графового workflow удалён.**
+> `action_type="cancel"` для init_arch-графа больше не существует — убраны ветка в
+> `submit_response_action_async()` и сама функция `cancel_init_arch_workflow()`. У неё и не было
+> кнопки на фронте (только прямой API-вызов), так что blast radius на UI нулевой. Задача осталась —
+> `WorkflowStatus.CANCELLED` не удалён из enum и `_handle_workflow_cancellation()`: он остаётся
+> внутренним fallback-статусом для любой отмены таска, которая не была явной паузой (в первую
+> очередь — предстоящая `restart_init_arch_workflow()` из §8: она тоже отменяет живой таск перед
+> удалением, и `pause_requested` для неё не выставляется, так что попадает в ту же ветку; поскольку
+> запись сразу после этого удаляется целиком, транзиентный `CANCELLED` ни на что не влияет).
+> `cancel` для task-backed ответов (`update_arch`/`query`, `cancel_cli_task()`) не тронут — это
+> отдельный код-путь без общего с графом статуса/паузы/рестарта.
+> Изменения: удалена ветка `if action_type == "cancel": await cancel_init_arch_workflow(...)` и сама
+> функция в `init_arch_workflow.py`; поправлены docstring-и `pause_init_arch_workflow()`/
+> `_handle_workflow_cancellation()`, ссылавшиеся на удалённую функцию.
+> Тесты: удалён `test_cancel_init_arch_workflow_rejects_terminal_status`
+> (`tests/services/test_init_arch_workflow.py`, функции больше нет); REST-тест
+> `test_post_response_action_cancel_delegates_to_workflow`
+> (`tests/api/rest/test_conversations.py`) заменён на `test_post_response_action_pause_delegates_to_workflow`
+> и новый `test_post_response_action_continue_delegates_to_workflow`, а также добавлен
+> `test_post_response_action_cancel_is_no_longer_supported_for_workflows` (явно фиксирует, что
+> `action_type="cancel"` на workflow-backed response теперь 422 — регрессионный тест на осознанное
+> удаление, а не забытая ветка). Task-backed `cancel` (`action_type="cancel"` для `update_arch`/`query`)
+> отдельно проверен, что не задет. Полный `pytest` (654 теста) и `ruff check`/`ruff format --check`
+> зелёные.
+
+### 8. Полный рестарт анализа (`restart`)
+
+**Статус: ✅ реализовано.**
+
+**Отличие от `pause`.** `pause` останавливает выполнение, но **ничего не удаляет** — `WorkflowRecord` (и вся
+его история в `conversation_items`/`cli_tasks`/checkpoint) продолжает существовать, просто в статусе `PAUSED`.
+`restart` — принципиально другое действие: пользователь хочет не остановиться, а **стереть весь прогресс этого
+прогона** и запустить `init_arch` в этой же conversation заново, с чистого листа. Это должно быть доступно из
+**любого** статуса (`RUNNING`/`PAUSED`/`INTERRUPTED`/`FAILED`/`SUCCESS`/`CANCELLED` — последний по историческим/
+внутренним причинам всё ещё возможен, см. дополнение к §7 выше, хоть отдельного action на него больше и нет) —
+как аварийный "сбросить всё и начать сначала", а не только для сломанных прогонов.
+
+#### Что физически нужно удалить
+
+Три независимых хранилища прогресса, описанные в общем паттерне «В базе»
+([init-graph-reference.md](../workflows/init-graph-reference.md#общий-паттерн-для-в-базе-одинаков-для-всех-16-нод-кроме-отмеченного-отдельно)),
+и два места на диске:
+
+1. **`workflow_runs`** — сама запись `WorkflowRecord` (`workflow_id`). Благодаря существующим
+   `ON DELETE CASCADE` foreign keys в [db/models.py](../../back/app/db/models.py) удаление этой одной строки
+   автоматически каскадом удаляет:
+   - `conversation_items` (весь лог/timeline событий этого workflow, включая новые `llm_call_*`/actor-события
+     из этой же спеки);
+   - `required_actions` (история и открытые действия);
+   - `workflow_step_transitions` (журнал смены шагов);
+   - `artifact_events` (журнал knowledge-артефактов).
+2. **`cli_tasks`** — `workflow_id` здесь **не** FK с каскадом (см. `CliTaskModel.workflow_id`,
+   [db/models.py:29](../../back/app/db/models.py#L29): `sa.Text`, просто индекс) — требует отдельного
+   `DELETE ... WHERE workflow_id = :workflow_id`. Это все `prompt_text`/`raw_output`/stdout/stderr каждого
+   LLM-вызова этого прогона.
+3. **LangGraph checkpoint** — `AsyncPostgresSaver` хранит собственные таблицы (`checkpoints`,
+   `checkpoint_blobs`, `checkpoint_writes`) по `thread_id = workflow_id`, полностью вне ORM-моделей выше. У
+   `AsyncPostgresSaver` уже есть штатный метод `adelete_thread(thread_id)`
+   ([checkpointer.py](../../back/app/workflows/init_arch/checkpointer.py)) — переиспользуем его, не пишем raw
+   SQL по checkpoint-таблицам вручную.
+4. **Raw layer на диске** — `{workspace_dir}/{raw_workspace_dir}` (по умолчанию `{workspace_dir}/.temp`) —
+   склонированные репозитории вместе с их git-историей.
+5. **Arch-repo (synthesis) layer на диске** — `{workspace_dir}/{arch_repo_dir}` (по умолчанию
+   `{workspace_dir}/arch-doc`) — вся сгенерированная документация (`features/`, `architecture/`, `wiki/`,
+   `release-notes/`) и `repo-initialization-progress.yaml` (снепшот прогресса, который и так лежит внутри
+   `arch_repo_dir` — отдельно удалять не нужно).
+
+**Что НЕ удаляется:**
+
+- **`conversations`** — родительская запись остаётся; это та же conversation/URL, на которой пользователь
+  нажал «Начать заново», он не должен потерять её и получить новую ссылку.
+- **`{workspace_dir}` сам по себе** — это путь, который пользователь указал при старте; `workflow` владеет
+  только двумя подкаталогами внутри него (raw layer и arch-repo layer, см. п.4-5), сам корень мог существовать
+  и до workflow (или использоваться параллельно) — удалять его целиком нельзя.
+- Другие `workflow_runs`/`cli_tasks` этой же conversation, если они есть (в норме их нет — один активный
+  `workflow_run` на conversation в любой момент, см. `_active_conversation_record()`), но код не должен
+  случайно задеть их, если структура когда-то изменится — удаление всегда строго по `workflow_id`.
+
+#### Backend
+
+- `pause_init_arch_workflow()`-подобная защита от гонки: если `record.workflow_status == RUNNING` и есть живой
+  `record.asyncio_task`, сначала `task.cancel()` и **дожидаемся** его реального завершения
+  (`await asyncio.wait_for(task, timeout=...)`, подавляя `CancelledError`) — иначе удаление файлов/БД начнётся,
+  пока `run_cli_task()` ещё пишет `stdout_lines`/файлы под тем же `workspace_dir`, и часть операций упадёт с
+  гонкой файловой системы/БД. Это ровно то же самое исправление orphan-subprocess из §7 (`_terminate_subprocess`
+  в `task_runner.py`), только здесь мы ещё и ждём завершения, а не просто инициируем отмену.
+- Новая функция `restart_init_arch_workflow(workflow_id)` в `init_arch_workflow.py`:
+  1. остановить живой таск (см. выше), если он есть;
+  2. `shutil.rmtree(raw_workspace_dir, ignore_errors=True)` и `shutil.rmtree(arch_repo_dir, ignore_errors=True)` —
+     `ignore_errors=True` осознанно: частично удалённые/уже отсутствующие каталоги (например, повторный клик
+     «Начать заново» после сетевого сбоя на предыдущей попытке) не должны блокировать очистку остального;
+  3. `await get_checkpointer()` → `await saver.adelete_thread(workflow_id)`;
+  4. новые `delete_workflow_run(session, workflow_id)` (`db/workflow_repo.py`) и
+     `delete_cli_tasks_for_workflow(session, workflow_id)` (`db/task_repo.py`) в одной транзакции;
+  5. убрать `workflow_id` из in-memory `get_workflow_registry()` и все связанные `CliTask` из
+     `get_task_registry()` (по `task.workflow_id == workflow_id`).
+- Новый `action_type="restart"` в `submit_response_action_async()`. **Отличие от остальных action**: после
+  успешного `restart` **нет** смысла возвращать `get_response_async(response_id)` (записи уже нет — будет
+  `WorkflowNotFoundError`). Возвращаем вместо этого что-то вроде
+  `{"conversation_id": ..., "active_response": None}` — тот же контракт, что уже отдаёт `get_conversation_async()`
+  для пустой conversation, чтобы фронт мог сразу отрисовать `InitArchForm` без отдельного round-trip.
+- SSE: если у workflow в этот момент есть подключённый live-стрим, никакого специального события не нужно —
+  как только `workflow_id` пропадает из `get_workflow_registry()`, уже существующая проверка
+  `if current is None: break` в `_stream_live_workflow_events()` естественно завершает поток; фронт увидит
+  закрытие соединения и должен рефетчить conversation (обычный path `onReconnect`/ручной invalidate после
+  успешной мутации `restart`).
+
+#### Frontend — обязательное подтверждение
+
+Из требования продукта: клик по «Начать анализ заново» **не** должен сразу ничего удалять — нужен явный,
+недвусмысленный confirm с полным списком того, что будет стёрто. В репозитории сейчас нет компонента
+Modal/Dialog ([shared/ui/](../../front/src/shared/ui/) содержит только `Card`/`Button`/`Spinner`/`StatusBadge`/
+`ErrorBanner`) — заводить полноценный модальный компонент ради одного деструктивного действия избыточно.
+Предлагается **инлайн-подтверждение** тем же паттерном, что уже использует `RequiredActionCard` для
+`step_failed` (карточка с предупреждением и двумя кнопками), а не `window.confirm()` (последний не даёт
+показать буллет-лист того, что удалится, и плохо тестируется):
+
+1. Кнопка «Начать анализ заново» (`variant="danger"` — у `Button` уже есть этот вариант,
+   [button.tsx](../../front/src/shared/ui/button.tsx)) — по клику не вызывает мутацию, а раскрывает предупреждение
+   (локальный `useState` во `InitWorkflowPage`, как уже `text` в `RequiredActionCard`).
+2. Разворачивается карточка‑предупреждение с точным списком (тот же список, что в бэкенд-разделе выше, но
+   человеческим языком, без внутренних имён таблиц):
+   - весь прогресс и история этого прогона (шаги, лог событий, действия);
+   - все вызовы LLM и их полный вывод;
+   - склонированные репозитории на диске;
+   - вся сгенерированная документация на диске (включая уже написанные файлы `features/`, `architecture/` и т.д.);
+   - **это необратимо** — отдельной строкой, визуально выделенной.
+3. Две кнопки: «Отмена» (просто схлопывает предупреждение) и «Да, удалить всё и начать заново»
+   (`variant="danger"`, диспетчит `submitAction.mutate({ responseId, actionType: "restart" })`, `disabled`
+   пока `submitAction.isPending`).
+4. После успеха — `InitWorkflowPage` должен увидеть `active_response: null` в ответе (см. backend-контракт
+   выше) и просто перерендериться в состояние «Запуск init_arch» (`InitArchForm`) — тот же код, что уже
+   отрисовывает форму для новой conversation, никакой отдельной ветки не нужно.
+
+#### Риски и граничные случаи
+
+- **Гонка с уже подключённым SSE-клиентом другой вкладки/пользователя**: если кто-то смотрит live-стрим этого
+  workflow в момент restart, он получит резкий обрыв потока без объясняющего события. Не критично для первой
+  итерации (тот же UX, что при падении процесса), но можно закрыть отдельным SSE-событием
+  `workflow_restarting` перед фактическим удалением — вынесено в «Что не входит», см. ниже.
+- **Идемпотентность повторного клика**: если `restart` уже выполняется (например, двойной клик до того как
+  кнопка задизейблилась), второй вызов должен либо быть no-op (запись уже удалена → `WorkflowNotFoundError` →
+  трактовать как успех, а не ошибку), либо `submitAction.isPending` на фронте должен физически блокировать
+  повторный клик (уже так работает для остальных actions в `RequiredActionCard`/этой же кнопке).
+- **Не путать с `resume_init_arch_workflow_from_snapshot()`** — та функция создаёт **новый** `workflow_id` из
+  YAML-снепшота (disaster recovery на другой машине), это ортогонально `restart`, который наоборот уничтожает
+  текущий `workflow_id` целиком.
+
+#### Затронутые файлы (дополнительно к §1-7)
+
+Backend: `app/services/init_arch_workflow.py` (`restart_init_arch_workflow`, `action_type="restart"`),
+`app/db/workflow_repo.py` (`delete_workflow_run`), `app/db/task_repo.py` (`delete_cli_tasks_for_workflow`).
+
+Frontend: `init-workflow-page.tsx` (кнопка + инлайн-подтверждение), возможно новый общий стиль
+`variant="danger"` предупреждающей карточки в `init-workflow-page.module.css` (уже есть паттерн в
+`required-action-card.module.css` — переиспользовать по аналогии, не дублировать CSS).
+
+Тесты: `restart` из каждого статуса (`RUNNING` с живым/без живого таска, `PAUSED`, `FAILED`, `SUCCESS`) →
+файлы/DB-строки/checkpoint-thread удалены, `conversations`-строка и соседние (не относящиеся к этому
+`workflow_id`) записи не задеты; идемpotентность повторного вызова; frontend — подтверждение не вызывает
+мутацию сразу, «Отмена» схлопывает без side-effect, успешный `restart` рендерит `InitArchForm`.
+
+> **Мини-отчёт.**
+>
+> - **`db/workflow_repo.py::delete_workflow_run(session, workflow_id)`** — `DELETE FROM workflow_runs
+>   WHERE workflow_id = ...`; каскад на `conversation_items`/`required_actions`/
+>   `workflow_step_transitions`/`artifact_events` целиком отработал существующими `ON DELETE CASCADE`
+>   FK — новых миграций не понадобилось. `conversations` не трогается (она родитель, не ребёнок).
+>   Возвращает `bool` (была ли строка), чтобы вызывающий код мог отличить "удалили" от "уже не было".
+> - **`db/task_repo.py::delete_cli_tasks_for_workflow(session, workflow_id)`** — отдельный `DELETE`,
+>   т.к. `cli_tasks.workflow_id` обычный индексированный `Text`-столбец без FK (он используется и
+>   task-backed ответами `update_arch`/`query`, у которых `workflow_runs`-строки вообще нет).
+> - **`init_arch_workflow.py::restart_init_arch_workflow(workflow_id)`** — порядок операций осознанно
+>   такой: (1) если `record.asyncio_task` жив — `task.cancel()` **и дожидаемся** его завершения
+>   (`asyncio.wait_for(task, timeout=10.0)`, `CancelledError`/`TimeoutError` подавлены) — в отличие от
+>   `pause`, здесь нельзя просто инициировать отмену и уйти дальше: `run_cli_task()`'s
+>   `except asyncio.CancelledError`-очистка (§7) должна реально успеть завершить/убить subprocess
+>   **до** того как следующим шагом снесётся `workspace_dir`, который этот subprocess ещё может
+>   писать; (2) `_resolve_init_arch_paths()` пере-выводит те же `raw_workspace_dir`/`arch_repo_dir`,
+>   что были резолвлены при старте (переиспользование, не дублирование логики путей) →
+>   `shutil.rmtree(..., ignore_errors=True)` на оба — `workspace_dir` сам не трогается; (3)
+>   `checkpointer.adelete_thread(workflow_id)` — штатный метод `AsyncPostgresSaver`, ничего руками по
+>   checkpoint-таблицам; (4) DB-удаление (`delete_cli_tasks_for_workflow` до `delete_workflow_run`);
+>   (5) чистка in-memory `WorkflowRegistry`/`TaskRegistry`. DB — намеренно последний шаг: если что-то
+>   раньше упадёт, `workflow_runs`-строка ещё жива, и `restart` можно повторить безопасно (все шаги
+>   идемпотентны — `ignore_errors=True`, `adelete_thread` на несуществующий thread, `DELETE` на уже
+>   отсутствующие строки).
+> - **REST/OpenAI-контракт — найдено и исправлено в процессе.** `restart` возвращает
+>   conversation-образный payload (`{conversation_id, active_response: None, ...}`), а не
+>   response-образный — потому что `response_id`, который был, **удалён**. Первая версия падала бы:
+>   `POST /responses/{id}/actions/` жёстко типизирован на `ResponseStatusResponse` и
+>   `_response_model()` обращается к `payload["response_id"]`/`["workflow_type"]`/... напрямую —
+>   `KeyError`/500 на реальном вызове. Поймано REST-тестом, а не вручную. Исправлено: возврат роута
+>   расширен до `ResponseStatusResponse | ConversationResponse`, ветвление по `"active_response" in
+>   payload` (тот же duck-typing паттерн, что уже в `get_conversation()` этого файла). OpenAI-facade
+>   (`app/api/openai.py`) той же проблеме подвержен ещё сильнее (`_build_openai_response_payload()`
+>   тоже требует `response_status`/`response_id`), но `restart` — это internal-tooling действие не из
+>   OpenAI Responses API, так что там его просто явно отклоняют 422 до вызова сервиса, а не пытаются
+>   встроить в чужой контракт.
+> - **Frontend**: кнопка «Начать анализ заново» (`variant="danger"`) — всегда видна рядом с
+>   «Остановить» в карточке «Текущий статус», независимо от статуса. Клик не мутирует сразу, а
+>   раскрывает inline-карточку "Начать анализ заново?" с буллет-списком (прогресс/лог, вывод LLM,
+>   склонированные репозитории, сгенерированная документация) и явной пометкой "необратимо"; две
+>   кнопки — «Отмена» (просто схлопывает) и «Да, удалить всё и начать заново» (`actionType: "restart"`).
+>   Модальный компонент заводить не стали (в репозитории такого нет) — переиспользован уже
+>   существующий паттерн `Card` + `useState`-флаг, как в `RequiredActionCard`. После успеха
+>   `activeResponse` становится `null` через обычный query-invalidate, страница естественно
+>   перерисовывается в `InitArchForm` — отдельной ветки для этого не потребовалось.
+> - **Не реализовано (сознательно, вне объёма)**: `workflow_paused`-подобное SSE-событие
+>   `workflow_restarting` перед удалением (для клиента, чьи вкладки в этот момент смотрят live-стрим)
+>   — обрыв соединения без объясняющего события остался как есть, см. «Риски» выше.
+>
+> Тесты: `tests/db/test_workflow_repo.py` (`delete_workflow_run` — каскад на дочерние таблицы,
+> `conversations` не тронута, `False` для отсутствующей строки), `tests/db/test_task_repo.py`
+> (`delete_cli_tasks_for_workflow` — только совпадающие по `workflow_id` строки, `0` для отсутствующих),
+> `tests/services/test_init_arch_workflow.py` (сквозные тесты через `tmp_path` + реальную test-БД +
+> замоканный checkpointer: полное удаление файлов/DB/registry из `FAILED`, ожидание живого таска перед
+> удалением из `RUNNING`, толерантность к уже отсутствующим директориям), `tests/api/rest/test_conversations.py`
+> (`action_type="restart"` через реальный HTTP-запрос → `ConversationResponse`-форма в JSON, файлы
+> реально удалены). Полный `pytest` (662 теста) и `ruff check`/`ruff format --check` зелёные;
+> `npx tsc -b` и весь `npm test` (57 тестов) зелёные.
+>
+> **Дополнение — найденный и исправленный баг: потеря списка репозиториев.** Ревью выявило, что
+> `product_name`/`analysis_scope`/список репозиториев (введённые пользователем при создании
+> workflow) существуют только внутри `WorkflowRecord.session` (`WorkflowSessionRecord`), который
+> сериализуется исключительно в `workflow_runs.session_payload` — отдельного хранилища для
+> «исходного ввода» нет. `delete_workflow_run()` удаляет эту строку целиком вместе с остальным, то
+> есть после `restart` пользователю пришлось бы вбивать весь список репозиториев заново вручную —
+> нарушение неявного ожидания «удаляются только сгенерированные артефакты, а не то, что я сам ввёл».
+> Исправлено без изменения уже протестированного поведения удаления (файлы/БД/checkpoint по-прежнему
+> удаляются полностью — это осознанная часть restart, см. выше): добавлена
+> `_capture_init_input_for_restart(record)` в `init_arch_workflow.py`, которая до начала удаления
+> снимает `product_name`/`analysis_scope`/`workspace_dir`/`arch_repo_dir`/`repo_list` (URL, если он
+> есть, иначе имя репозитория) из `record.session` и кладёт их в `previous_init_input` в возвращаемом
+> payload (`engine_name`/`timeout_seconds` в `WorkflowRecord` никогда не персистились — восстановить
+> их неоткуда, остаются дефолты формы). `ConversationResponse` (REST) получил опциональное поле
+> `previous_init_input: PreviousInitInputResponse | None`. Frontend: `InitArchForm` принимает новый
+> проп `previousInput` и предзаполняет им состояние формы (`initialStateFrom`); `InitWorkflowPage`
+> передаёт `conversation.data?.previous_init_input` и показывает подсказку «Форма предзаполнена
+> данными предыдущего (удалённого) прогона». Тесты: `test_restart_init_arch_workflow_returns_previous_init_input_for_prefill`,
+> `test_restart_init_arch_workflow_previous_init_input_is_none_without_session` (`tests/services/test_init_arch_workflow.py`),
+> `test_post_response_action_restart_returns_previous_init_input_for_prefill` (`tests/api/rest/test_conversations.py`,
+> обновлён и старый `test_post_response_action_restart_deletes_workflow_and_returns_conversation_shape`
+> под новое поле в форме ответа), `init-arch-form.test.tsx` (предзаполнение и отправка как есть, а
+> также explicit-`null` регресс на старое поведение). Полный `pytest` (665 тестов), `ruff`, `tsc -b` и
+> `npm test` (59 тестов) зелёные.
 
 ## Что не входит в эту итерацию
 

@@ -81,11 +81,20 @@ export interface ResponseStatusResponse {
   terminal_result: Record<string, unknown> | null;
 }
 
+export interface PreviousInitInputResponse {
+  product_name: string;
+  analysis_scope: string;
+  workspace_dir: string;
+  arch_repo_dir: string;
+  repo_list: string[];
+}
+
 export interface ConversationResponse {
   conversation_id: string;
   created_at: string;
   updated_at: string;
   active_response: ResponseStatusResponse | null;
+  previous_init_input: PreviousInitInputResponse | null;
 }
 
 export interface ConversationItemResponse {

@@ -484,8 +484,33 @@ persist (Postgres-чекпоинтер + YAML progress-снепшот) сраб�
 по-прежнему чисто path/diff-based; связывать домены с выбором чеклист-пунктов — отдельная, ещё не принятая
 архитектурная задача (см. [2026-07-21-assess-scope-domain-persistence.md](../spec/2026-07-21-assess-scope-domain-persistence.md), Фаза 6).
 
+**Обязательные пункты независимо от diff severity**: `feature_discovery_and_updates`/`features_index_updates`
+теперь входят в `_ALWAYS_ROUTED_CHECKLIST_ITEMS` наравне с `architecture_artifact_updates`/
+`repository_consistency_review` — `route_checklist_items` возвращает их для любого репозитория с непустым
+diff (`LOCAL`/`BROAD`/`FULL_REQUIRED`), независимо от того, какие категории задели изменённые пути (см.
+[signal_routing.py:10-15](../../back/app/workflows/init_arch/domain/signal_routing.py#L10-L15)). Раньше эти
+два пункта не были ни в одной записи `_PATH_SIGNAL_CATEGORIES` и потому пропускались diff-роутингом при
+`LOCAL`-severity — реестр фич мог не пополняться по репозиториям с узким, но продуктово значимым диффом.
+Исключение — `NO_SIGNAL` severity (пустой diff за окно): там по-прежнему routed только
+`repository_consistency_review`, синтезировать capability из пустого диффа нечего. См.
+[2026-07-22-mandatory-per-repo-feature-sync-and-final-feature-review.md](../spec/2026-07-22-mandatory-per-repo-feature-sync-and-final-feature-review.md).
+
+**Первый пункт — чистка удалённой функциональности.** `deleted_functionality_cleanup` — первая запись в
+`CHECKLIST_ITEM_TO_REFERENCE`, тоже входит в `_ALWAYS_ROUTED_CHECKLIST_ITEMS`, и порядок ключей словаря
+определяет порядок исполнения (`route_checklist_items`/`next_pending_checklist_item` сохраняют порядок
+входного списка) — значит, для каждого репозитория с непустым диффом это гарантированно первый обработанный
+пункт чек-листа, раньше `repository_classification`. Задача: найти в уже написанной документации всё, что
+описывало код из «Удалённые пути» текущего окна, и почистить/понизить статус/зафиксировать как
+`open_questions`, прежде чем остальные пункты начнут анализировать репозиторий (чтобы устаревшее описание не
+сбивало с толку и не выглядело всё ещё актуальным). Помимо этого выделенного пункта, все остальные 15
+пунктов чек-листа теперь содержат собственную defense-in-depth инструкцию — перепроверить в своей предметной
+области (свой артефакт: entrypoint, контракт, таблица, роль и т.д.), не упустил ли первый широкий проход
+что-то в узкой области. См.
+[2026-07-22-deleted-functionality-doc-cleanup.md](../spec/2026-07-22-deleted-functionality-doc-cleanup.md).
+
 | checklist item | reference |
 |---|---|
+| `deleted_functionality_cleanup` | [checklist-deleted-functionality-cleanup.md](../../back/app/workflows/shared_assets/init_arch/references/checklist-deleted-functionality-cleanup.md) |
 | `repository_classification` | [checklist-repository-classification.md](../../back/app/workflows/shared_assets/init_arch/references/checklist-repository-classification.md) |
 | `repository_structure_mapping` | [checklist-repository-structure-mapping.md](../../back/app/workflows/shared_assets/init_arch/references/checklist-repository-structure-mapping.md) |
 | `entrypoints_and_interfaces` | [checklist-entrypoints-and-interfaces.md](../../back/app/workflows/shared_assets/init_arch/references/checklist-entrypoints-and-interfaces.md) |
@@ -593,11 +618,21 @@ JSON (не соответствует `LlmTaskResult`-контракту) → п
 
 **Что делает** ([nodes.py:649](../../back/app/workflows/init_arch/nodes.py#L649)):
 `knowledge_service.bootstrap_arch_repo` (детерминированно создаёт скелет `features/`, `architecture/`,
-`wiki/`) → LLM пишет/уточняет фичи → `collect_worker_artifacts` фиксирует созданные файлы.
+`wiki/`) → LLM пишет/уточняет фичи **и проводит финальную сверку по всему накопленному реестру фич** →
+`collect_worker_artifacts` фиксирует созданные файлы.
 
 **LLM**: да. Reference: [checklist-features-and-index.md](../../back/app/workflows/shared_assets/init_arch/references/checklist-features-and-index.md)
 ([prompts.py:25](../../back/app/workflows/init_arch/prompts.py#L25)). Нужен для синтеза текстовых
-артефактов фич из собранных находок.
+артефактов фич из собранных находок. Этот же reference-файл подключён и к пунктам чек-листа шага 8
+(`feature_discovery_and_updates`/`features_index_updates`), поэтому в файле есть отдельный раздел «Часть 3:
+финальная сверка по всему реестру фич», который агент выполняет только когда видит в промпте
+``Шаг: `refine_features` `` — при вызове как пункт чек-листа шага 8 (``Шаг: `analyze_repositories` ``) раздел
+пропускается. В отличие от нод 8 (repo-scoped, одна пара `repository × checklist item` за вызов), нода 10
+видит весь реестр `features/*.md`/`features-index.md` сразу, после того как все репозитории проанализированы
+и все `open_questions` интервью закрыты — раздел «Часть 3» явно требует перечитать всё целиком и проверить
+согласованность с `architecture/domain-map.yaml` (домены из ноды 7) и списком `session.repositories`, найти
+и исправить противоречия между фичами, а не только дописать недостающее. См.
+[2026-07-22-mandatory-per-repo-feature-sync-and-final-feature-review.md](../spec/2026-07-22-mandatory-per-repo-feature-sync-and-final-feature-review.md).
 
 **Файлы**: `bootstrap_arch_repo()` ([knowledge.py:85](../../back/app/workflows/init_arch/knowledge.py#L85))
 детерминированно создаёт каталоги `features/`, `architecture/`, `architecture/integrations`,
@@ -624,69 +659,95 @@ JSON (не соответствует `LlmTaskResult`-контракту) → п
 
 ---
 
-### 11. `build_navigation_index` — не LLM
+### 11. `build_navigation_index` — условно LLM (автофикс)
 
-**Что делает** ([nodes.py:696](../../back/app/workflows/init_arch/nodes.py#L696)):
+**Что делает** ([nodes.py:831](../../back/app/workflows/init_arch/nodes.py#L831)):
 `knowledge_service.compile_navigation(...)` — механическая сборка `wiki/index.md` и
-`wiki/maps/compile-report.md` по уже написанным файлам.
+`wiki/maps/compile-report.md` по уже написанным файлам. Если `compile_result.lint_issues` (blocking-подмножество
+графовых проблем — missing related reference / frontmatter-related coverage ниже порога, см.
+`graph_blocking_issues()` в [knowledge_runtime.py:804](../../back/app/workflows/init_arch/knowledge_runtime.py#L804))
+непусто — нода один раз вызывает LLM-агента (`task_kind=knowledge_lint_autofix`) на исправление именно этих
+файлов, собирает его артефакты и **пересчитывает и перезаписывает** `wiki/index.md`/`compile-report.md` заново
+над исправленным состоянием, прежде чем продвигать шаг. См.
+[2026-07-22-knowledge-compile-lint-autofix-loop.md](../spec/2026-07-22-knowledge-compile-lint-autofix-loop.md).
 
-**LLM**: нет. Хотя в `STEP_TO_REFERENCE` для этого шага числится
+**LLM**: условно. `STEP_TO_REFERENCE` для этого шага указывает на
 [knowledge-workflow.md](../../back/app/workflows/shared_assets/init_arch/references/knowledge-workflow.md)
-([prompts.py:26](../../back/app/workflows/init_arch/prompts.py#L26)) — это мёртвая запись, промпт для этой
-ноды никогда не строится, т.к. `_run_step_worker` тут не вызывается вовсе. Стоит либо убрать эту строку из
-словаря, либо (если по замыслу здесь должен быть LLM-шаг) добавить вызов.
+([prompts.py:48](../../back/app/workflows/init_arch/prompts.py#L48)) — раньше это была мёртвая запись
+(`build_step_prompt` для этой ноды не строился вовсе), теперь реально попадает в промпт, но только когда
+детерминированная проверка нашла blocking issue — в happy path (большинство прогонов) LLM по-прежнему не
+вызывается ни разу, стоимость и латентность шага не меняются.
 
-**Файлы**: `wiki/index.md` и `wiki/maps/compile-report.md` **перезаписываются целиком** —
-`compile_navigation()` ([knowledge.py:135](../../back/app/workflows/init_arch/knowledge.py#L135)) читает уже
-существующие markdown-файлы в `arch_repo_dir` (в первую очередь то, что написали ноды 8/10) и пересобирает
-индекс/отчёт заново. Новых знаний не добавляет — только переупаковывает уже написанное.
+**Файлы**: `wiki/index.md` и `wiki/maps/compile-report.md` **перезаписываются целиком**, как минимум один раз
+(`compile_navigation()`, [knowledge.py:146](../../back/app/workflows/init_arch/knowledge.py#L146)), и второй
+раз — если сработал автофикс, чтобы записанные файлы отражали уже исправленный граф, а не устаревший. Сам
+compile новых знаний не добавляет — только переупаковывает уже написанное (плюс то, что дописал автофикс).
 
-**В базе**: `ARTIFACT_WRITTEN` x2 (по одному на каждый из двух файлов).
+**В базе**: `ARTIFACT_WRITTEN` x2 на каждый вызов `compile_navigation` (т.е. x4, если был автофикс) +
+`LLM_TASK_*`/`cli_tasks`, если автофикс вызывался.
 
 **На выходе**: `session.current_step = RUN_KNOWLEDGE_LINT`.
 
-**При ошибке**: `try/except` вокруг `compile_navigation` → `step_error` → retry.
+**При ошибке**: `try/except` вокруг всего тела ноды → `step_error` → retry ≤3, как и раньше. Отдельный случай:
+если blocking issue пережила автофикс, ошибка начинается с `KNOWLEDGE_COMPILE_BLOCKED_AFTER_AUTOFIX:` —
+отличимо в audit-логе от инфраструктурного сбоя (тот приходит с исходным текстом исключения, без этого
+префикса). Графовый retry в этом случае повторяет всю ноду заново, включая новую попытку автофикса — файлы к
+этому моменту уже изменены предыдущей попыткой, так что повтор не гарантированно бесполезен.
 
-**Логи и что видит пользователь**: audit `ARTIFACT_WRITTEN(wiki/index.md)`, `ARTIFACT_WRITTEN(wiki/maps/compile-report.md)`.
+**Логи и что видит пользователь**: audit `ARTIFACT_WRITTEN(wiki/index.md)`, `ARTIFACT_WRITTEN(wiki/maps/compile-report.md)`;
+при автофиксе — дополнительно `LLM_TASK_REQUESTED`/`COMPLETED` и `ARTIFACT_WRITTEN` на файлы, которые починил
+агент, до перезаписи wiki-файлов.
 
 **Зачем (по-человечески)**: собрать оглавление и карту связей по уже написанной документации, чтобы по ней
-можно было ориентироваться (найти нужный файл, увидеть неразрешённые ссылки), не читая весь repo целиком.
+можно было ориентироваться (найти нужный файл, увидеть неразрешённые ссылки), не читая весь repo целиком; а
+если граф оказался структурно неполным (битая ссылка, недостающие метаданные) — сразу это починить, а не
+просто зафиксировать проблему для более позднего шага.
 
 ---
 
-### 12. `run_knowledge_lint` — не LLM
+### 12. `run_knowledge_lint` — условно LLM (автофикс)
 
-**Что делает** ([nodes.py:733](../../back/app/workflows/init_arch/nodes.py#L733)):
+**Что делает** ([nodes.py:891](../../back/app/workflows/init_arch/nodes.py#L891)):
 `knowledge_service.lint_knowledge(...)` — формальные структурные проверки knowledge-слоя (residue от
 шаблонов, обязательные файлы, контракты OpenAPI/AsyncAPI, консистентность commit между landscape и structure
-— см. [init.md → Knowledge Pipeline Gates](init.md#knowledge-pipeline-gates)).
+— см. [init.md → Knowledge Pipeline Gates](init.md#knowledge-pipeline-gates)). Если среди issues есть хотя бы
+один `ERROR:` — нода один раз вызывает LLM-агента (`task_kind=knowledge_lint_autofix`) с этим списком в
+промпте, собирает его артефакты, **обязательно** пересчитывает и перезаписывает навигацию через
+`compile_navigation()` (иначе drift-check `_lint_wiki_compile_drift` увидит рассинхронизацию `wiki/index.md`
+с только что исправленными файлами и даст новую ошибку вместо исчезновения старой) и только затем повторяет
+`lint_knowledge()` над обновлённым состоянием. См.
+[2026-07-22-knowledge-compile-lint-autofix-loop.md](../spec/2026-07-22-knowledge-compile-lint-autofix-loop.md).
 
-**LLM**: нет — reference [knowledge-workflow.md](../../back/app/workflows/shared_assets/init_arch/references/knowledge-workflow.md)
-тоже мёртвый по той же причине, что и в ноде 11.
+**LLM**: условно, тот же reference [knowledge-workflow.md](../../back/app/workflows/shared_assets/init_arch/references/knowledge-workflow.md)
+([prompts.py:49](../../back/app/workflows/init_arch/prompts.py#L49)), больше не мёртвая запись — см. ноду 11.
+`lint_knowledge()` сам больше не кидает исключение при blocking issues (раньше кидал) — просто возвращает их
+в `lint_issues`, решение «звать автофикс / считать шаг упавшим» целиком в этой ноде.
 
-**Файлы**: нет — `lint_knowledge()` ([knowledge.py:169](../../back/app/workflows/init_arch/knowledge.py#L169))
-только читает файлы в `arch_repo_dir` и валидирует их (residue от шаблонов, обязательные секции, контракты
-OpenAPI/AsyncAPI, консистентность commit между landscape и structure), ничего не пишет
-(`written_artifacts=[]` всегда).
+**Файлы**: сам `lint_knowledge()` ([knowledge.py:216](../../back/app/workflows/init_arch/knowledge.py#L216))
+по-прежнему ничего не пишет (`written_artifacts=[]` всегда); если сработал автофикс — пишутся файлы, которые
+починил агент, плюс повторно `wiki/index.md`/`wiki/maps/compile-report.md` через промежуточный
+`compile_navigation()`.
 
-**В базе**: без дополнений к общему паттерну — `ARTIFACT_WRITTEN` не эмитится.
+**В базе**: без дополнений к общему паттерну в happy path; при автофиксе — те же события, что и в ноде 11
+(`LLM_TASK_*`, `ARTIFACT_WRITTEN` на исправленные файлы и на перезаписанные wiki-файлы).
 
 **На выходе**: `session.current_step = VALIDATE_FINAL`.
 
-**При ошибке**: важное отличие от прочих — `lint_knowledge` при blocking-проблемах не просто "падает
-случайно", а осознанно кидает `ValueError` с текстом вида `"ERROR: ..."` при обнаруженных нарушениях; это
-всё равно попадает в тот же общий `try/except` → `step_error` → retry ≤3 → `handle_error`, т.е. с точки
-зрения графа неотличимо от инфраструктурной ошибки — семантика "это осмысленный lint-fail, а не баг"
-теряется на уровне графа и видна только в тексте `error_message`.
+**При ошибке**: если blocking issue пережила автофикс, ошибка начинается с
+`KNOWLEDGE_LINT_BLOCKED_AFTER_AUTOFIX:` — та же идея отличимости от инфраструктурного сбоя, что и в ноде 11;
+попадает в тот же общий `try/except` → `step_error` → retry ≤3 → `handle_error`. В отличие от поведения до
+этой задачи, повторная попытка (retry) больше не гарантированно идентична предыдущей — за каждым retry стоит
+новая попытка автофикса над уже изменёнными на предыдущей попытке файлами.
 
-**Логи и что видит пользователь**: audit `note=lint_result.summary`. Пример: после трёх неудачных попыток
-пользователь увидит карточку `step_failed` с текстом вида
-`"ERROR: architecture/hld.md still contains template placeholder <...>"` и выбор «Повторить» (после ручного
-фикса шаблона) или «Прервать».
+**Логи и что видит пользователь**: audit `note=lint_result.summary`. Пример: после автофикса и всё равно
+неуспешной сверки, после трёх неудачных попыток пользователь увидит карточку `step_failed` с текстом вида
+`"KNOWLEDGE_LINT_BLOCKED_AFTER_AUTOFIX: ERROR: architecture/hld.md still contains template placeholder <...>"`
+и выбор «Повторить» (после ручного фикса шаблона) или «Прервать».
 
 **Зачем (по-человечески)**: проверить, что документация не осталась с незаполненными шаблонными
 плейсхолдерами, битыми ссылками между секциями или рассинхронизированными commit'ами между обзорным и
-детальным слоями — прежде чем считать анализ содержательно завершённым, а не просто "все шаги пройдены".
+детальным слоями — прежде чем считать анализ содержательно завершённым, а не просто "все шаги пройдены"; а
+если что-то из этого нашлось — попробовать починить прямо сейчас, а не просто остановить прогон с ошибкой.
 
 ---
 
@@ -930,16 +991,24 @@ as_node=as_node)` — это досоздаёт LangGraph checkpoint новог�
 
 ## Известные несостыковки, найденные при разборе
 
-1. `STEP_TO_REFERENCE["build_navigation_index"]` и `["run_knowledge_lint"]` указывают на
+1. ~~`STEP_TO_REFERENCE["build_navigation_index"]` и `["run_knowledge_lint"]` указывают на
    [knowledge-workflow.md](../../back/app/workflows/shared_assets/init_arch/references/knowledge-workflow.md),
-   но обе ноды никогда не вызывают LLM — файл фактически мёртвый в контексте промптов.
+   но обе ноды никогда не вызывают LLM — файл фактически мёртвый в контексте промптов.~~ — исправлено: обе
+   ноды теперь условно вызывают LLM-автофикс (`task_kind=knowledge_lint_autofix`) при найденных blocking
+   issues, и именно этот reference-файл попадает в промпт вызова. См. ноды 11/12 выше и
+   [2026-07-22-knowledge-compile-lint-autofix-loop.md](../spec/2026-07-22-knowledge-compile-lint-autofix-loop.md).
 2. `StepDefinition.uses_llm_worker=False` для `validate_final` ([steps.py:88](../../back/app/workflows/init_arch/domain/steps.py#L88))
    не соответствует реальному коду ноды (`_simple_llm_step` всегда зовёт LLM). Поле, похоже, сейчас не
    является source of truth для поведения графа.
-3. `run_knowledge_lint` кодирует смысловой "lint failed" как обычное исключение — на уровне графа это
+3. ~~`run_knowledge_lint` кодирует смысловой "lint failed" как обычное исключение — на уровне графа это
    неотличимо от инфраструктурного сбоя (сеть, таймаут CLI и т.д.), различие видно только в тексте
    `error_message`, который пользователь увидит в карточке `step_failed` перед тем, как решить —
-   повторять или прерывать.
+   повторять или прерывать.~~ — частично исправлено: `lint_knowledge()`/`compile_navigation()` больше не
+   кидают исключение сами при blocking issues (просто возвращают их в `lint_issues`); ноды 11/12 кидают
+   `ValueError` только если issue пережила автофикс, с отличимым префиксом
+   `KNOWLEDGE_COMPILE_BLOCKED_AFTER_AUTOFIX:`/`KNOWLEDGE_LINT_BLOCKED_AFTER_AUTOFIX:` — на уровне графа это
+   всё ещё то же самое исключение через общий `try/except`, но текст теперь однозначно отличим от
+   инфраструктурного сбоя по префиксу, а не только по содержанию.
 4. Две LLM-ноды — `analyze_repositories_item`, `validate_final` — не вызывают
    `knowledge_service.collect_worker_artifacts(...)`, в отличие от `refine_features`/`interview_user`/
    `generate_release_notes`. Файлы, которые агент пишет в `arch_repo_dir` на этих шагах, физически

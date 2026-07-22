@@ -71,15 +71,18 @@ STEP_DEFINITIONS: tuple[StepDefinition, ...] = (
         required_previous_steps=[StepId.INTERVIEW_USER],
     ),
     StepDefinition(
+        # uses_llm_worker=True (default) is conditional: the node only calls the LLM worker when the
+        # deterministic compile step finds a blocking graph issue that needs an autofix pass.
         step_id=StepId.BUILD_NAVIGATION_INDEX,
         title="Build navigation index",
         required_previous_steps=[StepId.REFINE_FEATURES],
     ),
     StepDefinition(
+        # uses_llm_worker=True is conditional, same as BUILD_NAVIGATION_INDEX above: only called when the
+        # deterministic lint finds a blocking issue that needs an autofix pass.
         step_id=StepId.RUN_KNOWLEDGE_LINT,
         title="Run knowledge lint",
         required_previous_steps=[StepId.BUILD_NAVIGATION_INDEX],
-        uses_llm_worker=False,
     ),
     StepDefinition(
         step_id=StepId.VALIDATE_FINAL,

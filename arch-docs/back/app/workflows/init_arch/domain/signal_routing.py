@@ -8,7 +8,13 @@ from app.workflows.init_arch.domain.models import CommitRangeStatus, RepositoryE
 _LOCAL_DIFF_MAX_TOP_LEVEL_DIRS: typing.Final[int] = 3
 _NO_SIGNAL_CONFIRMATION_ITEM: typing.Final[str] = "repository_consistency_review"
 _ALWAYS_ROUTED_CHECKLIST_ITEMS: typing.Final[frozenset[str]] = frozenset(
-    {"architecture_artifact_updates", "repository_consistency_review"}
+    {
+        "architecture_artifact_updates",
+        "repository_consistency_review",
+        "feature_discovery_and_updates",
+        "features_index_updates",
+        "deleted_functionality_cleanup",
+    }
 )
 
 _PATH_SIGNAL_CATEGORIES: typing.Final[tuple[tuple[str, tuple[str, ...]], ...]] = (

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { Button } from "../../shared/ui/button";
-import type { CliEngine, InitArchInput } from "../../shared/api/models";
+import type { CliEngine, InitArchInput, PreviousInitInputResponse } from "../../shared/api/models";
 import styles from "./init-arch-form.module.css";
 
 const DEFAULT_WORKSPACE_DIR = "/workspace";
@@ -26,6 +26,18 @@ const INITIAL_STATE: FormState = {
   archRepoDir: "",
 };
 
+function initialStateFrom(previousInput: PreviousInitInputResponse | null | undefined): FormState {
+  if (!previousInput) return INITIAL_STATE;
+  return {
+    productName: previousInput.product_name,
+    repoList: previousInput.repo_list.length > 0 ? previousInput.repo_list : [""],
+    engineName: INITIAL_STATE.engineName,
+    timeoutSeconds: INITIAL_STATE.timeoutSeconds,
+    workspaceDir: previousInput.workspace_dir || DEFAULT_WORKSPACE_DIR,
+    archRepoDir: previousInput.arch_repo_dir,
+  };
+}
+
 function validate(state: FormState): string | null {
   if (!state.productName.trim()) return "Укажите название продукта.";
   if (!state.repoList.some((entry) => entry.trim())) return "Добавьте хотя бы один репозиторий.";
@@ -47,8 +59,16 @@ function buildInput(state: FormState): InitArchInput {
   };
 }
 
-export function InitArchForm({ onSubmit, isSubmitting }: { onSubmit: (input: InitArchInput) => void; isSubmitting: boolean }) {
-  const [state, setState] = useState<FormState>(INITIAL_STATE);
+export function InitArchForm({
+  onSubmit,
+  isSubmitting,
+  previousInput,
+}: {
+  onSubmit: (input: InitArchInput) => void;
+  isSubmitting: boolean;
+  previousInput?: PreviousInitInputResponse | null;
+}) {
+  const [state, setState] = useState<FormState>(() => initialStateFrom(previousInput));
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
 

@@ -6,6 +6,7 @@ from app.workflows.init_arch.domain.signal_routing import (
 )
 
 _ALL_ITEMS = [
+    "deleted_functionality_cleanup",
     "repository_classification",
     "entrypoints_and_interfaces",
     "business_flow_orchestration",
@@ -17,6 +18,8 @@ _ALL_ITEMS = [
     "roles_and_permissions_updates",
     "security_and_auth_updates",
     "deployment_and_operability",
+    "feature_discovery_and_updates",
+    "features_index_updates",
     "architecture_artifact_updates",
     "repository_consistency_review",
 ]
@@ -96,6 +99,9 @@ class TestRouteChecklistItems:
         assert "contracts_and_schemas" in routed
         assert "architecture_artifact_updates" in routed
         assert "repository_consistency_review" in routed
+        assert "feature_discovery_and_updates" in routed
+        assert "features_index_updates" in routed
+        assert "deleted_functionality_cleanup" in routed
         assert "data_and_storage" not in routed
         assert "roles_and_permissions_updates" not in routed
 
@@ -113,4 +119,27 @@ class TestRouteChecklistItems:
             changed_paths=["README.md"],
         )
         routed = route_checklist_items(repo, all_checklist_item_ids=_ALL_ITEMS)
-        assert routed == ["architecture_artifact_updates", "repository_consistency_review"]
+        assert routed == [
+            "deleted_functionality_cleanup",
+            "feature_discovery_and_updates",
+            "features_index_updates",
+            "architecture_artifact_updates",
+            "repository_consistency_review",
+        ]
+
+    def test_no_signal_does_not_route_feature_items(self):
+        repo = _make_repo(commit_range_status=CommitRangeStatus.NO_CHANGES)
+        routed = route_checklist_items(repo, all_checklist_item_ids=_ALL_ITEMS)
+        assert routed == ["repository_consistency_review"]
+        assert "feature_discovery_and_updates" not in routed
+        assert "features_index_updates" not in routed
+        assert "deleted_functionality_cleanup" not in routed
+
+    def test_local_routes_deleted_functionality_cleanup_first(self):
+        repo = _make_repo(
+            commit_range_status=CommitRangeStatus.DIFF_COLLECTED,
+            changed_paths=["app/api/routers/users.py"],
+            deleted_paths=["app/api/routers/legacy_users.py"],
+        )
+        routed = route_checklist_items(repo, all_checklist_item_ids=_ALL_ITEMS)
+        assert routed[0] == "deleted_functionality_cleanup"

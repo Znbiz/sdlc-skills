@@ -6,9 +6,12 @@ from pathlib import Path
 import pytest
 import yaml
 
+from app.settings import GatewaySettings
+from app.workflows.init_arch.audit import get_workflow_audit_service
 from app.workflows.init_arch.domain import (
     DomainDefinition,
     DomainStrategy,
+    EventType,
     OpenQuestionRecord,
     RepositoryExecution,
     StepId,
@@ -96,6 +99,24 @@ async def test_compile_navigation_writes_compiled_index_and_report(tmp_path: Pat
     assert "## Артефакты по типам" in index_text
     assert "## Quality Gates" in report_text
     assert any(artifact.last_updated_step is StepId.BUILD_NAVIGATION_INDEX for artifact in compiled.session.artifacts)
+    assert compiled.lint_issues == []
+
+
+@pytest.mark.asyncio
+async def test_compile_navigation_surfaces_graph_blocking_issues(tmp_path: Path) -> None:
+    service = KnowledgeArtifactService()
+    arch_repo_dir = tmp_path / "arch-repo"
+    (arch_repo_dir / "wiki" / "maps").mkdir(parents=True)
+    (arch_repo_dir / "features").mkdir()
+    (arch_repo_dir / "features" / "auth.md").write_text(
+        "---\nrelated:\n  - features/missing.md\n---\n# Auth\n",
+        encoding="utf-8",
+    )
+
+    compiled = await service.compile_navigation(_make_session(), arch_repo_dir=str(arch_repo_dir))
+
+    assert any(issue.startswith("ERROR:") for issue in compiled.lint_issues)
+    assert any("missing related reference" in issue for issue in compiled.lint_issues)
 
 
 @pytest.mark.asyncio
@@ -163,12 +184,12 @@ async def test_valid_arch_repo_smoke_bootstrap_compile_and_lint(tmp_path: Path) 
     assert "## Запись:" in log_text
     assert "## Coverage" in report_text
     assert "Frontmatter coverage: `6/6` (100%)" in report_text
-    assert linted.summary.startswith("Knowledge lint passed with ")
+    assert linted.summary.startswith("Knowledge lint completed with ")
     assert not any(issue.startswith("ERROR:") for issue in linted.lint_issues)
 
 
 @pytest.mark.asyncio
-async def test_lint_knowledge_raises_on_blocking_issues(tmp_path: Path) -> None:
+async def test_lint_knowledge_returns_blocking_issues_without_raising(tmp_path: Path) -> None:
     service = KnowledgeArtifactService()
     arch_repo_dir = tmp_path / "arch-repo"
     arch_repo_dir.mkdir()
@@ -176,18 +197,20 @@ async def test_lint_knowledge_raises_on_blocking_issues(tmp_path: Path) -> None:
     (arch_repo_dir / "wiki" / "maps").mkdir()
     (arch_repo_dir / "features").mkdir()
 
-    with pytest.raises(ValueError, match="knowledge lint failed"):
-        await service.lint_knowledge(_make_session(), arch_repo_dir=str(arch_repo_dir))
+    result = await service.lint_knowledge(_make_session(), arch_repo_dir=str(arch_repo_dir))
+
+    assert any(issue.startswith("ERROR:") for issue in result.lint_issues)
 
 
 @pytest.mark.asyncio
-async def test_collect_worker_artifacts_deduplicates_paths() -> None:
+async def test_collect_worker_artifacts_deduplicates_paths(tmp_path: Path) -> None:
     service = KnowledgeArtifactService()
 
     result = await service.collect_worker_artifacts(
         _make_session(),
         step_id=StepId.REFINE_FEATURES,
         created_artifacts=["wiki/index.md", "wiki/index.md", "features/auth.md"],
+        arch_repo_dir=str(tmp_path / "arch"),
     )
 
     assert result.written_artifacts == ["features/auth.md", "wiki/index.md"]
@@ -199,7 +222,80 @@ def test_artifact_kind_from_path_recognizes_release_notes() -> None:
 
 
 @pytest.mark.asyncio
-async def test_collect_worker_artifacts_stamps_current_window_index() -> None:
+async def test_register_artifacts_emits_diff_against_previous_snapshot(tmp_path: Path) -> None:
+    audit_service = get_workflow_audit_service()
+    service = KnowledgeArtifactService(audit_service=audit_service)
+    arch_repo_dir = tmp_path / "arch"
+    (arch_repo_dir / "features").mkdir(parents=True)
+    feature_path = arch_repo_dir / "features" / "auth.md"
+    feature_path.write_text("# Auth\n\nInitial content.\n", encoding="utf-8")
+    session = _make_session()
+    audit_service.clear(session.session_id)
+
+    await service.collect_worker_artifacts(
+        session,
+        step_id=StepId.REFINE_FEATURES,
+        created_artifacts=["features/auth.md"],
+        arch_repo_dir=str(arch_repo_dir),
+    )
+    first_event = next(
+        event
+        for event in audit_service.list_events(session.session_id)
+        if event.event_type == EventType.ARTIFACT_WRITTEN
+    )
+    assert "+Initial content." in first_event.payload["diff"]
+
+    feature_path.write_text("# Auth\n\nUpdated content.\n", encoding="utf-8")
+    await service.collect_worker_artifacts(
+        session,
+        step_id=StepId.REFINE_FEATURES,
+        created_artifacts=["features/auth.md"],
+        arch_repo_dir=str(arch_repo_dir),
+    )
+    written_events = [
+        event
+        for event in audit_service.list_events(session.session_id)
+        if event.event_type == EventType.ARTIFACT_WRITTEN
+    ]
+    second_diff = written_events[-1].payload["diff"]
+    assert "-Initial content." in second_diff
+    assert "+Updated content." in second_diff
+    audit_service.clear(session.session_id)
+
+
+@pytest.mark.asyncio
+async def test_register_artifacts_truncates_diff_over_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "app.workflows.init_arch.knowledge.get_gateway_settings",
+        lambda: GatewaySettings(auth_secret="secret", audit={"max_diff_chars": 20}),
+    )
+    audit_service = get_workflow_audit_service()
+    service = KnowledgeArtifactService(audit_service=audit_service)
+    arch_repo_dir = tmp_path / "arch"
+    (arch_repo_dir / "features").mkdir(parents=True)
+    feature_path = arch_repo_dir / "features" / "auth.md"
+    feature_path.write_text("line one\nline two\nline three\nline four\n", encoding="utf-8")
+    session = _make_session()
+    audit_service.clear(session.session_id)
+
+    await service.collect_worker_artifacts(
+        session,
+        step_id=StepId.REFINE_FEATURES,
+        created_artifacts=["features/auth.md"],
+        arch_repo_dir=str(arch_repo_dir),
+    )
+
+    event = next(
+        event
+        for event in audit_service.list_events(session.session_id)
+        if event.event_type == EventType.ARTIFACT_WRITTEN
+    )
+    assert event.payload["diff"].endswith("...[truncated]")
+    audit_service.clear(session.session_id)
+
+
+@pytest.mark.asyncio
+async def test_collect_worker_artifacts_stamps_current_window_index(tmp_path: Path) -> None:
     service = KnowledgeArtifactService()
     baseline_session = _make_session()
     session = baseline_session.model_copy(
@@ -210,6 +306,7 @@ async def test_collect_worker_artifacts_stamps_current_window_index() -> None:
         session,
         step_id=StepId.GENERATE_RELEASE_NOTES,
         created_artifacts=["release-notes/window-2-2020-07-01.md"],
+        arch_repo_dir=str(tmp_path / "arch"),
     )
 
     artifact = next(
@@ -252,7 +349,7 @@ async def test_lint_knowledge_returns_non_blocking_issues(tmp_path: Path) -> Non
         monkeypatch.setattr("app.workflows.init_arch.knowledge.run_knowledge_lint", lambda _path: ["WARN: gap"])
         result = await service.lint_knowledge(_make_session(), arch_repo_dir=str(arch_repo_dir))
 
-    assert "Knowledge lint passed" in result.summary
+    assert "Knowledge lint completed" in result.summary
 
 
 @pytest.mark.asyncio

@@ -120,4 +120,46 @@ describe("InitArchForm", () => {
 
     expect(screen.getByRole("button", { name: "Запустить init_arch" })).toBeDisabled();
   });
+
+  it("предзаполняет поля из previousInput (после restart) и отправляет их как есть", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    render(
+      <InitArchForm
+        isSubmitting={false}
+        onSubmit={onSubmit}
+        previousInput={{
+          product_name: "RestartedProduct",
+          analysis_scope: "full",
+          workspace_dir: "/workspace/restarted",
+          arch_repo_dir: "/workspace/restarted/arch-doc",
+          repo_list: ["https://github.com/org/repo-a.git", "https://github.com/org/repo-b.git"],
+        }}
+      />,
+    );
+
+    expect(screen.getByPlaceholderText("Arch Docs Gateway")).toHaveValue("RestartedProduct");
+    expect(screen.getAllByPlaceholderText("https://github.com/org/repo.git").map((input) => (input as HTMLInputElement).value)).toEqual([
+      "https://github.com/org/repo-a.git",
+      "https://github.com/org/repo-b.git",
+    ]);
+
+    await user.click(screen.getByRole("button", { name: "Запустить init_arch" }));
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        product_name: "RestartedProduct",
+        repo_list: ["https://github.com/org/repo-a.git", "https://github.com/org/repo-b.git"],
+        workspace_dir: "/workspace/restarted",
+        arch_repo_dir: "/workspace/restarted/arch-doc",
+      }),
+    );
+  });
+
+  it("без previousInput ведёт себя как раньше (пустая форма)", () => {
+    const onSubmit = vi.fn();
+    render(<InitArchForm isSubmitting={false} onSubmit={onSubmit} previousInput={null} />);
+
+    expect(screen.getByPlaceholderText("Arch Docs Gateway")).toHaveValue("");
+  });
 });

@@ -11,6 +11,8 @@ from app.db.workflow_repo import (
     _session_payload,
     append_workflow_event,
     create_conversation,
+    delete_workflow_run,
+    get_conversation,
     get_workflow_run,
     list_conversation_items,
     mark_running_workflows_failed,
@@ -260,3 +262,35 @@ async def test_upsert_and_get_workflow_run_round_trips_path_metadata(db_session)
 
     assert loaded.workspace_dir == "/workspace"
     assert loaded.arch_repo_dir == "/workspace/arch"
+
+
+async def test_delete_workflow_run_cascades_children_but_keeps_conversation(db_session):
+    record = WorkflowRecord(
+        workflow_id="wf-delete",
+        conversation_id="conv-delete",
+        workspace_dir="/workspace",
+        arch_repo_dir="/workspace/arch",
+    )
+    await upsert_workflow_run(db_session, record)
+    await append_workflow_event(
+        db_session,
+        WorkflowEventRecord(
+            event_type=EventType.WORKFLOW_STEP_STARTED,
+            actor=AuditActor.SERVICE,
+            session_id="wf-delete",
+            step_id=StepId.DEFINE_SCOPE,
+            payload={},
+        ),
+    )
+
+    deleted = await delete_workflow_run(db_session, "wf-delete")
+
+    assert deleted is True
+    assert await get_workflow_run(db_session, "wf-delete") is None
+    assert await list_conversation_items(db_session, workflow_id="wf-delete") == []
+    # restart's whole point is that the conversation/URL survives - only the run is wiped.
+    assert await get_conversation(db_session, "conv-delete") is not None
+
+
+async def test_delete_workflow_run_returns_false_when_nothing_to_delete(db_session):
+    assert await delete_workflow_run(db_session, "does-not-exist") is False

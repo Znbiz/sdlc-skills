@@ -120,6 +120,19 @@ async def list_cli_tasks_for_conversation(
     return [_task_from_model(model) for model in result.scalars()]
 
 
+async def delete_cli_tasks_for_workflow(session: async_sa.AsyncSession, workflow_id: str) -> int:
+    """Delete all `cli_tasks` rows for a `workflow_id` - used by `restart_init_arch_workflow()`.
+
+    Unlike `workflow_runs`'s children (`conversation_items`/`required_actions`/...), `cli_tasks`
+    has no FK/cascade back to `workflow_runs` (see `CliTaskModel.workflow_id`, a plain indexed
+    `Text` column - it's shared with the task-backed `update_arch`/`query` responses that don't
+    have a `workflow_runs` row at all), so this needs an explicit delete.
+    """
+    result = await session.execute(sa.delete(CliTaskModel).where(CliTaskModel.workflow_id == workflow_id))
+    await session.commit()
+    return result.rowcount
+
+
 async def mark_running_tasks_failed(session: async_sa.AsyncSession) -> int:
     result = await session.execute(
         sa.update(CliTaskModel)

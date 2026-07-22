@@ -1,4 +1,5 @@
-from unittest.mock import AsyncMock, patch
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -141,23 +142,157 @@ async def test_get_response_returns_required_actions(async_client, auth_headers)
     assert data["required_actions"][0]["question_id"] == "Q-1"
 
 
-async def test_post_response_action_cancel_delegates_to_workflow(async_client, auth_headers):
-    get_workflow_registry()["wf-response-cancel"] = WorkflowRecord(
-        workflow_id="wf-response-cancel",
-        conversation_id="conv-response-cancel",
+async def test_post_response_action_pause_delegates_to_workflow(async_client, auth_headers):
+    # `pause` replaced the old standalone `cancel` action for graph workflows (see
+    # arch-docs/docs/spec/2026-07-22-realtime-workflow-observability.md §7) - it's resumable.
+    get_workflow_registry()["wf-response-pause"] = WorkflowRecord(
+        workflow_id="wf-response-pause",
+        conversation_id="conv-response-pause",
         workflow_status=WorkflowStatus.RUNNING,
     )
 
     resp = await async_client.post(
-        "/api/rest/responses/wf-response-cancel/actions/",
-        json={"action_type": "cancel"},
+        "/api/rest/responses/wf-response-pause/actions/",
+        json={"action_type": "pause"},
         headers=auth_headers,
     )
 
     assert resp.status_code == 202
     data = resp.json()
-    assert data["response_id"] == "wf-response-cancel"
-    assert data["response_status"] == "cancelled"
+    assert data["response_id"] == "wf-response-pause"
+    assert data["response_status"] == "paused"
+
+
+async def test_post_response_action_continue_delegates_to_workflow(async_client, auth_headers):
+    get_workflow_registry()["wf-response-continue"] = WorkflowRecord(
+        workflow_id="wf-response-continue",
+        conversation_id="conv-response-continue",
+        workflow_status=WorkflowStatus.PAUSED,
+    )
+
+    with patch("app.services.init_arch_workflow.resume_workflow_task", new=AsyncMock()) as mock_resume:
+        resp = await async_client.post(
+            "/api/rest/responses/wf-response-continue/actions/",
+            json={"action_type": "continue"},
+            headers=auth_headers,
+        )
+        await asyncio.sleep(0)  # let the scheduled background task actually run the mock
+
+    assert resp.status_code == 202
+    data = resp.json()
+    assert data["response_id"] == "wf-response-continue"
+    assert data["response_status"] == "running"
+    mock_resume.assert_awaited_once()
+
+
+async def test_post_response_action_cancel_is_no_longer_supported_for_workflows(async_client, auth_headers):
+    # The task-backed (update_arch/query) `cancel` path is a separate, untouched code path in
+    # submit_response_action_async() (see tests/services/test_init_arch_workflow.py for its
+    # coverage); this covers only the removed graph-workflow branch.
+    get_workflow_registry()["wf-response-cancel-removed"] = WorkflowRecord(
+        workflow_id="wf-response-cancel-removed",
+        conversation_id="conv-response-cancel-removed",
+        workflow_status=WorkflowStatus.RUNNING,
+    )
+
+    resp = await async_client.post(
+        "/api/rest/responses/wf-response-cancel-removed/actions/",
+        json={"action_type": "cancel"},
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 422
+
+
+async def test_post_response_action_restart_deletes_workflow_and_returns_conversation_shape(
+    async_client, auth_headers, tmp_path
+):
+    from app.services.init_arch_workflow import persist_workflow_record
+
+    workspace_dir = tmp_path / "workspace"
+    (workspace_dir / ".temp").mkdir(parents=True)
+    (workspace_dir / "arch-doc").mkdir(parents=True)
+
+    record = WorkflowRecord(
+        workflow_id="wf-response-restart",
+        conversation_id="conv-response-restart",
+        workspace_dir=str(workspace_dir),
+        arch_repo_dir=str(workspace_dir / "arch-doc"),
+        workflow_status=WorkflowStatus.FAILED,
+    )
+    get_workflow_registry()["wf-response-restart"] = record
+    await persist_workflow_record(record)
+
+    fake_checkpointer = MagicMock()
+    fake_checkpointer.adelete_thread = AsyncMock()
+
+    with patch("app.services.init_arch_workflow.get_checkpointer", new=AsyncMock(return_value=fake_checkpointer)):
+        resp = await async_client.post(
+            "/api/rest/responses/wf-response-restart/actions/",
+            json={"action_type": "restart"},
+            headers=auth_headers,
+        )
+
+    assert resp.status_code == 202
+    data = resp.json()
+    # conversation-shaped payload, not the usual response-shaped one - the response_id is gone.
+    assert data == {
+        "conversation_id": "conv-response-restart",
+        "created_at": data["created_at"],
+        "updated_at": data["updated_at"],
+        "active_response": None,
+        "previous_init_input": None,
+    }
+    assert not (workspace_dir / ".temp").exists()
+    assert not (workspace_dir / "arch-doc").exists()
+    assert "wf-response-restart" not in get_workflow_registry()
+
+
+async def test_post_response_action_restart_returns_previous_init_input_for_prefill(async_client, auth_headers, tmp_path):
+    from app.services.init_arch_workflow import persist_workflow_record
+    from app.workflows.init_arch.domain import RepositoryExecution, WorkflowSessionRecord
+
+    workspace_dir = tmp_path / "workspace"
+    (workspace_dir / ".temp").mkdir(parents=True)
+    (workspace_dir / "arch-doc").mkdir(parents=True)
+
+    session = WorkflowSessionRecord(
+        session_id="wf-response-restart-prefill",
+        product_name="Arch Docs Gateway",
+        analysis_scope="full",
+        repositories=[RepositoryExecution(repository_name="repo-a", repository_url="https://github.com/org/repo-a.git")],
+    )
+    record = WorkflowRecord(
+        workflow_id="wf-response-restart-prefill",
+        conversation_id="conv-response-restart-prefill",
+        workspace_dir=str(workspace_dir),
+        arch_repo_dir=str(workspace_dir / "arch-doc"),
+        workflow_status=WorkflowStatus.FAILED,
+        session=session,
+    )
+    get_workflow_registry()["wf-response-restart-prefill"] = record
+    await persist_workflow_record(record)
+
+    fake_checkpointer = MagicMock()
+    fake_checkpointer.adelete_thread = AsyncMock()
+
+    with patch("app.services.init_arch_workflow.get_checkpointer", new=AsyncMock(return_value=fake_checkpointer)):
+        resp = await async_client.post(
+            "/api/rest/responses/wf-response-restart-prefill/actions/",
+            json={"action_type": "restart"},
+            headers=auth_headers,
+        )
+
+    assert resp.status_code == 202
+    data = resp.json()
+    assert data["active_response"] is None
+    assert data["previous_init_input"] == {
+        "product_name": "Arch Docs Gateway",
+        "analysis_scope": "full",
+        "workspace_dir": str(workspace_dir),
+        "arch_repo_dir": str(workspace_dir / "arch-doc"),
+        "repo_list": ["https://github.com/org/repo-a.git"],
+    }
 
 
 async def test_post_response_action_retry_delegates_to_workflow(async_client, auth_headers):

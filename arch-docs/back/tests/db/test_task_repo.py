@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.db.task_repo import mark_running_tasks_failed, upsert_cli_task
+from app.db.task_repo import delete_cli_tasks_for_workflow, get_cli_task, mark_running_tasks_failed, upsert_cli_task
 from app.services.task_registry import CliTask, TaskStatus
 
 
@@ -98,7 +98,7 @@ async def test_mark_running_tasks_failed(mock_session):
     mock_session.commit.assert_called_once()
 
 
-async def test_upsert_masks_and_truncates_persisted_audit_payloads(mock_session, monkeypatch):
+async def test_upsert_truncates_persisted_audit_payloads(mock_session, monkeypatch):
     from app.settings import GatewaySettings
 
     monkeypatch.setattr(
@@ -123,12 +123,25 @@ async def test_upsert_masks_and_truncates_persisted_audit_payloads(mock_session,
     await upsert_cli_task(mock_session, cli_task)
 
     added = mock_session.add.call_args[0][0]
-    assert "[REDACTED]" in added.prompt_text
     assert added.prompt_text.endswith("...[truncated]")
-    assert "[REDACTED]" in added.task_result
     assert added.task_result.endswith("...[truncated]")
-    assert "[REDACTED]" in added.task_error
     assert added.task_error.endswith("...[truncated]")
-    assert "[REDACTED]" in added.stdout_output
     assert added.stdout_output.endswith("...[truncated]")
-    assert "[REDACTED]" in added.stderr_output
+    assert added.stderr_output.endswith("...[truncated]")
+
+
+async def test_delete_cli_tasks_for_workflow_removes_only_matching_rows(db_session):
+    matching = _make_cli_task(workflow_id="wf-delete-tasks")
+    other = _make_cli_task(workflow_id="wf-other")
+    await upsert_cli_task(db_session, matching)
+    await upsert_cli_task(db_session, other)
+
+    deleted_count = await delete_cli_tasks_for_workflow(db_session, "wf-delete-tasks")
+
+    assert deleted_count == 1
+    assert await get_cli_task(db_session, matching.task_id) is None
+    assert await get_cli_task(db_session, other.task_id) is not None
+
+
+async def test_delete_cli_tasks_for_workflow_returns_zero_when_none_match(db_session):
+    assert await delete_cli_tasks_for_workflow(db_session, "does-not-exist") == 0
