@@ -9,6 +9,7 @@ from app.workflows.init_arch.domain import (
     AuditActor,
     EventType,
     OpenQuestionRecord,
+    RepositoryDomainAssessment,
     RepositoryExecution,
     StepId,
     WorkflowEventRecord,
@@ -22,6 +23,7 @@ from app.workflows.init_arch.domain import (
     record_answer,
     register_repository,
     request_next_temporal_window_confirmation,
+    set_domain_assessment,
 )
 from app.workflows.init_arch.domain.operations import TemporalWindowConfirmationAction
 
@@ -143,6 +145,45 @@ class InitArchGuardService:
         return GuardOperationResult(
             session=updated_session,
             bridge_output=f"Completed checklist item {item_id} for {repository_name}",
+        )
+
+    async def assess_repository_domains(
+        self,
+        session: WorkflowSessionRecord,
+        *,
+        repository_name: str,
+        assessment: RepositoryDomainAssessment,
+        progress_file_path: str,
+    ) -> GuardOperationResult:
+        updated_session = set_domain_assessment(
+            session,
+            repository_name=repository_name,
+            volume_class=assessment.volume_class,
+            strategy=assessment.strategy,
+            domains=assessment.domains,
+        )
+        self._record_guard_event(
+            session,
+            EventType.GUARD_COMMAND_REQUESTED,
+            command="domain_assess",
+            repository_name=repository_name,
+            progress_file_path=progress_file_path,
+        )
+        self._record_guard_event(
+            updated_session,
+            EventType.GUARD_COMMAND_APPLIED,
+            command="domain_assess",
+            repository_name=repository_name,
+            volume_class=assessment.volume_class.value,
+            strategy=assessment.strategy.value,
+            domain_count=str(len(assessment.domains)),
+            progress_file_path=progress_file_path,
+        )
+        return GuardOperationResult(
+            session=updated_session,
+            bridge_output=(
+                f"Assessed domains for {repository_name}: {assessment.strategy.value} ({assessment.volume_class.value})"
+            ),
         )
 
     async def complete_repository(

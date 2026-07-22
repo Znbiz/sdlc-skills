@@ -1,5 +1,13 @@
 # Knowledge Workflow: raw -> synthesis -> navigation -> lint
 
+**Текущий статус в сервисе**: `STEP_TO_REFERENCE` формально указывает на этот файл для шагов
+`build_navigation_index` и `run_knowledge_lint`, но обе ноды — чистый детерминированный Python
+(`knowledge_service.compile_navigation()`/`.lint_knowledge()`), они не строят промпт и не вызывают LLM-агента
+вовсе — см. [init-graph-reference.md](../../../../../docs/workflows/init-graph-reference.md#известные-несостыковки-найденные-при-разборе).
+То есть этот текст сейчас никогда не попадает в контекст агента; это концептуальное описание knowledge-модели
+для людей (и на случай, если один из этих шагов когда-нибудь получит LLM-часть), а не действующая инструкция
+по вызову CLI.
+
 Этот reference фиксирует целевую knowledge-модель skill без требования немедленной миграции структуры репозитория.
 
 Для `init-repo-arch-skill` knowledge workflow начинается не сразу с synthesis-артефактов, а только после стандартного historical prep:
@@ -66,7 +74,9 @@ Knowledge lint проверяет, что:
 - synthesis layer не потерял обязательные артефакты и связь с источниками;
 - open questions, features, integrations, contracts и storage не противоречат друг другу на уровне базовой структуры.
 
-Knowledge lint не отменяет `analysis_guard`, а расширяет его проверками качества knowledge-слоя.
+Knowledge lint выполняется backend'ом автоматически как отдельный шаг графа (`run_knowledge_lint` →
+`knowledge_service.lint_knowledge()`), а не по команде агента — здесь фиксируется, каким проверкам он должен
+соответствовать, а не как его вызвать.
 
 ## Где фиксировать трассировку источников
 
@@ -141,20 +151,25 @@ Non-blocking (`WARN`):
 
 Ожидаемый remediation path:
 
-1. Исправить blocking-проблемы в knowledge-артефактах.
-2. Снова запустить `analysis_guard lint`.
-3. Только после исчезновения `ERROR` продвигать шаг `run_knowledge_lint`.
+1. Исправить blocking-проблемы в knowledge-артефактах (на предыдущих шагах — `refine_features`/
+   `interview_user` и т.д., пока агент ещё пишет файлы).
+2. `run_knowledge_lint` перезапускается автоматически при retry ноды (backend сам вызывает
+   `knowledge_service.lint_knowledge()` заново) — вручную вызывать нечего.
+3. Только после исчезновения `ERROR` граф продвигается на `validate_final`.
 
 Knowledge lint сочетает file-level и graph-aware проверки: он ловит потерю
 ссылочной целостности, базовой трассируемости и drift в wiki-navigation layer.
 
 ## Compile loop для wiki-режима
 
-Knowledge graph не только проверяется, но и компилируется:
+Knowledge graph не только проверяется, но и компилируется — тоже автоматически, отдельным шагом графа
+(`build_navigation_index` → `knowledge_service.compile_navigation()`), без участия LLM-агента:
 
-1. `analysis_guard compile` сканирует markdown-артефакты.
+1. Backend сканирует markdown-артефакты, уже написанные предыдущими шагами (`refine_features` и т.д.).
 2. Из frontmatter, markdown links, wikilinks и metadata `related` строится
    `wiki/index.md`.
 3. Диагностика weak links и missing related refs пишется в
    `wiki/maps/compile-report.md`.
-4. Агент исправляет metadata / links и повторяет compile при необходимости.
+4. Если что-то не сошлось — почини metadata/links на шагах, где ты пишешь knowledge-артефакты
+   (`refine_features`/`interview_user`); сам compile-проход агент не запускает, backend перезапустит его при
+   следующем прогоне ноды.

@@ -5,6 +5,7 @@ import pathlib
 from typing import Final
 
 import pydantic
+import yaml
 
 from app.workflows.init_arch.audit import WorkflowAuditService, get_workflow_audit_service
 from app.workflows.init_arch.domain import (
@@ -51,6 +52,7 @@ _ARTIFACT_KINDS: Final[dict[str, str]] = {
     "wiki/index.md": "navigation_index",
     "wiki/log.md": "knowledge_log",
     "wiki/maps/compile-report.md": "compile_report",
+    "architecture/domain-map.yaml": "domain_map",
 }
 _ARCHITECTURE_TEMPLATE_ASSETS: Final[dict[str, str]] = {
     "architecture/hld.md": "architecture/hld-template.md",
@@ -163,6 +165,48 @@ class KnowledgeArtifactService:
                 f"unresolved={len(compile_result.unresolved_references)}, "
                 f"weak_links={len(compile_result.weakly_linked_pages)}"
             ),
+            written_artifacts=written_artifacts,
+        )
+
+    async def write_domain_map(
+        self,
+        session: WorkflowSessionRecord,
+        *,
+        arch_repo_dir: str,
+    ) -> KnowledgeArtifactResult:
+        arch_repo_path = pathlib.Path(arch_repo_dir)
+        domain_map_path = arch_repo_path / "architecture" / "domain-map.yaml"
+        domain_map_path.parent.mkdir(parents=True, exist_ok=True)
+
+        payload = {
+            repository.repository_name: {
+                "volume_class": repository.volume_class.value if repository.volume_class else None,
+                "strategy": repository.domain_strategy.value if repository.domain_strategy else None,
+                "domains": [
+                    {
+                        "domain_id": domain.domain_id,
+                        "name": domain.name,
+                        "paths": domain.paths,
+                        "signal": domain.signal,
+                        "subdomains": domain.subdomains,
+                    }
+                    for domain in repository.domains
+                ],
+            }
+            for repository in session.repositories
+        }
+        domain_map_path.write_text(yaml.safe_dump(payload, sort_keys=False, allow_unicode=True), encoding="utf-8")
+
+        written_artifacts = ["architecture/domain-map.yaml"]
+        updated_session = self._register_artifacts(
+            session,
+            written_artifacts=written_artifacts,
+            step_id=StepId.ASSESS_SCOPE_AND_DOMAINS,
+            source_refs=["service:domain_assessment"],
+        )
+        return KnowledgeArtifactResult(
+            session=updated_session,
+            summary=f"Wrote domain map for {len(payload)} repositories",
             written_artifacts=written_artifacts,
         )
 

@@ -1,22 +1,33 @@
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
+import os
 import pathlib
+import shutil
 import typing
 
 import structlog
 from langgraph.types import interrupt
 
+from app.services.git_credentials import classify_git_access_failure, ensure_git_credentials_store
 from app.workflows.init_arch.audit import get_workflow_audit_service
 from app.workflows.init_arch.domain import (
     AuditActor,
+    DomainOperationError,
     EventType,
     LlmTaskKind,
     LlmTaskRequest,
+    LlmTaskResult,
+    RepositoryDomainAssessment,
+    RepositoryExecution,
     StepId,
     WorkflowEventRecord,
+    WorkflowSessionRecord,
     classify_diff_severity,
-    route_checklist_items,
+    domain_assessment_is_complete,
+    next_pending_checklist_item,
+    next_pending_repository,
 )
 from app.workflows.init_arch.domain.operations import StepFailureRecoveryAction, TemporalWindowConfirmationAction
 from app.workflows.init_arch.domain.steps import STEP_DEFINITION_BY_ID
@@ -28,6 +39,8 @@ from app.workflows.init_arch.prompts import CHECKLIST_ITEM_TO_REFERENCE, build_s
 from app.workflows.init_arch.state import InitArchState
 
 logger = structlog.get_logger()
+
+_GIT_CLONE_TIMEOUT_SECONDS: typing.Final[float] = 300.0
 
 _MAX_RETRY: typing.Final[int] = 3
 
@@ -271,13 +284,104 @@ async def node_prepare_temp_workspace(state: InitArchState) -> dict[str, typing.
     return _session_update_payload(result.session, last_guard_output=result.bridge_output)
 
 
+def _validate_repository_name(repository_name: str) -> None:
+    if not repository_name or repository_name in {".", ".."} or "/" in repository_name or "\\" in repository_name:
+        msg = f"invalid repository_name for filesystem path: {repository_name!r}"
+        raise ValueError(msg)
+
+
+async def _run_git_clone(repository_url: str, target_path: pathlib.Path) -> None:
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    proc = await asyncio.create_subprocess_exec(
+        "git",
+        "clone",
+        repository_url,
+        str(target_path),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=env,
+    )
+    try:
+        _, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=_GIT_CLONE_TIMEOUT_SECONDS)
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+        msg = f"git clone timed out after {_GIT_CLONE_TIMEOUT_SECONDS}s for {repository_url}"
+        raise RuntimeError(msg) from None
+    if proc.returncode != 0:
+        stderr_text = stderr_bytes.decode(errors="replace").strip()
+        access_status = classify_git_access_failure(stderr_text)
+        detail = stderr_text or f"git exited with code {proc.returncode}"
+        msg = f"git clone failed for {repository_url} ({access_status.value}): {detail}"
+        raise RuntimeError(msg)
+
+
+async def _clone_repositories(session: WorkflowSessionRecord, *, raw_workspace_dir: str) -> str:
+    await ensure_git_credentials_store()
+    cloned: list[str] = []
+    already_present: list[str] = []
+    for repository in session.repositories:
+        repository_name = repository.repository_name
+        _validate_repository_name(repository_name)
+        target_path = pathlib.Path(raw_workspace_dir) / repository_name
+
+        if (target_path / ".git").exists():
+            already_present.append(repository_name)
+            continue
+
+        if not repository.repository_url:
+            if not target_path.exists():
+                msg = f"repository {repository_name!r} has no repository_url and no existing checkout at {target_path}"
+                raise ValueError(msg)
+            already_present.append(repository_name)
+            continue
+
+        if target_path.exists():
+            # Leftover from a previous failed/partial clone attempt — not a valid git checkout.
+            shutil.rmtree(target_path)
+        await _run_git_clone(repository.repository_url, target_path)
+        cloned.append(repository_name)
+
+    summary_parts = []
+    if cloned:
+        summary_parts.append(f"cloned: {', '.join(cloned)}")
+    if already_present:
+        summary_parts.append(f"already present: {', '.join(already_present)}")
+    return "; ".join(summary_parts) if summary_parts else "no repositories to clone"
+
+
 async def node_clone_repositories(state: InitArchState) -> dict[str, typing.Any]:
     logger.info(
         "workflow.node.clone_repositories",
         workflow_id=state["session"].session_id,
         current_step=state["session"].current_step.value,
     )
-    return await _simple_llm_step(state, StepId.CLONE_REPOSITORIES, StepId.REFRESH_MAIN_BRANCHES)
+    guard_service = get_guard_service()
+    raw_workspace_dir = state.get("raw_workspace_dir") or f"{state['workspace_dir']}/.temp"
+    _record_workflow_event(state, EventType.WORKFLOW_STEP_STARTED, step_id=StepId.CLONE_REPOSITORIES)
+    try:
+        clone_summary = await _clone_repositories(state["session"], raw_workspace_dir=raw_workspace_dir)
+        result = await guard_service.advance_step(
+            state["session"],
+            StepId.REFRESH_MAIN_BRANCHES,
+            progress_file_path=state["progress_file_path"],
+            note=clone_summary,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _record_workflow_event(
+            state,
+            EventType.WORKFLOW_STEP_FAILED,
+            step_id=StepId.CLONE_REPOSITORIES,
+            error=str(exc),
+        )
+        return {"step_error": str(exc), "retry_count": state.get("retry_count", 0) + 1}
+    _record_workflow_event(
+        state,
+        EventType.WORKFLOW_STEP_COMPLETED,
+        step_id=StepId.CLONE_REPOSITORIES,
+        next_step=result.session.current_step.value,
+    )
+    return _session_update_payload(result.session, last_guard_output=clone_summary)
 
 
 async def node_refresh_main_branches(state: InitArchState) -> dict[str, typing.Any]:
@@ -356,28 +460,36 @@ async def node_plan_repository_order(state: InitArchState) -> dict[str, typing.A
     return _session_update_payload(result.session, last_guard_output=resolved_result.summary)
 
 
+def _require_domain_assessment(llm_result: LlmTaskResult, repository_name: str) -> RepositoryDomainAssessment:
+    if llm_result.domain_assessment is None:
+        msg = f"missing domain assessment for repository {repository_name!r}"
+        raise DomainOperationError(msg)
+    return llm_result.domain_assessment
+
+
+def _require_domain_assessment_complete(session: WorkflowSessionRecord) -> None:
+    if not domain_assessment_is_complete(session):
+        msg = "domain assessment incomplete after processing all repositories"
+        raise DomainOperationError(msg)
+
+
 async def node_assess_scope_and_domains(state: InitArchState) -> dict[str, typing.Any]:
     logger.info(
         "workflow.node.assess_scope_and_domains",
         workflow_id=state["session"].session_id,
         current_step=state["session"].current_step.value,
     )
-    return await _simple_llm_step(state, StepId.ASSESS_SCOPE_AND_DOMAINS, StepId.ANALYZE_REPOSITORIES)
-
-
-async def node_analyze_repositories(state: InitArchState) -> dict[str, typing.Any]:
-    logger.info(
-        "workflow.node.analyze_repositories",
-        workflow_id=state["session"].session_id,
-        current_step=state["session"].current_step.value,
-    )
     guard_service = get_guard_service()
     knowledge_service = get_knowledge_artifact_service()
-    _record_workflow_event(state, EventType.WORKFLOW_STEP_STARTED, step_id=StepId.ANALYZE_REPOSITORIES)
+    _record_workflow_event(state, EventType.WORKFLOW_STEP_STARTED, step_id=StepId.ASSESS_SCOPE_AND_DOMAINS)
+    session = state["session"]
     try:
-        session = state["session"]
         llm_result = None
         for repository in session.repositories:
+            if repository.domain_strategy is not None:
+                # Already assessed in a previous attempt of this node (retry) — do not re-spend an LLM call.
+                continue
+
             start_result = await guard_service.start_repository(
                 session,
                 repository_name=repository.repository_name,
@@ -385,62 +497,106 @@ async def node_analyze_repositories(state: InitArchState) -> dict[str, typing.An
             )
             session = start_result.session
 
-            routed_item_ids = route_checklist_items(
-                repository, all_checklist_item_ids=list(CHECKLIST_ITEM_TO_REFERENCE)
+            llm_result = await _run_step_worker(
+                {**state, "session": session},
+                StepId.ASSESS_SCOPE_AND_DOMAINS,
+                repository_name=repository.repository_name,
+            )
+            assessment = _require_domain_assessment(llm_result, repository.repository_name)
+
+            assess_result = await guard_service.assess_repository_domains(
+                session,
+                repository_name=repository.repository_name,
+                assessment=assessment,
+                progress_file_path=state["progress_file_path"],
+            )
+            session = assess_result.session
+
+        _require_domain_assessment_complete(session)
+
+        domain_map_result = await knowledge_service.write_domain_map(
+            session,
+            arch_repo_dir=state["arch_repo_dir"],
+        )
+        session = domain_map_result.session
+
+        advance_result = await guard_service.advance_step(
+            session,
+            StepId.ANALYZE_REPOSITORIES,
+            progress_file_path=state["progress_file_path"],
+            note=domain_map_result.summary,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _record_workflow_event(
+            state,
+            EventType.WORKFLOW_STEP_FAILED,
+            step_id=StepId.ASSESS_SCOPE_AND_DOMAINS,
+            error=str(exc),
+        )
+        return {
+            "session": session,
+            "step_error": str(exc),
+            "retry_count": state.get("retry_count", 0) + 1,
+        }
+    _record_workflow_event(
+        state,
+        EventType.WORKFLOW_STEP_COMPLETED,
+        step_id=StepId.ASSESS_SCOPE_AND_DOMAINS,
+        next_step=advance_result.session.current_step.value,
+    )
+    return _session_update_payload(
+        advance_result.session,
+        last_llm_result=llm_result,
+        last_guard_output=advance_result.bridge_output,
+    )
+
+
+async def node_analyze_repositories(state: InitArchState) -> dict[str, typing.Any]:
+    """Repo-loop entry: pick the next repository still pending analysis, or finish the step.
+
+    Persist/resume granularity for the repo x checklist-item loop lives at the graph level (see
+    `node_analyze_repositories_item` and `graph.py`'s `_route_after_analyze_repositories*`), not inside a
+    single node's Python loop — see 2026-07-21-analyze-repositories-per-item-nodes.md.
+    """
+    logger.info(
+        "workflow.node.analyze_repositories",
+        workflow_id=state["session"].session_id,
+        current_step=state["session"].current_step.value,
+    )
+    guard_service = get_guard_service()
+    knowledge_service = get_knowledge_artifact_service()
+    session = state["session"]
+    _record_workflow_event(state, EventType.WORKFLOW_STEP_STARTED, step_id=StepId.ANALYZE_REPOSITORIES)
+    try:
+        repository = next_pending_repository(session)
+        if repository is None:
+            if session.open_questions:
+                sync_result = await knowledge_service.sync_open_questions(
+                    session,
+                    arch_repo_dir=state["arch_repo_dir"],
+                )
+                session = sync_result.session
+
+            advance_result = await guard_service.advance_step(
+                session,
+                StepId.INTERVIEW_USER,
+                progress_file_path=state["progress_file_path"],
             )
             _record_workflow_event(
                 state,
-                EventType.DIFF_SIGNAL_ROUTED,
+                EventType.WORKFLOW_STEP_COMPLETED,
                 step_id=StepId.ANALYZE_REPOSITORIES,
-                repository_name=repository.repository_name,
-                diff_severity=classify_diff_severity(repository).value,
-                routed_items=str(len(routed_item_ids)),
-                total_items=str(len(CHECKLIST_ITEM_TO_REFERENCE)),
+                next_step=advance_result.session.current_step.value,
             )
+            return _session_update_payload(advance_result.session, last_guard_output=advance_result.bridge_output)
 
-            for item_id in routed_item_ids:
-                llm_result = await _run_step_worker(
-                    {**state, "session": session},
-                    StepId.ANALYZE_REPOSITORIES,
-                    task_kind=LlmTaskKind.REPOSITORY_CHECKLIST_ITEM,
-                    checklist_item_id=item_id,
-                    repository_name=repository.repository_name,
-                )
-                item_result = await guard_service.complete_repository_item(
-                    session,
-                    repository_name=repository.repository_name,
-                    item_id=item_id,
-                    progress_file_path=state["progress_file_path"],
-                )
-                session = item_result.session
-                if llm_result.open_questions_found:
-                    question_result = await guard_service.register_open_questions(
-                        session,
-                        question_texts=llm_result.open_questions_found,
-                        repository_name=repository.repository_name,
-                        progress_file_path=state["progress_file_path"],
-                    )
-                    session = question_result.session
-
-            complete_result = await guard_service.complete_repository(
+        if repository.analysis_status == "pending":
+            start_result = await guard_service.start_repository(
                 session,
                 repository_name=repository.repository_name,
                 progress_file_path=state["progress_file_path"],
             )
-            session = complete_result.session
-
-        if session.open_questions:
-            sync_result = await knowledge_service.sync_open_questions(
-                session,
-                arch_repo_dir=state["arch_repo_dir"],
-            )
-            session = sync_result.session
-
-        advance_result = await guard_service.advance_step(
-            session,
-            StepId.INTERVIEW_USER,
-            progress_file_path=state["progress_file_path"],
-        )
+            session = start_result.session
     except Exception as exc:  # noqa: BLE001
         _record_workflow_event(
             state,
@@ -448,17 +604,82 @@ async def node_analyze_repositories(state: InitArchState) -> dict[str, typing.An
             step_id=StepId.ANALYZE_REPOSITORIES,
             error=str(exc),
         )
-        return {"step_error": str(exc), "retry_count": state.get("retry_count", 0) + 1}
-    _record_workflow_event(
-        state,
-        EventType.WORKFLOW_STEP_COMPLETED,
-        step_id=StepId.ANALYZE_REPOSITORIES,
-        next_step=advance_result.session.current_step.value,
-    )
+        return {"session": session, "step_error": str(exc), "retry_count": state.get("retry_count", 0) + 1}
+    return _session_update_payload(session)
+
+
+def _require_in_progress_repository(session: WorkflowSessionRecord) -> RepositoryExecution:
+    repository = next((repo for repo in session.repositories if repo.analysis_status == "in_progress"), None)
+    if repository is None:
+        msg = "analyze_repositories_item: no in-progress repository in session"
+        raise DomainOperationError(msg)
+    return repository
+
+
+async def node_analyze_repositories_item(state: InitArchState) -> dict[str, typing.Any]:
+    """Process exactly one checklist item of the current in-progress repository.
+
+    One LLM-agent call per node execution so that graph-level persist (Postgres checkpoint + YAML progress
+    snapshot, written after every node by `_drive_graph_stream()`) captures progress at item granularity.
+    """
+    guard_service = get_guard_service()
+    session = state["session"]
+    llm_result = None
+    item_result = None
+    try:
+        repository = _require_in_progress_repository(session)
+        item_id = next_pending_checklist_item(repository, all_checklist_item_ids=list(CHECKLIST_ITEM_TO_REFERENCE))
+        if item_id is None:
+            complete_result = await guard_service.complete_repository(
+                session,
+                repository_name=repository.repository_name,
+                progress_file_path=state["progress_file_path"],
+            )
+            return _session_update_payload(complete_result.session, last_guard_output=complete_result.bridge_output)
+
+        _record_workflow_event(
+            state,
+            EventType.DIFF_SIGNAL_ROUTED,
+            step_id=StepId.ANALYZE_REPOSITORIES,
+            repository_name=repository.repository_name,
+            diff_severity=classify_diff_severity(repository).value,
+            routed_items="1",
+            total_items=str(len(CHECKLIST_ITEM_TO_REFERENCE)),
+        )
+        llm_result = await _run_step_worker(
+            {**state, "session": session},
+            StepId.ANALYZE_REPOSITORIES,
+            task_kind=LlmTaskKind.REPOSITORY_CHECKLIST_ITEM,
+            checklist_item_id=item_id,
+            repository_name=repository.repository_name,
+        )
+        item_result = await guard_service.complete_repository_item(
+            session,
+            repository_name=repository.repository_name,
+            item_id=item_id,
+            progress_file_path=state["progress_file_path"],
+        )
+        session = item_result.session
+        if llm_result.open_questions_found:
+            question_result = await guard_service.register_open_questions(
+                session,
+                question_texts=llm_result.open_questions_found,
+                repository_name=repository.repository_name,
+                progress_file_path=state["progress_file_path"],
+            )
+            session = question_result.session
+    except Exception as exc:  # noqa: BLE001
+        _record_workflow_event(
+            state,
+            EventType.WORKFLOW_STEP_FAILED,
+            step_id=StepId.ANALYZE_REPOSITORIES,
+            error=str(exc),
+        )
+        return {"session": session, "step_error": str(exc), "retry_count": state.get("retry_count", 0) + 1}
     return _session_update_payload(
-        advance_result.session,
+        session,
         last_llm_result=llm_result,
-        last_guard_output=advance_result.bridge_output,
+        last_guard_output=item_result.bridge_output,
     )
 
 

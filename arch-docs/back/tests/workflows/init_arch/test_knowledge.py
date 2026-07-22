@@ -4,8 +4,17 @@ import shutil
 from pathlib import Path
 
 import pytest
+import yaml
 
-from app.workflows.init_arch.domain import OpenQuestionRecord, RepositoryExecution, StepId, WorkflowSessionRecord
+from app.workflows.init_arch.domain import (
+    DomainDefinition,
+    DomainStrategy,
+    OpenQuestionRecord,
+    RepositoryExecution,
+    StepId,
+    VolumeClass,
+    WorkflowSessionRecord,
+)
 from app.workflows.init_arch.knowledge import KnowledgeArtifactService
 from app.workflows.shared_assets.loader import WorkflowAssetLoader
 
@@ -21,9 +30,7 @@ def _make_session() -> WorkflowSessionRecord:
 
 @pytest.mark.asyncio
 async def test_bootstrap_arch_repo_scaffolds_required_artifacts(tmp_path: Path) -> None:
-    asset_loader = WorkflowAssetLoader(
-        Path("/Users/aanekraso2/github.com/znbiz/sdlc/arch-docs/app/workflows/shared_assets")
-    )
+    asset_loader = WorkflowAssetLoader()
     service = KnowledgeArtifactService(asset_loader=asset_loader)
 
     result = await service.bootstrap_arch_repo(_make_session(), arch_repo_dir=str(tmp_path / "arch-repo"))
@@ -39,9 +46,7 @@ async def test_bootstrap_arch_repo_scaffolds_required_artifacts(tmp_path: Path) 
 
 @pytest.mark.asyncio
 async def test_bootstrap_arch_repo_creates_release_notes_directory(tmp_path: Path) -> None:
-    asset_loader = WorkflowAssetLoader(
-        Path("/Users/aanekraso2/github.com/znbiz/sdlc/arch-docs/app/workflows/shared_assets")
-    )
+    asset_loader = WorkflowAssetLoader()
     service = KnowledgeArtifactService(asset_loader=asset_loader)
 
     await service.bootstrap_arch_repo(_make_session(), arch_repo_dir=str(tmp_path / "arch-repo"))
@@ -51,9 +56,7 @@ async def test_bootstrap_arch_repo_creates_release_notes_directory(tmp_path: Pat
 
 @pytest.mark.asyncio
 async def test_bootstrap_arch_repo_scaffolds_architecture_markdown_from_templates(tmp_path: Path) -> None:
-    asset_loader = WorkflowAssetLoader(
-        Path("/Users/aanekraso2/github.com/znbiz/sdlc/arch-docs/app/workflows/shared_assets")
-    )
+    asset_loader = WorkflowAssetLoader()
     service = KnowledgeArtifactService(asset_loader=asset_loader)
 
     result = await service.bootstrap_arch_repo(_make_session(), arch_repo_dir=str(tmp_path / "arch-repo"))
@@ -66,9 +69,7 @@ async def test_bootstrap_arch_repo_scaffolds_architecture_markdown_from_template
 
 @pytest.mark.asyncio
 async def test_bootstrap_arch_repo_scaffolds_landscape_yaml_from_template(tmp_path: Path) -> None:
-    asset_loader = WorkflowAssetLoader(
-        Path("/Users/aanekraso2/github.com/znbiz/sdlc/arch-docs/app/workflows/shared_assets")
-    )
+    asset_loader = WorkflowAssetLoader()
     service = KnowledgeArtifactService(asset_loader=asset_loader)
 
     result = await service.bootstrap_arch_repo(_make_session(), arch_repo_dir=str(tmp_path / "arch-repo"))
@@ -95,6 +96,44 @@ async def test_compile_navigation_writes_compiled_index_and_report(tmp_path: Pat
     assert "## Артефакты по типам" in index_text
     assert "## Quality Gates" in report_text
     assert any(artifact.last_updated_step is StepId.BUILD_NAVIGATION_INDEX for artifact in compiled.session.artifacts)
+
+
+@pytest.mark.asyncio
+async def test_write_domain_map_serializes_repository_assessments(tmp_path: Path) -> None:
+    service = KnowledgeArtifactService()
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="AI CLI Gateway Service",
+        analysis_scope="full",
+        repositories=[
+            RepositoryExecution(
+                repository_name="gateway-service",
+                volume_class=VolumeClass.LARGE,
+                domain_strategy=DomainStrategy.PER_DOMAIN,
+                domains=[DomainDefinition(domain_id="billing", name="Биллинг", paths=["apps/billing/"])],
+            ),
+            RepositoryExecution(
+                repository_name="gateway-web", volume_class=VolumeClass.SMALL, domain_strategy=DomainStrategy.PER_MODULE
+            ),
+        ],
+    )
+
+    result = await service.write_domain_map(session, arch_repo_dir=str(tmp_path / "arch-repo"))
+
+    domain_map_path = tmp_path / "arch-repo" / "architecture" / "domain-map.yaml"
+    assert domain_map_path.exists()
+    payload = yaml.safe_load(domain_map_path.read_text(encoding="utf-8"))
+    assert payload["gateway-service"]["volume_class"] == "large"
+    assert payload["gateway-service"]["strategy"] == "per_domain"
+    assert payload["gateway-service"]["domains"][0]["domain_id"] == "billing"
+    assert payload["gateway-web"]["strategy"] == "per_module"
+    assert payload["gateway-web"]["domains"] == []
+
+    artifact = next(
+        artifact for artifact in result.session.artifacts if artifact.artifact_path == "architecture/domain-map.yaml"
+    )
+    assert artifact.artifact_kind == "domain_map"
+    assert artifact.last_updated_step is StepId.ASSESS_SCOPE_AND_DOMAINS
 
 
 @pytest.mark.asyncio
@@ -241,7 +280,7 @@ async def test_bootstrap_arch_repo_does_not_overwrite_existing_architecture_mark
 
 
 def test_shared_asset_loader_reads_vendored_template() -> None:
-    loader = WorkflowAssetLoader(Path("/Users/aanekraso2/github.com/znbiz/sdlc/arch-docs/app/workflows/shared_assets"))
+    loader = WorkflowAssetLoader()
 
     content = loader.read_text("knowledge_base", "features-index-template.md")
 

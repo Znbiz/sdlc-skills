@@ -26,10 +26,11 @@ from app.services.git_credentials import list_configured_hosts
 from app.services.task_registry import CliTask, TaskStatus
 from app.services.task_registry import get_registry as get_task_registry
 from app.services.task_runner import cancel_cli_task, run_cli_task
+from app.services.workflow_event_bus import get_workflow_event_bus
 from app.services.workflow_registry import WorkflowRecord, WorkflowStatus, get_workflow_registry
 from app.settings import GatewaySettings, get_gateway_settings
 from app.workflows.init_arch.checkpointer import get_checkpointer
-from app.workflows.init_arch.domain import RepositoryExecution, StepId, WorkflowSessionRecord
+from app.workflows.init_arch.domain import RepositoryExecution, StepId, WorkflowSessionRecord, step_label_ru
 from app.workflows.init_arch.graph import compile_graph
 from app.workflows.init_arch.snapshot import parse_snapshot_yaml, write_snapshot_file
 from app.workflows.init_arch.state import InitArchState
@@ -579,6 +580,10 @@ async def submit_response_action_async(
 
     if action_type == "cancel":
         await cancel_init_arch_workflow(response_id)
+    elif action_type == "pause":
+        await pause_init_arch_workflow(response_id)
+    elif action_type == "continue":
+        await continue_init_arch_workflow(response_id)
     elif action_type == "answer_question":
         if question_id is None or answer is None:
             raise WorkflowValidationError("answer_question requires question_id and answer")
@@ -600,16 +605,39 @@ def _sse(payload: dict[str, typing.Any]) -> str:
     return f"data: {json.dumps(payload)}\n\n"
 
 
+# service/llm_worker/user (app.workflows.init_arch.domain.AuditActor, persisted as a plain string on
+# conversation_items.actor) -> the actor vocabulary SSE consumers see. See
+# arch-docs/docs/spec/2026-07-22-realtime-workflow-observability.md.
+_PERSISTED_ACTOR_TO_SSE: typing.Final[dict[str, str]] = {
+    "service": "workflow",
+    "llm_worker": "llm",
+    "user": "user",
+}
+
+# item_kind (== EventType.value, persisted) -> unified live event_type, so a page reload/reconnect
+# (persisted replay) renders identically to what the live SSE stream already sent.
+_ITEM_KIND_TO_EVENT_TYPE: typing.Final[dict[str, str]] = {
+    "llm_task_requested": "llm_call_started",
+    "llm_task_completed": "llm_call_completed",
+    "llm_task_failed": "llm_call_failed",
+}
+
+
 def _conversation_item_to_sse_payload(event: dict[str, typing.Any]) -> dict[str, typing.Any]:
     payload = dict(event.get("payload", {}))
     item_kind = str(event.get("item_kind", "event"))
+    actor = _PERSISTED_ACTOR_TO_SSE.get(str(event.get("actor", "")), "workflow")
     if item_kind == "step_transition":
+        step_id = payload.get("current_step_id") or event.get("step_id", "")
         return {
             "event_type": "step_started",
-            "step_id": payload.get("current_step_id") or event.get("step_id", ""),
+            "actor": "workflow",
+            "step_id": step_id,
+            "step_label": step_label_ru(step_id),
             "repo_name": payload.get("current_repo_name", ""),
         }
-    return {"event_type": item_kind, **payload}
+    event_type = _ITEM_KIND_TO_EVENT_TYPE.get(item_kind, item_kind)
+    return {"event_type": event_type, "actor": actor, **payload}
 
 
 async def _stream_persisted_workflow_events(workflow_id: str) -> typing.AsyncGenerator[str, None]:
@@ -627,19 +655,48 @@ async def _stream_persisted_workflow_events(workflow_id: str) -> typing.AsyncGen
         yield _sse(
             {
                 "event_type": "cli_output",
+                "actor": "llm",
                 "event_data": record.last_cli_output_snippet,
                 "stream_source": "stdout",
             }
         )
 
-    if record.workflow_status == WorkflowStatus.INTERRUPTED:
-        yield _sse({"event_type": "interrupted", **(record.pending_interrupt or {})})
-    elif record.workflow_status == WorkflowStatus.SUCCESS:
-        yield _sse({"event_type": "workflow_done", "workflow_status": "success"})
-    elif record.workflow_status == WorkflowStatus.FAILED:
-        yield _sse({"event_type": "workflow_failed", "error_message": record.error_message or "unknown error"})
-    elif record.workflow_status == WorkflowStatus.CANCELLED:
-        yield _sse({"event_type": "workflow_cancelled", "workflow_status": "cancelled"})
+    terminal_event = _terminal_event_for_status(record)
+    if terminal_event is not None:
+        yield _sse(terminal_event)
+
+
+def _drain_bus_events(queue: asyncio.Queue[dict[str, typing.Any]]) -> list[dict[str, typing.Any]]:
+    drained: list[dict[str, typing.Any]] = []
+    while True:
+        try:
+            drained.append(queue.get_nowait())
+        except asyncio.QueueEmpty:
+            return drained
+
+
+def _terminal_event_for_status(current: WorkflowRecord) -> dict[str, typing.Any] | None:
+    if current.workflow_status == WorkflowStatus.INTERRUPTED:
+        return {"event_type": "interrupted", "actor": "workflow", **(current.pending_interrupt or {})}
+    if current.workflow_status == WorkflowStatus.SUCCESS:
+        return {"event_type": "workflow_done", "actor": "workflow", "workflow_status": "success"}
+    if current.workflow_status == WorkflowStatus.FAILED:
+        return {
+            "event_type": "workflow_failed",
+            "actor": "workflow",
+            "error_message": current.error_message or "unknown error",
+        }
+    if current.workflow_status == WorkflowStatus.CANCELLED:
+        return {"event_type": "workflow_cancelled", "actor": "workflow", "workflow_status": "cancelled"}
+    if current.workflow_status == WorkflowStatus.PAUSED:
+        return {
+            "event_type": "workflow_paused",
+            "actor": "workflow",
+            "step_id": current.current_step_id,
+            "step_label": step_label_ru(current.current_step_id),
+            "repo_name": current.current_repo_name,
+        }
+    return None
 
 
 async def _stream_live_workflow_events(workflow_id: str) -> typing.AsyncGenerator[str, None]:
@@ -653,35 +710,54 @@ async def _stream_live_workflow_events(workflow_id: str) -> typing.AsyncGenerato
             yield _sse({"event_type": "error", "error_message": f"Workflow {workflow_id!r} not found"})
         return
 
-    last_step = ""
-    last_snippet = ""
-    while True:
-        current = registry.get(workflow_id)
-        if current is None:
-            break
+    bus = get_workflow_event_bus()
+    subscription = bus.subscribe(workflow_id)
+    try:
+        last_step = ""
+        last_snippet = ""
+        while True:
+            current = registry.get(workflow_id)
+            if current is None:
+                break
 
-        if current.current_step_id != last_step:
-            last_step = current.current_step_id
-            yield _sse({"event_type": "step_started", "step_id": last_step, "repo_name": current.current_repo_name})
+            for bus_event in _drain_bus_events(subscription):
+                yield _sse(bus_event)
 
-        if current.last_cli_output_snippet != last_snippet:
-            last_snippet = current.last_cli_output_snippet
-            yield _sse({"event_type": "cli_output", "event_data": last_snippet, "stream_source": "stdout"})
+            if current.current_step_id != last_step:
+                last_step = current.current_step_id
+                yield _sse(
+                    {
+                        "event_type": "step_started",
+                        "actor": "workflow",
+                        "step_id": last_step,
+                        "step_label": step_label_ru(last_step),
+                        "repo_name": current.current_repo_name,
+                    }
+                )
 
-        if current.workflow_status == WorkflowStatus.INTERRUPTED:
-            yield _sse({"event_type": "interrupted", **(current.pending_interrupt or {})})
-            break
-        if current.workflow_status == WorkflowStatus.SUCCESS:
-            yield _sse({"event_type": "workflow_done", "workflow_status": "success"})
-            break
-        if current.workflow_status == WorkflowStatus.FAILED:
-            yield _sse({"event_type": "workflow_failed", "error_message": current.error_message or "unknown error"})
-            break
-        if current.workflow_status == WorkflowStatus.CANCELLED:
-            yield _sse({"event_type": "workflow_cancelled", "workflow_status": "cancelled"})
-            break
+            if current.last_cli_output_snippet != last_snippet:
+                last_snippet = current.last_cli_output_snippet
+                yield _sse(
+                    {
+                        "event_type": "cli_output",
+                        "actor": "llm",
+                        "event_data": last_snippet,
+                        "stream_source": "stdout",
+                    }
+                )
 
-        await asyncio.sleep(_WORKFLOW_POLL_INTERVAL)
+            terminal_event = _terminal_event_for_status(current)
+            if terminal_event is not None:
+                yield _sse(terminal_event)
+                break
+
+            try:
+                bus_event = await asyncio.wait_for(subscription.get(), timeout=_WORKFLOW_POLL_INTERVAL)
+                yield _sse(bus_event)
+            except TimeoutError:
+                pass
+    finally:
+        bus.unsubscribe(workflow_id, subscription)
 
 
 async def _stream_task_events(response_id: str) -> typing.AsyncGenerator[str, None]:
@@ -776,6 +852,28 @@ async def _write_progress_snapshot(graph: typing.Any, config: dict[str, typing.A
     write_snapshot_file(state_snapshot.values)
 
 
+async def _handle_workflow_cancellation(record: WorkflowRecord) -> None:
+    """Shared `except asyncio.CancelledError` handling for `run_workflow`/`resume_workflow_task`.
+
+    A cancelled asyncio.Task means either a hard `cancel_init_arch_workflow()` (terminal,
+    `CANCELLED`) or a `pause_init_arch_workflow()` (resumable, `PAUSED` - see
+    `continue_init_arch_workflow()` and arch-docs/docs/spec/2026-07-22-realtime-workflow-observability.md §7).
+    `record.pause_requested`, set by the pause path right before cancelling, is what tells the two apart.
+    """
+    if record.pause_requested:
+        record.workflow_status = WorkflowStatus.PAUSED
+        record.error_message = None
+        logger.info("workflow.paused", workflow_id=record.workflow_id)
+    else:
+        record.workflow_status = WorkflowStatus.CANCELLED
+        record.error_message = "Workflow cancelled"
+        logger.info("workflow.cancelled", workflow_id=record.workflow_id)
+    record.pause_requested = False
+    record.pending_interrupt = None
+    record.updated_at = utcnow()
+    await persist_workflow_record(record)
+
+
 async def run_workflow(record: WorkflowRecord, initial_state: InitArchState, *, as_node: str | None = None) -> None:
     registry = get_workflow_registry()
     try:
@@ -801,12 +899,7 @@ async def run_workflow(record: WorkflowRecord, initial_state: InitArchState, *, 
         else:
             logger.info("workflow.completed", workflow_id=record.workflow_id)
     except asyncio.CancelledError:
-        record.workflow_status = WorkflowStatus.CANCELLED
-        record.error_message = "Workflow cancelled"
-        record.pending_interrupt = None
-        record.updated_at = utcnow()
-        await persist_workflow_record(record)
-        logger.info("workflow.cancelled", workflow_id=record.workflow_id)
+        await _handle_workflow_cancellation(record)
         raise
     except Exception as exc:  # noqa: BLE001
         record.workflow_status = WorkflowStatus.FAILED
@@ -832,12 +925,7 @@ async def resume_workflow_task(record: WorkflowRecord, resume_value: typing.Any)
         record.updated_at = utcnow()
         await persist_workflow_record(record)
     except asyncio.CancelledError:
-        record.workflow_status = WorkflowStatus.CANCELLED
-        record.error_message = "Workflow cancelled"
-        record.pending_interrupt = None
-        record.updated_at = utcnow()
-        await persist_workflow_record(record)
-        logger.info("workflow.cancelled", workflow_id=record.workflow_id)
+        await _handle_workflow_cancellation(record)
         raise
     except Exception as exc:  # noqa: BLE001
         record.workflow_status = WorkflowStatus.FAILED
@@ -1177,4 +1265,54 @@ async def cancel_init_arch_workflow(workflow_id: str) -> WorkflowRecord:
     record.updated_at = utcnow()
     await persist_workflow_record(record)
     logger.info("workflow.cancel.requested", workflow_id=workflow_id)
+    return record
+
+
+async def pause_init_arch_workflow(workflow_id: str) -> WorkflowRecord:
+    """Stop a running workflow at the next node boundary without discarding progress.
+
+    Unlike `cancel_init_arch_workflow()` (terminal `CANCELLED`), this sets `PAUSED`, a resumable
+    status - `continue_init_arch_workflow()` picks it back up from the LangGraph checkpoint for
+    this `workflow_id`'s `thread_id`. If the pause lands mid-LLM-call, that one node re-runs from
+    scratch on resume (the same durability the checkpointer already provides across process
+    restarts - see `resume_init_arch_workflow_from_snapshot()`'s `as_node` handling); everything
+    before it is untouched. See arch-docs/docs/spec/2026-07-22-realtime-workflow-observability.md §7.
+    """
+    record = await get_workflow_record_async(workflow_id)
+    if record.workflow_status != WorkflowStatus.RUNNING:
+        raise WorkflowConflictError(f"Workflow is not pausable (status: {record.workflow_status})")
+
+    record.pause_requested = True
+    task = record.asyncio_task
+    if task is not None and not task.done():
+        task.cancel()
+
+    # Set PAUSED immediately rather than waiting for the cancelled task to unwind into
+    # `_handle_workflow_cancellation()` - mirrors `cancel_init_arch_workflow()`'s optimistic update,
+    # so a client polling right after this call sees "paused", not a stale "running". If a live
+    # task exists, its cancellation handler re-affirms the same status once it unwinds (idempotent);
+    # if there is none (e.g. record rehydrated in a process that isn't running it), this is the
+    # only place PAUSED gets set at all.
+    record.workflow_status = WorkflowStatus.PAUSED
+    record.updated_at = utcnow()
+    await persist_workflow_record(record)
+    logger.info("workflow.pause.requested", workflow_id=workflow_id)
+    return record
+
+
+async def continue_init_arch_workflow(workflow_id: str) -> WorkflowRecord:
+    record = await get_workflow_record_async(workflow_id)
+    if record.workflow_status != WorkflowStatus.PAUSED:
+        raise WorkflowConflictError(f"Workflow is not paused (status: {record.workflow_status})")
+
+    record.workflow_status = WorkflowStatus.RUNNING
+    record.updated_at = utcnow()
+
+    task = asyncio.create_task(resume_workflow_task(record, None))
+    record.asyncio_task = task
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+    await persist_workflow_record(record)
+    logger.info("workflow.continued", workflow_id=workflow_id)
     return record

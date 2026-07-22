@@ -11,9 +11,18 @@ from app.db.session import get_session
 from app.db.task_repo import upsert_cli_task
 from app.services.agent_pool import AgentPool, get_agent_pool
 from app.services.task_registry import CliTask, TaskRegistry, TaskStatus
+from app.services.text_sanitization import sanitize_text
+from app.services.workflow_event_bus import get_workflow_event_bus
 from app.settings import get_gateway_settings
 from app.workflows.init_arch.audit import WorkflowAuditService, get_workflow_audit_service
-from app.workflows.init_arch.domain import AuditActor, EventType, LlmTaskRequest, LlmTaskResult, WorkflowEventRecord
+from app.workflows.init_arch.domain import (
+    AuditActor,
+    EventType,
+    LlmTaskRequest,
+    LlmTaskResult,
+    WorkflowEventRecord,
+    step_label_ru,
+)
 
 logger = structlog.get_logger()
 
@@ -165,16 +174,141 @@ def _extract_result_text(engine_name: str, stdout_lines: list[str]) -> str:
     return "\n".join(stdout_lines)
 
 
-async def _drain_stream(reader: asyncio.StreamReader, lines: list[str]) -> None:
+# `type` values that are pure protocol noise for the live SSE tail - already surfaced elsewhere
+# (claude "result" -> `llm_call_completed.raw_output`; both "system"/"thread.started" are init
+# handshakes with nothing user-relevant). Anything NOT in this set but also not recognized by the
+# classifiers below still gets shown (see `_classify_live_stream_line` fallback) rather than
+# silently dropped, so a CLI output-format change can't make the live stream go quiet.
+_CLAUDE_NOISE_TYPES: typing.Final[frozenset[str]] = frozenset({"system", "result"})
+_CODEX_NOISE_TYPES: typing.Final[frozenset[str]] = frozenset({"thread.started", "turn.started", "turn.completed"})
+
+
+def _classify_claude_stream_line(payload: dict[str, typing.Any]) -> dict[str, typing.Any] | None:
+    if payload.get("type") != "assistant":
+        return None
+    content = (payload.get("message") or {}).get("content") or []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "tool_use":
+            return {
+                "event_type": "llm_tool_call",
+                "tool_name": str(block.get("name", "")),
+                "tool_input": json.dumps(block.get("input", {}), ensure_ascii=False),
+            }
+        if block.get("type") == "text" and block.get("text"):
+            return {"event_type": "llm_message", "text": str(block["text"])}
+    return None
+
+
+def _classify_codex_stream_line(payload: dict[str, typing.Any]) -> dict[str, typing.Any] | None:
+    if payload.get("type") != "item.completed":
+        return None
+    item = payload.get("item") or {}
+    item_type = item.get("type")
+    if item_type == "command_execution":
+        return {"event_type": "llm_tool_call", "tool_name": "shell", "tool_input": str(item.get("command", ""))}
+    if item_type in {"agent_message", "reasoning"} and item.get("text"):
+        return {"event_type": "llm_message", "text": str(item["text"])}
+    return None
+
+
+_STREAM_LINE_CLASSIFIERS: typing.Final[
+    dict[str, typing.Callable[[dict[str, typing.Any]], dict[str, typing.Any] | None]]
+] = {
+    "claude": _classify_claude_stream_line,
+    "codex": _classify_codex_stream_line,
+}
+_STREAM_LINE_NOISE_TYPES: typing.Final[dict[str, frozenset[str]]] = {
+    "claude": _CLAUDE_NOISE_TYPES,
+    "codex": _CODEX_NOISE_TYPES,
+}
+
+
+def _classify_live_stream_line(engine_name: str, raw_line: str) -> dict[str, typing.Any] | None:
+    """Classify one raw stdout line from a running `claude`/`codex` subprocess for the live SSE tail.
+
+    Returns an `llm_tool_call`/`llm_message` event dict, or `None` to drop the line as noise. See
+    arch-docs/docs/spec/2026-07-22-realtime-workflow-observability.md, section 3.
+    """
+    stripped = raw_line.strip()
+    if not stripped:
+        return None
+
+    fallback = {"event_type": "llm_message", "text": raw_line}
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError:
+        payload = None
+
+    if not isinstance(payload, dict):
+        return fallback
+
+    classifier = _STREAM_LINE_CLASSIFIERS.get(engine_name)
+    if classifier is None:
+        return fallback
+
+    classified = classifier(payload)
+    if classified is not None:
+        return classified
+    if str(payload.get("type", "")) in _STREAM_LINE_NOISE_TYPES.get(engine_name, frozenset()):
+        return None
+    return fallback
+
+
+async def _drain_stream(
+    reader: asyncio.StreamReader,
+    lines: list[str],
+    *,
+    on_line: typing.Callable[[str], None] | None = None,
+) -> None:
     while True:
         raw = await reader.readline()
         if not raw:
             break
-        lines.append(raw.decode().rstrip("\n"))
+        line = raw.decode().rstrip("\n")
+        lines.append(line)
+        if on_line is not None:
+            on_line(line)
 
 
 def _task_log_context(cli_task: CliTask) -> dict[str, str | None]:
     return {"task_id": cli_task.task_id, "workflow_id": cli_task.workflow_id, "step_id": cli_task.step_id}
+
+
+def _publish_live_stdout_line(cli_task: CliTask, raw_line: str) -> None:
+    if not cli_task.workflow_id:
+        return
+    event = _classify_live_stream_line(cli_task.engine_name, raw_line)
+    if event is None:
+        return
+
+    max_chars = get_gateway_settings().audit.max_output_chars
+    if "text" in event:
+        event["text"] = sanitize_text(event["text"], max_chars=max_chars) or ""
+    if "tool_input" in event:
+        event["tool_input"] = sanitize_text(event["tool_input"], max_chars=max_chars) or ""
+
+    step_id = cli_task.step_id or ""
+    event.update(
+        {
+            "actor": "llm",
+            "step_id": step_id,
+            "step_label": step_label_ru(step_id),
+            "repo_name": cli_task.repository_name or "",
+            "domain_id": cli_task.domain_id or "",
+            "llm_call_id": cli_task.task_id,
+        }
+    )
+    get_workflow_event_bus().publish(cli_task.workflow_id, event)
+
+
+async def _terminate_subprocess(proc: asyncio.subprocess.Process) -> None:
+    proc.terminate()
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=5.0)
+    except TimeoutError:
+        proc.kill()
 
 
 async def run_cli_task(cli_task: CliTask, agent_pool: AgentPool) -> None:
@@ -206,23 +340,31 @@ async def run_cli_task(cli_task: CliTask, agent_pool: AgentPool) -> None:
             try:
                 await asyncio.wait_for(
                     asyncio.gather(
-                        _drain_stream(proc.stdout, cli_task.stdout_lines),  # type: ignore[arg-type]
+                        _drain_stream(
+                            proc.stdout,  # type: ignore[arg-type]
+                            cli_task.stdout_lines,
+                            on_line=lambda line: _publish_live_stdout_line(cli_task, line),
+                        ),
                         _drain_stream(proc.stderr, cli_task.stderr_lines),  # type: ignore[arg-type]
                     ),
                     timeout=float(cli_task.timeout_seconds),
                 )
             except TimeoutError:
-                proc.terminate()
-                try:
-                    await asyncio.wait_for(proc.wait(), timeout=5.0)
-                except TimeoutError:
-                    proc.kill()
+                await _terminate_subprocess(proc)
                 cli_task.task_status = TaskStatus.FAILED
                 cli_task.task_error = "Timeout exceeded"
                 cli_task.finished_at = datetime.datetime.now(datetime.timezone.utc)
                 logger.warning("cli_task.timeout", **_task_log_context(cli_task))
                 await _persist_task(cli_task)
                 return
+            except asyncio.CancelledError:
+                # A pause/cancel of the *graph's* asyncio.Task (see
+                # app.services.init_arch_workflow.pause_init_arch_workflow) cancels this whole call
+                # chain too, since it's all one task - without an explicit terminate() here the
+                # subprocess itself would keep running orphaned inside the container after the
+                # Python side has already moved on. See spec §7 "Пауза и продолжение".
+                await _terminate_subprocess(proc)
+                raise
 
             await proc.wait()
             exit_code = proc.returncode or 0
@@ -288,25 +430,47 @@ class LlmCliService:
     async def run_task(self, request: LlmTaskRequest, *, engine_name: str) -> LlmTaskResult:
         cli_task = self._build_cli_task(request, engine_name=engine_name)
         self._bind_request_metadata(cli_task, request)
+        settings = get_gateway_settings()
+        masked_prompt = sanitize_text(request.prompt_text, max_chars=settings.audit.max_prompt_chars) or ""
         self._record_event(
             request,
             EventType.LLM_TASK_REQUESTED,
             llm_call_id=cli_task.task_id,
             engine_name=engine_name,
             expected_schema=request.expected_schema_name,
+            prompt_text=masked_prompt,
+        )
+        self._publish_live_event(
+            request,
+            "llm_call_started",
+            llm_call_id=cli_task.task_id,
+            engine_name=engine_name,
+            prompt_text=masked_prompt,
         )
         await self._run_cli_task(cli_task)
         if cli_task.task_status != TaskStatus.SUCCESS:
+            error_text = sanitize_text(cli_task.task_error, max_chars=settings.audit.max_error_chars) or (
+                "CLI task failed"
+            )
             self._record_event(
                 request,
                 EventType.LLM_TASK_FAILED,
                 llm_call_id=cli_task.task_id,
                 engine_name=engine_name,
-                error=cli_task.task_error or "CLI task failed",
+                error=error_text,
+            )
+            self._publish_live_event(
+                request,
+                "llm_call_failed",
+                llm_call_id=cli_task.task_id,
+                engine_name=engine_name,
+                error_reason=LlmTaskExecutionError._detect_reason(cli_task.task_error or ""),  # noqa: SLF001
+                error=error_text,
             )
             raise LlmTaskExecutionError.from_cli_task(cli_task)
 
         parsed_result = self._parse_result(cli_task.task_result or "")
+        raw_output = sanitize_text(cli_task.task_result, max_chars=settings.audit.max_output_chars) or ""
         self._record_event(
             request,
             EventType.LLM_TASK_COMPLETED,
@@ -314,6 +478,18 @@ class LlmCliService:
             engine_name=engine_name,
             created_artifacts=str(len(parsed_result.get("created_artifacts", []))),
             open_questions=str(len(parsed_result.get("open_questions_found", []))),
+            raw_output=raw_output,
+        )
+        self._publish_live_event(
+            request,
+            "llm_call_completed",
+            llm_call_id=cli_task.task_id,
+            engine_name=engine_name,
+            raw_output=raw_output,
+            completed_actions=parsed_result.get("completed_actions", []),
+            created_artifacts=parsed_result.get("created_artifacts", []),
+            open_questions_found=parsed_result.get("open_questions_found", []),
+            notes=parsed_result.get("notes", ""),
         )
         return LlmTaskResult(
             task_kind=request.task_kind,
@@ -323,6 +499,7 @@ class LlmCliService:
             open_questions_found=parsed_result.get("open_questions_found", []),
             diff_based_findings=parsed_result.get("diff_based_findings", []),
             snapshot_based_findings=parsed_result.get("snapshot_based_findings", []),
+            domain_assessment=parsed_result.get("domain_assessment"),
             notes=parsed_result.get("notes", ""),
             raw_output=cli_task.task_result or "",
         )
@@ -373,6 +550,23 @@ class LlmCliService:
                 domain_id=request.domain_id,
                 payload=payload,
             )
+        )
+
+    def _publish_live_event(self, request: LlmTaskRequest, event_type: str, **extra: typing.Any) -> None:
+        if not request.session_id:
+            return
+        get_workflow_event_bus().publish(
+            request.session_id,
+            {
+                "event_type": event_type,
+                "actor": "llm",
+                "step_id": request.step_id.value,
+                "step_label": step_label_ru(request.step_id.value),
+                "repo_name": request.repository_name,
+                "domain_id": request.domain_id,
+                "task_kind": request.task_kind.value,
+                **extra,
+            },
         )
 
 

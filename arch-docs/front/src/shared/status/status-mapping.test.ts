@@ -63,11 +63,19 @@ describe("toneFromResponseStatus", () => {
   it.each(["failed", "cancelled"] as const)("%s -> failed", (status) => {
     expect(toneFromResponseStatus(status, false)).toBe("failed");
   });
+
+  it("paused -> needs_action", () => {
+    expect(toneFromResponseStatus("paused", false)).toBe("needs_action");
+  });
 });
 
 describe("responseStatusLabel", () => {
   it("возвращает читаемую метку для известных статусов", () => {
     expect(responseStatusLabel("success")).toBe("Завершено успешно");
+  });
+
+  it("возвращает читаемую метку для paused", () => {
+    expect(responseStatusLabel("paused")).toBe("На паузе");
   });
 
   it("возвращает исходную строку для неизвестного статуса", () => {

@@ -19,7 +19,15 @@ from app.services.task_runner import (
     run_cli_task,
     set_db_enabled,
 )
+from app.services.workflow_event_bus import get_workflow_event_bus, reset_workflow_event_bus
 from app.workflows.init_arch.domain import AuditActor, EventType, LlmTaskKind, LlmTaskRequest, StepId
+
+
+@pytest.fixture(autouse=True)
+def _clean_workflow_event_bus():
+    reset_workflow_event_bus()
+    yield
+    reset_workflow_event_bus()
 
 
 def _make_task(
@@ -287,6 +295,36 @@ class TestRunCliTask:
         assert cli_task.task_status == TaskStatus.FAILED
         assert "Timeout" in cli_task.task_error
 
+    async def test_cancellation_terminates_orphaned_subprocess(self) -> None:
+        # Simulates `pause_init_arch_workflow()` cancelling the graph's asyncio.Task while a CLI
+        # subprocess is mid-flight: without an explicit terminate() on CancelledError, the process
+        # would keep running orphaned even though the Python task unwound. See test_task_runner.py
+        # `run_cli_task`'s `except asyncio.CancelledError` branch.
+        cli_task = _make_task(engine_name="claude")
+        pool = _make_pool()
+        mock_proc = _make_mock_process()
+        real_wait_for = asyncio.wait_for
+        call_count = 0
+
+        async def _wait_for(awaitable, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                close = getattr(awaitable, "close", None)
+                if callable(close):
+                    close()
+                raise asyncio.CancelledError
+            return await real_wait_for(awaitable, **kwargs)
+
+        with (
+            unittest.mock.patch("asyncio.create_subprocess_exec", return_value=mock_proc),
+            unittest.mock.patch("asyncio.wait_for", side_effect=_wait_for),
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await run_cli_task(cli_task, pool)
+
+        mock_proc.terminate.assert_called_once()
+
     async def test_os_error_sets_failed_status(self) -> None:
         cli_task = _make_task(engine_name="claude")
         pool = _make_pool()
@@ -327,6 +365,112 @@ class TestRunCliTask:
 
         assert cli_task.task_status == TaskStatus.FAILED
         assert cli_task.stderr_lines == ["error line1", "error line2"]
+
+    async def test_publishes_live_llm_tool_call_and_message_for_workflow_bound_task(self) -> None:
+        cli_task = _make_task(engine_name="claude")
+        cli_task.workflow_id = "wf-live"
+        cli_task.step_id = "analyze_repositories"
+        cli_task.repository_name = "svc-a"
+        pool = _make_pool()
+        stdout = (
+            b'{"type":"system","subtype":"init"}\n'
+            b'{"type":"assistant","message":{"content":[{"type":"text","text":"reading files"}]}}\n'
+            b'{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read",'
+            b'"input":{"file_path":"a.py"}}]}}\n'
+            b'{"type":"result","result":"done"}'
+        )
+        mock_proc = _make_mock_process(returncode=0, stdout=stdout, stderr=b"")
+        subscription = get_workflow_event_bus().subscribe("wf-live")
+
+        with unittest.mock.patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            await run_cli_task(cli_task, pool)
+
+        published = [subscription.get_nowait() for _ in range(subscription.qsize())]
+        assert [event["event_type"] for event in published] == ["llm_message", "llm_tool_call"]
+        assert published[0]["text"] == "reading files"
+        assert published[1]["tool_name"] == "Read"
+        assert "a.py" in published[1]["tool_input"]
+        assert all(event["actor"] == "llm" for event in published)
+        assert all(event["repo_name"] == "svc-a" for event in published)
+        assert all(event["step_label"] == "Анализ репозиториев" for event in published)
+        # "system" (init) and "result" (already surfaced as llm_call_completed.raw_output) are
+        # deliberately not re-published on the per-line live channel.
+
+    async def test_does_not_publish_live_events_for_task_without_workflow_id(self) -> None:
+        cli_task = _make_task(engine_name="claude")
+        assert cli_task.workflow_id is None
+        pool = _make_pool()
+        stdout = b'{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}\n{"type":"result","result":"done"}'
+        mock_proc = _make_mock_process(returncode=0, stdout=stdout, stderr=b"")
+
+        with unittest.mock.patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            await run_cli_task(cli_task, pool)
+
+        assert get_workflow_event_bus()._subscribers == {}
+
+
+class TestClassifyLiveStreamLine:
+    def test_claude_tool_use_block(self) -> None:
+        event = task_runner_module._classify_live_stream_line(
+            "claude",
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "tool_use", "name": "Bash", "input": {"command": "ls"}}]},
+                }
+            ),
+        )
+        assert event == {"event_type": "llm_tool_call", "tool_name": "Bash", "tool_input": '{"command": "ls"}'}
+
+    def test_claude_text_block(self) -> None:
+        event = task_runner_module._classify_live_stream_line(
+            "claude", json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "hi"}]}})
+        )
+        assert event == {"event_type": "llm_message", "text": "hi"}
+
+    def test_claude_system_type_is_noise(self) -> None:
+        event = task_runner_module._classify_live_stream_line(
+            "claude", json.dumps({"type": "system", "subtype": "init"})
+        )
+        assert event is None
+
+    def test_claude_result_type_is_noise(self) -> None:
+        event = task_runner_module._classify_live_stream_line(
+            "claude", json.dumps({"type": "result", "result": "done"})
+        )
+        assert event is None
+
+    def test_codex_command_execution(self) -> None:
+        event = task_runner_module._classify_live_stream_line(
+            "codex",
+            json.dumps({"type": "item.completed", "item": {"type": "command_execution", "command": "ls -la"}}),
+        )
+        assert event == {"event_type": "llm_tool_call", "tool_name": "shell", "tool_input": "ls -la"}
+
+    def test_codex_agent_message(self) -> None:
+        event = task_runner_module._classify_live_stream_line(
+            "codex", json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "done"}})
+        )
+        assert event == {"event_type": "llm_message", "text": "done"}
+
+    def test_codex_thread_started_is_noise(self) -> None:
+        event = task_runner_module._classify_live_stream_line("codex", json.dumps({"type": "thread.started"}))
+        assert event is None
+
+    def test_unparseable_json_falls_back_to_raw_message(self) -> None:
+        event = task_runner_module._classify_live_stream_line("claude", "not json at all")
+        assert event == {"event_type": "llm_message", "text": "not json at all"}
+
+    def test_unknown_type_falls_back_to_raw_message_instead_of_swallowing_it(self) -> None:
+        event = task_runner_module._classify_live_stream_line("claude", json.dumps({"type": "some_future_event"}))
+        assert event == {"event_type": "llm_message", "text": json.dumps({"type": "some_future_event"})}
+
+    def test_unknown_engine_falls_back_to_raw_message(self) -> None:
+        event = task_runner_module._classify_live_stream_line("other", json.dumps({"type": "assistant"}))
+        assert event == {"event_type": "llm_message", "text": json.dumps({"type": "assistant"})}
+
+    def test_blank_line_is_noise(self) -> None:
+        assert task_runner_module._classify_live_stream_line("claude", "   ") is None
 
 
 class TestCancelCliTask:
@@ -542,6 +686,83 @@ class TestLlmCliService:
             EventType.LLM_TASK_FAILED,
         ]
         assert all(event.payload["llm_call_id"] == cli_task.task_id for event in recorded_events)
+
+    async def test_run_task_publishes_live_bus_events_on_success(self) -> None:
+        service = LlmCliService(audit_service=unittest.mock.MagicMock())
+        request = LlmTaskRequest(
+            task_kind=LlmTaskKind.STEP_EXECUTION,
+            step_id=StepId.ANALYZE_REPOSITORIES,
+            prompt_text="do work",
+            workspace_dir="/workspace",
+            timeout_seconds=30,
+            expected_schema_name="init_arch_v1",
+            session_id="wf-live",
+            repository_name="svc-a",
+        )
+        cli_task = _make_task(engine_name="claude")
+        cli_task.task_status = TaskStatus.SUCCESS
+        cli_task.task_result = json.dumps({"completed_actions": ["done"], "notes": "ok"})
+
+        subscription = get_workflow_event_bus().subscribe("wf-live")
+        with unittest.mock.patch.object(service, "_build_cli_task", return_value=cli_task):
+            with unittest.mock.patch.object(service, "_run_cli_task", new=unittest.mock.AsyncMock()):
+                await service.run_task(request, engine_name="claude")
+
+        published = [subscription.get_nowait() for _ in range(subscription.qsize())]
+        assert [event["event_type"] for event in published] == ["llm_call_started", "llm_call_completed"]
+        assert all(event["actor"] == "llm" for event in published)
+        assert all(event["repo_name"] == "svc-a" for event in published)
+        assert all(event["step_label"] == "Анализ репозиториев" for event in published)
+        assert published[0]["prompt_text"] == "do work"
+        assert published[1]["completed_actions"] == ["done"]
+        assert "ok" in published[1]["raw_output"]
+
+    async def test_run_task_publishes_live_bus_event_on_failure(self) -> None:
+        service = LlmCliService(audit_service=unittest.mock.MagicMock())
+        request = LlmTaskRequest(
+            task_kind=LlmTaskKind.STEP_EXECUTION,
+            step_id=StepId.DEFINE_SCOPE,
+            prompt_text="do work",
+            workspace_dir="/workspace",
+            timeout_seconds=30,
+            expected_schema_name="init_arch_v1",
+            session_id="wf-live",
+        )
+        cli_task = _make_task(engine_name="claude")
+        cli_task.task_status = TaskStatus.FAILED
+        cli_task.task_error = "boom"
+
+        subscription = get_workflow_event_bus().subscribe("wf-live")
+        with unittest.mock.patch.object(service, "_build_cli_task", return_value=cli_task):
+            with unittest.mock.patch.object(service, "_run_cli_task", new=unittest.mock.AsyncMock()):
+                with pytest.raises(RuntimeError):
+                    await service.run_task(request, engine_name="claude")
+
+        published = [subscription.get_nowait() for _ in range(subscription.qsize())]
+        assert [event["event_type"] for event in published] == ["llm_call_started", "llm_call_failed"]
+        assert published[1]["error"] == "boom"
+        assert published[1]["error_reason"] == "task_failed"
+
+    async def test_run_task_skips_bus_publish_without_session_id(self) -> None:
+        service = LlmCliService(audit_service=unittest.mock.MagicMock())
+        request = LlmTaskRequest(
+            task_kind=LlmTaskKind.STEP_EXECUTION,
+            step_id=StepId.DEFINE_SCOPE,
+            prompt_text="do work",
+            workspace_dir="/workspace",
+            timeout_seconds=30,
+            expected_schema_name="init_arch_v1",
+            session_id="",
+        )
+        cli_task = _make_task(engine_name="claude")
+        cli_task.task_status = TaskStatus.SUCCESS
+        cli_task.task_result = json.dumps({"notes": "ok"})
+
+        with unittest.mock.patch.object(service, "_build_cli_task", return_value=cli_task):
+            with unittest.mock.patch.object(service, "_run_cli_task", new=unittest.mock.AsyncMock()):
+                await service.run_task(request, engine_name="claude")
+
+        assert get_workflow_event_bus()._subscribers == {}
 
     async def test_run_task_raises_typed_error_for_limit_exhaustion(self) -> None:
         service = LlmCliService(audit_service=unittest.mock.MagicMock())

@@ -138,7 +138,7 @@ async def delete_git_token(host: str) -> bool:
     return True
 
 
-def _classify_git_access_failure(stderr_text: str) -> GitAccessStatus:
+def classify_git_access_failure(stderr_text: str) -> GitAccessStatus:
     lowered = stderr_text.lower()
     if "timeout" in lowered:
         return GitAccessStatus.TIMEOUT
@@ -182,7 +182,7 @@ async def check_git_access(repository_url: str) -> GitAccessResult:
     if exit_code == 0:
         return GitAccessResult(accessible=True, access_status=GitAccessStatus.OK, reason_code=None, message="ok")
 
-    access_status = _classify_git_access_failure(stderr_text)
+    access_status = classify_git_access_failure(stderr_text)
     return GitAccessResult(
         accessible=False,
         access_status=access_status,

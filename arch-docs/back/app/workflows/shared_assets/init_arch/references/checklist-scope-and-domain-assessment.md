@@ -2,7 +2,14 @@
 
 Оценить объём и выявить бизнес-домены до начала детального анализа. Выполняется **по каждому репозиторию в отдельности**, последовательно, в порядке `ordered_repository_names`.
 
-Результат хранится **внутри каждого репозитория** в `domain_map`, а не глобально.
+**Важно про текущее состояние сервиса**: ты вызываешься **отдельно на каждый repository** (backend
+итерирует `session.repositories` и делает по одному LLM-вызову на репозиторий — `Текущий репозиторий:` в
+контексте выше указывает, для кого именно сейчас нужен ответ). Результат структурно сохраняется backend'ом
+в `RepositoryExecution.volume_class`/`.domain_strategy`/`.domains` через специальное top-level поле
+`domain_assessment` в твоём JSON-отчёте (формат — в конце промпта, в разделе «Инструкции»; продублирован
+ниже в шаге 3).
+Никакого другого протокола взаимодействия с backend'ом на этом шаге нет: только структурированное поле
+`domain_assessment` в ответе.
 
 Так как исторический режим для `init-repo-arch-skill` обязателен, порядок репозиториев к этому шагу уже должен быть отсортирован по `created_at`, а `historical_analysis.current_snapshot_at` должен быть одинаковым для всех in-scope репозиториев.
 
@@ -56,7 +63,7 @@ find .temp/<repo> -not -path "*/.git/*" -type f \
 
 - Prefixed модели БД (`billing_*`, `auth_*`) или отдельные схемы
 - Отдельные Kafka-топики с доменным префиксом
-- Раздельные OpenAPI-файлы по областям
+- Раздельные OpenAPI-файлы и proto-файлы по областям
 - Разные docker-compose-сервисы с продуктовыми именами
 
 **Слабые (сами по себе не достаточны):**
@@ -72,51 +79,38 @@ find .temp/<repo> -not -path "*/.git/*" -type f \
 - Есть технические слои (`api/`, `domain/`, `infrastructure/`) без продуктового деления → это не бизнес-домены, это DDD-архитектура. Стратегия `per_module`.
 - Одно Django-приложение без явного деления на apps → `per_module`.
 
-## Для каждого репозитория: шаг 3 — зафиксировать результат
+## Шаг 3 — зафиксировать результат для этого репозитория
 
-**Если доменов нет (`per_module`):**
+Верни в итоговом JSON-отчёте top-level поле `domain_assessment` (см. точную схему в разделе «Инструкции» в
+конце промпта) — **только для того одного репозитория**, для которого ты сейчас вызван:
 
-```bash
-python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py \
-  domain --progress <path> --repo <repo-name> \
-  --assess --strategy per_module --volume-class <class> --total-files <N>
+```json
+{
+  "domain_assessment": {
+    "volume_class": "small|medium|large|xlarge",
+    "strategy": "per_module|per_domain",
+    "domains": [
+      {"domain_id": "billing", "name": "Биллинг", "paths": ["apps/billing/", "apps/payments/"], "signal": "Отдельные Django-приложения apps/billing и apps/payments", "subdomains": []}
+    ]
+  }
+}
 ```
 
-**Если домены найдены (`per_domain`):**
+Если `strategy=per_module` — оставь `"domains": []`. Backend сам сериализует накопленные по всем
+репозиториям assessment'ы в `architecture/domain-map.yaml` после того, как обработает все репозитории —
+тебе не нужно (и не стоит) писать этот файл самому.
 
-```bash
-# 1. Зафиксировать стратегию
-python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py \
-  domain --progress <path> --repo django-backend \
-  --assess --strategy per_domain --volume-class large --total-files 48000
-
-# 2. Зарегистрировать каждый домен с путями внутри репозитория
-python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py \
-  domain --progress <path> --repo django-backend \
-  --register --domain-id billing --name "Биллинг" \
-  --paths "apps/billing/,apps/payments/" \
-  --signal "Отдельные Django-приложения apps/billing и apps/payments"
-
-python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py \
-  domain --progress <path> --repo django-backend \
-  --register --domain-id auth --name "Авторизация" \
-  --paths "apps/users/,apps/auth/"
-
-# 3. Добавить поддомены если явно видны в структуре
-python .agents/skills/init-repo-arch-skill/scripts/analysis_guard.py \
-  domain --progress <path> --repo django-backend \
-  --add-subdomain --domain-id billing \
-  --subdomain-id subscriptions --subdomain-name "Подписки"
-```
+Если для домена напрашивается более развёрнутое описание (сигналы, поддомены, нюансы) сверх полей схемы —
+можешь дополнительно описать это в `notes`, но структурная часть (`volume_class`/`strategy`/`domains`)
+обязана быть в `domain_assessment`, иначе backend не сможет её сохранить.
 
 ## Обязательные выходы этого шага
 
-- Для каждого `in_scope` репозитория заполнены `domain_map.assessed_at`, `strategy`, `volume_class`
-- У репозитория должны быть заполнены `created_at` и `analysis_target_date`
-- Если `strategy=per_domain`: зарегистрировано минимум 2 домена, каждый с непустым `paths`
-- Шаг завершён через `advance --note "<краткий итог: repo1: per_domain 3 домена; repo2: per_module>"`
-
-Guard не даст завершить этот шаг, пока хотя бы один in-scope репозиторий не имеет `domain_map.assessed_at`.
+- В JSON-отчёте заполнено `domain_assessment` с валидными `volume_class` и `strategy`.
+- Если `strategy=per_domain` — в `domains` перечислен минимум 1 домен с непустым `paths`.
+- **Это блокирующая проверка**: если `domain_assessment` отсутствует или невалиден, backend не продвинет
+  workflow на `analyze_repositories` — шаг уйдёт в retry (до 3 попыток), затем в ручное вмешательство
+  (`handle_error`). Отсутствие этого поля — не мелкий недочёт, а причина остановки всего workflow.
 
 ## Подводные камни
 
@@ -124,3 +118,7 @@ Guard не даст завершить этот шаг, пока хотя бы �
 - Не смешивай технические слои с бизнес-доменами.
 - Не мельчи: 10 поддоменов из 10 Django apps — это не полезно. Объединяй смежные apps в один домен, если они решают одну продуктовую задачу.
 - Один небольшой сервис с чёткой специализацией — всегда `per_module`, даже если внутри есть несколько папок.
+- Не пытайся вызывать `analysis_guard.py` или любой другой CLI для "регистрации" домена — такого инструмента
+  в этом сервисе нет, единственный канал передачи результата — поле `domain_assessment` в JSON-отчёте.
+- Не забывай `domain_assessment` даже для тривиального `per_module`-случая — пустой `domains: []` это
+  нормально, но само поле `domain_assessment` обязано присутствовать всегда, иначе шаг заблокируется.

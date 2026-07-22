@@ -7,6 +7,7 @@ from langgraph.graph import END, START, StateGraph
 from app.workflows.init_arch.domain import STEP_DEFINITIONS, StepId
 from app.workflows.init_arch.nodes import (
     node_analyze_repositories,
+    node_analyze_repositories_item,
     node_assess_scope_and_domains,
     node_build_navigation_index,
     node_clone_repositories,
@@ -30,6 +31,9 @@ _MAX_RETRY: typing.Final[int] = 3
 _CONFIRM_NEXT_WINDOW_NODE_NAME: typing.Final[str] = StepId.CONFIRM_NEXT_TEMPORAL_WINDOW.value
 _REFRESH_MAIN_BRANCHES_NODE_NAME: typing.Final[str] = StepId.REFRESH_MAIN_BRANCHES.value
 _FINALIZE_PROGRESS_NODE_NAME: typing.Final[str] = StepId.FINALIZE_PROGRESS.value
+_ANALYZE_REPOSITORIES_NODE_NAME: typing.Final[str] = StepId.ANALYZE_REPOSITORIES.value
+_ANALYZE_REPOSITORIES_ITEM_NODE_NAME: typing.Final[str] = "analyze_repositories_item"
+_INTERVIEW_USER_NODE_NAME: typing.Final[str] = StepId.INTERVIEW_USER.value
 
 _NODE_FUNCTIONS: typing.Final[dict[StepId, typing.Any]] = {
     StepId.DEFINE_SCOPE: node_define_scope,
@@ -71,6 +75,24 @@ def _route_after_node(node_name: str) -> typing.Callable[[InitArchState], str]:
     return route
 
 
+def _route_after_analyze_repositories(state: InitArchState) -> str:
+    if state.get("step_error"):
+        if state.get("retry_count", 0) < _MAX_RETRY:
+            return _ANALYZE_REPOSITORIES_NODE_NAME
+        return "handle_error"
+    if state["session"].current_step is StepId.INTERVIEW_USER:
+        return _INTERVIEW_USER_NODE_NAME
+    return _ANALYZE_REPOSITORIES_ITEM_NODE_NAME
+
+
+def _route_after_analyze_repositories_item(state: InitArchState) -> str:
+    if state.get("step_error"):
+        if state.get("retry_count", 0) < _MAX_RETRY:
+            return _ANALYZE_REPOSITORIES_ITEM_NODE_NAME
+        return "handle_error"
+    return _ANALYZE_REPOSITORIES_NODE_NAME
+
+
 def _route_after_confirm_next_temporal_window(state: InitArchState) -> str:
     if state.get("step_error"):
         if state.get("retry_count", 0) < _MAX_RETRY:
@@ -92,6 +114,7 @@ def build_graph() -> StateGraph:
 
     for node_name, node_fn in _LINEAR_NODES:
         graph.add_node(node_name, node_fn)
+    graph.add_node(_ANALYZE_REPOSITORIES_ITEM_NODE_NAME, node_analyze_repositories_item)
     graph.add_node("handle_error", node_handle_error)
 
     graph.add_edge(START, "define_scope")
@@ -99,8 +122,12 @@ def build_graph() -> StateGraph:
     for node_name, _ in _LINEAR_NODES[:-1]:
         if node_name == _CONFIRM_NEXT_WINDOW_NODE_NAME:
             graph.add_conditional_edges(node_name, _route_after_confirm_next_temporal_window)
+        elif node_name == _ANALYZE_REPOSITORIES_NODE_NAME:
+            graph.add_conditional_edges(node_name, _route_after_analyze_repositories)
         else:
             graph.add_conditional_edges(node_name, _route_after_node(node_name))
+
+    graph.add_conditional_edges(_ANALYZE_REPOSITORIES_ITEM_NODE_NAME, _route_after_analyze_repositories_item)
 
     graph.add_conditional_edges(
         "finalize_progress",

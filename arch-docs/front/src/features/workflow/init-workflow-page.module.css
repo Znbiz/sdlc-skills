@@ -29,5 +29,52 @@
   background: var(--color-surface-muted);
   padding: 0.6rem;
   border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.streamEntry {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
   white-space: pre-wrap;
+  border-left: 3px solid transparent;
+  padding-left: 0.4rem;
+}
+
+.actorBadge {
+  flex-shrink: 0;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  opacity: 0.6;
+  min-width: 3.5rem;
+}
+
+.streamMessage {
+  flex: 1;
+  word-break: break-word;
+}
+
+.streamDetail {
+  flex-basis: 100%;
+  font-size: 0.75rem;
+}
+
+.streamDetail pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0.3rem 0 0;
+}
+
+.actor-workflow {
+  border-left-color: var(--color-text-muted);
+}
+
+.actor-llm {
+  border-left-color: var(--color-accent, #6366f1);
+}
+
+.actor-user {
+  border-left-color: var(--color-warning-text, #d97706);
 }

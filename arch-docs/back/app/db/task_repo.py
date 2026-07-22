@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import datetime
-import re
 import uuid
 
 import sqlalchemy as sa
@@ -9,37 +8,8 @@ import sqlalchemy.ext.asyncio as async_sa
 
 from app.db.models import CliTaskModel
 from app.services.task_registry import CliTask, TaskStatus
+from app.services.text_sanitization import sanitize_text as _sanitize_text
 from app.settings import get_gateway_settings
-
-_TRUNCATION_MARKER = "...[truncated]"
-_SENSITIVE_INLINE_PATTERNS = (
-    re.compile(r"(?i)\b(authorization:\s*bearer\s+)(\S+)"),
-    re.compile(r"(?i)\b([A-Z0-9_]*(?:token|secret|password|api[_-]?key)[A-Z0-9_]*=)(\S+)"),
-)
-
-
-def _mask_sensitive_text(value: str) -> str:
-    masked = value
-    for pattern in _SENSITIVE_INLINE_PATTERNS:
-        masked = pattern.sub(r"\1[REDACTED]", masked)
-    return masked
-
-
-def _truncate_text(value: str, *, max_chars: int) -> str:
-    if len(value) <= max_chars:
-        return value
-    cutoff = max(0, max_chars - len(_TRUNCATION_MARKER))
-    redacted_start = value.find("[REDACTED]")
-    redacted_end = redacted_start + len("[REDACTED]") if redacted_start >= 0 else -1
-    if redacted_start >= 0 and redacted_start < cutoff < redacted_end:
-        cutoff = redacted_end
-    return value[:cutoff] + _TRUNCATION_MARKER
-
-
-def _sanitize_text(value: str | None, *, max_chars: int) -> str | None:
-    if value is None:
-        return None
-    return _truncate_text(_mask_sensitive_text(value), max_chars=max_chars)
 
 
 async def upsert_cli_task(session: async_sa.AsyncSession, cli_task: CliTask) -> None:

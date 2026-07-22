@@ -5,6 +5,8 @@ from app.workflows.init_arch.checkpointer import get_checkpointer
 from app.workflows.init_arch.domain import STEP_DEFINITIONS, StepId, WorkflowSessionRecord
 from app.workflows.init_arch.graph import (
     _LINEAR_STEP_IDS,
+    _route_after_analyze_repositories,
+    _route_after_analyze_repositories_item,
     _route_after_confirm_next_temporal_window,
     _route_after_handle_error,
     _route_after_node,
@@ -52,6 +54,7 @@ def test_build_graph_has_all_nodes():
         "plan_repository_order",
         "assess_scope_and_domains",
         "analyze_repositories",
+        "analyze_repositories_item",
         "interview_user",
         "refine_features",
         "build_navigation_index",
@@ -121,6 +124,41 @@ def _make_session_state(*, current_step: StepId, **kwargs) -> InitArchState:
         current_step=current_step,
     )
     return _make_state(session=session, **kwargs)
+
+
+def test_route_after_analyze_repositories_goes_to_item_node_when_step_stays() -> None:
+    state = _make_session_state(current_step=StepId.ANALYZE_REPOSITORIES, step_error=None)
+    assert _route_after_analyze_repositories(state) == "analyze_repositories_item"
+
+
+def test_route_after_analyze_repositories_goes_to_interview_user_when_step_advances() -> None:
+    state = _make_session_state(current_step=StepId.INTERVIEW_USER, step_error=None)
+    assert _route_after_analyze_repositories(state) == "interview_user"
+
+
+def test_route_after_analyze_repositories_retries_on_error() -> None:
+    state = _make_session_state(current_step=StepId.ANALYZE_REPOSITORIES, step_error="boom", retry_count=1)
+    assert _route_after_analyze_repositories(state) == "analyze_repositories"
+
+
+def test_route_after_analyze_repositories_handles_error_after_max_retries() -> None:
+    state = _make_session_state(current_step=StepId.ANALYZE_REPOSITORIES, step_error="boom", retry_count=3)
+    assert _route_after_analyze_repositories(state) == "handle_error"
+
+
+def test_route_after_analyze_repositories_item_loops_back_to_repo_loop_node() -> None:
+    state = _make_session_state(current_step=StepId.ANALYZE_REPOSITORIES, step_error=None)
+    assert _route_after_analyze_repositories_item(state) == "analyze_repositories"
+
+
+def test_route_after_analyze_repositories_item_retries_on_error() -> None:
+    state = _make_session_state(current_step=StepId.ANALYZE_REPOSITORIES, step_error="boom", retry_count=1)
+    assert _route_after_analyze_repositories_item(state) == "analyze_repositories_item"
+
+
+def test_route_after_analyze_repositories_item_handles_error_after_max_retries() -> None:
+    state = _make_session_state(current_step=StepId.ANALYZE_REPOSITORIES, step_error="boom", retry_count=3)
+    assert _route_after_analyze_repositories_item(state) == "handle_error"
 
 
 def test_route_after_confirm_next_temporal_window_loops_back_on_continue():

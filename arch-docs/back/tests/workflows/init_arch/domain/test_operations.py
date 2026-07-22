@@ -12,6 +12,7 @@ from app.workflows.init_arch.domain import (
     OpenQuestionRecord,
     RepositoryExecution,
     StepId,
+    VolumeClass,
     WorkflowSessionRecord,
     WorkflowStatus,
 )
@@ -20,14 +21,18 @@ from app.workflows.init_arch.domain.operations import (
     advance_step,
     close_question,
     confirm_next_temporal_window,
+    domain_assessment_is_complete,
     fail_step,
     finalize_session,
     historical_prep_is_complete,
     mark_checklist_item,
+    next_pending_checklist_item,
+    next_pending_repository,
     open_question,
     record_answer,
     register_repository,
     request_next_temporal_window_confirmation,
+    set_domain_assessment,
     start_session,
 )
 
@@ -403,6 +408,140 @@ def test_register_repository_and_mark_checklist_item() -> None:
 
     assert session.repositories[0].repository_name == "svc-a"
     assert session.repositories[0].checklist_items_completed == ["repository_classification"]
+
+
+def test_next_pending_repository_returns_none_without_repositories() -> None:
+    session = start_session(session_id="wf-1", product_name="arch-docs", analysis_scope="full")
+
+    assert next_pending_repository(session) is None
+
+
+def test_next_pending_repository_skips_completed_and_returns_first_pending() -> None:
+    session = start_session(session_id="wf-1", product_name="arch-docs", analysis_scope="full")
+    session = register_repository(session, RepositoryExecution(repository_name="svc-a", analysis_status="completed"))
+    session = register_repository(session, RepositoryExecution(repository_name="svc-b", analysis_status="in_progress"))
+    session = register_repository(session, RepositoryExecution(repository_name="svc-c", analysis_status="pending"))
+
+    repository = next_pending_repository(session)
+
+    assert repository is not None
+    assert repository.repository_name == "svc-b"
+
+
+def test_next_pending_repository_returns_none_when_all_completed() -> None:
+    session = start_session(session_id="wf-1", product_name="arch-docs", analysis_scope="full")
+    session = register_repository(session, RepositoryExecution(repository_name="svc-a", analysis_status="completed"))
+
+    assert next_pending_repository(session) is None
+
+
+def test_next_pending_checklist_item_returns_first_routed_item_not_yet_completed() -> None:
+    repository = RepositoryExecution(
+        repository_name="svc-a",
+        checklist_items_completed=["repository_classification", "repository_structure_mapping"],
+    )
+
+    item_id = next_pending_checklist_item(
+        repository,
+        all_checklist_item_ids=[
+            "repository_classification",
+            "repository_structure_mapping",
+            "entrypoints_and_interfaces",
+        ],
+    )
+
+    assert item_id == "entrypoints_and_interfaces"
+
+
+def test_next_pending_checklist_item_returns_none_when_all_routed_items_completed() -> None:
+    repository = RepositoryExecution(
+        repository_name="svc-a",
+        checklist_items_completed=["repository_classification", "entrypoints_and_interfaces"],
+    )
+
+    item_id = next_pending_checklist_item(
+        repository,
+        all_checklist_item_ids=["repository_classification", "entrypoints_and_interfaces"],
+    )
+
+    assert item_id is None
+
+
+def test_next_pending_checklist_item_narrows_to_routed_subset_on_no_signal_repository() -> None:
+    repository = RepositoryExecution(
+        repository_name="svc-a",
+        commit_range_status=CommitRangeStatus.NO_CHANGES,
+    )
+
+    item_id = next_pending_checklist_item(
+        repository,
+        all_checklist_item_ids=["repository_classification", "repository_consistency_review"],
+    )
+
+    assert item_id == "repository_consistency_review"
+
+
+def test_set_domain_assessment_updates_repository_fields() -> None:
+    session = start_session(session_id="wf-1", product_name="arch-docs", analysis_scope="full")
+    session = register_repository(session, RepositoryExecution(repository_name="svc-a"))
+
+    session = set_domain_assessment(
+        session,
+        repository_name="svc-a",
+        volume_class=VolumeClass.LARGE,
+        strategy=DomainStrategy.PER_DOMAIN,
+        domains=[DomainDefinition(domain_id="billing", name="Биллинг", paths=["apps/billing/"])],
+    )
+
+    repository = session.repositories[0]
+    assert repository.volume_class is VolumeClass.LARGE
+    assert repository.domain_strategy is DomainStrategy.PER_DOMAIN
+    assert repository.domains == [DomainDefinition(domain_id="billing", name="Биллинг", paths=["apps/billing/"])]
+
+
+def test_set_domain_assessment_requires_existing_repository() -> None:
+    session = start_session(session_id="wf-1", product_name="arch-docs", analysis_scope="full")
+
+    with pytest.raises(DomainOperationError, match="repository not found"):
+        set_domain_assessment(
+            session,
+            repository_name="missing",
+            volume_class=VolumeClass.SMALL,
+            strategy=DomainStrategy.PER_MODULE,
+            domains=[],
+        )
+
+
+def test_domain_assessment_is_complete_requires_all_repositories_assessed() -> None:
+    session = start_session(session_id="wf-1", product_name="arch-docs", analysis_scope="full")
+    session = register_repository(session, RepositoryExecution(repository_name="svc-a"))
+    session = register_repository(session, RepositoryExecution(repository_name="svc-b"))
+
+    assert domain_assessment_is_complete(session) is False
+
+    session = set_domain_assessment(
+        session,
+        repository_name="svc-a",
+        volume_class=VolumeClass.SMALL,
+        strategy=DomainStrategy.PER_MODULE,
+        domains=[],
+    )
+    assert domain_assessment_is_complete(session) is False
+
+    session = set_domain_assessment(
+        session,
+        repository_name="svc-b",
+        volume_class=VolumeClass.SMALL,
+        strategy=DomainStrategy.PER_MODULE,
+        domains=[],
+    )
+    assert domain_assessment_is_complete(session) is True
+
+
+def test_domain_assessment_is_complete_false_without_repositories() -> None:
+    session = start_session(session_id="wf-1", product_name="arch-docs", analysis_scope="full")
+
+    assert domain_assessment_is_complete(session) is False
 
 
 def test_request_next_temporal_window_confirmation_marks_session_waiting() -> None:

@@ -21,12 +21,15 @@ flowchart TD
     defScope --> reqRepos[request_repository_list]
     reqRepos -. interrupt: user_input .-> reqRepos
     reqRepos --> prepWs[prepare_temp_workspace]
-    prepWs --> clone[clone_repositories\nLLM]
+    prepWs --> clone[clone_repositories]
     clone --> refresh[refresh_main_branches]
     refresh --> plan[plan_repository_order]
     plan --> assess[assess_scope_and_domains\nLLM]
-    assess --> analyze[analyze_repositories\nLLM x N]
-    analyze --> interview[interview_user]
+    assess --> analyzeRepo[analyze_repositories\nrepo loop, no LLM]
+    analyzeRepo -- pending repository --> analyzeItem[analyze_repositories_item\nLLM x1 per node]
+    analyzeItem -- more items in this repo --> analyzeItem
+    analyzeItem -- repo done --> analyzeRepo
+    analyzeRepo -- no pending repository --> interview[interview_user]
     interview -. interrupt: user_question .-> interview
     interview --> refine[refine_features\nLLM]
     refine --> nav[build_navigation_index]
@@ -100,7 +103,7 @@ flowchart TD
 - **LLM** — вызывается ли `claude`/`codex` через `_run_step_worker`/`_simple_llm_step`, и если да — какой
   reference-файл (`STEP_TO_REFERENCE`/`CHECKLIST_ITEM_TO_REFERENCE`) подмешивается в промпт поверх
   [SKILL.md](../../back/app/workflows/shared_assets/init_arch/SKILL.md); ссылка на сборку промпта —
-  всегда [`build_step_prompt()`](../../back/app/workflows/init_arch/prompts.py#L204).
+  всегда [`build_step_prompt()`](../../back/app/workflows/init_arch/prompts.py#L186).
 - **Файлы** — что физически появляется/меняется на диске (в `workspace_dir`/raw layer `.temp`/`arch_repo_dir`),
   а что — нет.
 - **В базе** — что дополнительно к общему паттерну (см. ниже) пишется в Postgres.
@@ -119,7 +122,7 @@ flowchart TD
    (fire-and-forget task) дублирует их в таблицу **`conversation_items`** — это то, что видно как лог/таймлайн
    выполнения по `session_id`.
 2. **`workflow_runs`** — после каждой ноды `_drive_graph_stream()` вызывает `apply_node_output()` +
-   `persist_workflow_record()` ([init_arch_workflow.py:106](../../back/app/services/init_arch_workflow.py#L106)),
+   `persist_workflow_record()` ([init_arch_workflow.py:107](../../back/app/services/init_arch_workflow.py#L107)),
    который делает `upsert_workflow_run()` — целиком перезаписывает сериализованный `WorkflowRecord`, включая
    весь `session` (репозитории, artifacts, historical state, open questions), `current_step_id`,
    `pending_interrupt`. Это canonical source of truth о состоянии workflow.
@@ -138,7 +141,7 @@ stdout, stderr, exit_code — с маскированием секретов и 
 
 ### 1. `define_scope` — не LLM
 
-**Что делает** ([nodes.py:117](../../back/app/workflows/init_arch/nodes.py#L117)): инициализирует progress-файл
+**Что делает** ([nodes.py:125](../../back/app/workflows/init_arch/nodes.py#L125)): инициализирует progress-файл
 (`guard_service.init_progress`), затем `advance_step` на `request_repository_list`.
 
 **LLM**: нет (убрано). Изначально нода звала агента, но `product_name`/`analysis_scope`/`repo_list` уже
@@ -174,7 +177,7 @@ stdout, stderr, exit_code — с маскированием секретов и 
 
 ### 2. `request_repository_list` — не LLM, ⏸ interrupt
 
-**Что делает** ([nodes.py:157](../../back/app/workflows/init_arch/nodes.py#L157)): если `session.repositories`
+**Что делает** ([nodes.py:164](../../back/app/workflows/init_arch/nodes.py#L164)): если `session.repositories`
 уже заполнен — просто `advance_step` на `prepare_temp_workspace`; если нет —
 `interrupt({"interrupt_type": "user_input", "field": "repo_list", "question": "..."})`.
 
@@ -183,7 +186,7 @@ stdout, stderr, exit_code — с маскированием секретов и 
 **Файлы**: нет.
 
 **В базе**: если пауза — только `WORKFLOW_STEP_STARTED` (без `COMPLETED`), но `persist_workflow_record()` всё
-равно вызывается сразу после `apply_interrupt()` ([init_arch_workflow.py:747-748](../../back/app/services/init_arch_workflow.py#L747-L748))
+равно вызывается сразу после `apply_interrupt()` ([init_arch_workflow.py:748-749](../../back/app/services/init_arch_workflow.py#L748-L749))
 — так что `pending_interrupt` и текущее состояние `session` уже лежат в `workflow_runs` до получения ответа
 от пользователя (иначе `resume` после рестарта сервиса был бы невозможен).
 
@@ -208,15 +211,16 @@ audit `WORKFLOW_STEP_STARTED` без `WORKFLOW_STEP_COMPLETED` (граф про�
 
 ### 3. `prepare_temp_workspace` — не LLM
 
-**Что делает** ([nodes.py:241](../../back/app/workflows/init_arch/nodes.py#L241)): детерминированно создаёт на
-диске `workspace_dir`, `raw_workspace_dir` и `arch_repo_dir` через
-`pathlib.Path(...).mkdir(parents=True, exist_ok=True)` ([nodes.py:233](../../back/app/workflows/init_arch/nodes.py#L233))
-и сразу `advance_step` на `CLONE_REPOSITORIES`.
+**Что делает** ([nodes.py:248](../../back/app/workflows/init_arch/nodes.py#L248)): детерминированно создаёт на
+диске `workspace_dir`, `raw_workspace_dir` и `arch_repo_dir` через хелпер `_prepare_workspace_directories()`
+([nodes.py:240-245](../../back/app/workflows/init_arch/nodes.py#L240-L245)), который вызывает
+`pathlib.Path(...).mkdir(parents=True, exist_ok=True)` на каждую директорию, и сразу `advance_step` на
+`CLONE_REPOSITORIES`.
 
 **LLM**: нет. Раньше это был `_simple_llm_step`, который просил CLI-агента выполнить те же `mkdir` внутри
 контейнера — чистое файловое действие без какого-либо reasoning, поэтому шаг переведён на прямой Python-вызов
 по аналогии с `refresh_main_branches`/`plan_repository_order` (см. `uses_llm_worker=False` в
-[steps.py](../../back/app/workflows/init_arch/domain/steps.py#L27)). Промпт для этого шага больше не строится.
+[steps.py](../../back/app/workflows/init_arch/domain/steps.py#L30)). Промпт для этого шага больше не строится.
 
 **Файлы**: сервис сам создаёт каталоги — `_resolve_init_arch_paths()`
 ([init_arch_workflow.py](../../back/app/services/init_arch_workflow.py)) резолвит и валидирует пути ещё на
@@ -245,32 +249,60 @@ audit `WORKFLOW_STEP_STARTED` без `WORKFLOW_STEP_COMPLETED` (граф про�
 
 ---
 
-### 4. `clone_repositories` — LLM
+### 4. `clone_repositories` — не LLM
 
-**Что делает** ([nodes.py:274](../../back/app/workflows/init_arch/nodes.py#L274)): `_simple_llm_step` просит
-агента выполнить `git clone <url> <путь>` для каждого репозитория из списка.
+**Что делает** ([nodes.py](../../back/app/workflows/init_arch/nodes.py)): для каждого репозитория из
+`session.repositories` детерминированно вызывает `git clone <url> {raw_workspace_dir}/<repository_name>`
+через `asyncio.create_subprocess_exec` (см. `_run_git_clone`/`_clone_repositories`). Раньше это был
+`_simple_llm_step`, который просил CLI-агента выполнить тот же `git clone` внутри контейнера — чистая
+shell-команда без reasoning, поэтому шаг переведён на прямой Python-вызов по аналогии с
+`prepare_temp_workspace`/`refresh_main_branches`/`plan_repository_order` (`uses_llm_worker=False` в
+[steps.py](../../back/app/workflows/init_arch/domain/steps.py#L36)). Промпт для этого шага больше не
+строится — `build_step_prompt` больше не знает про `clone_repositories`.
 
-**LLM**: да. Reference не задан → [SKILL.md](../../back/app/workflows/shared_assets/init_arch/SKILL.md) +
-жёстко вшитая в промпт инструкция `git clone`
-([prompts.py:226-232](../../back/app/workflows/init_arch/prompts.py#L226-L232)) + список репозиториев.
-LLM здесь используется как исполнитель shell-команды внутри изолированного workspace — сервис сам `git clone`
-не делает.
+**LLM**: нет. Backend-процесс сам делает сетевой git-clone: у него уже есть рабочий credential-helper
+(`ensure_git_credentials_store()` из [git_credentials.py](../../back/app/services/git_credentials.py)) и
+доступ к SSH-ключу для `git@`/`ssh://` URL — тот же самый механизм, которым уже пользуется
+`check_git_access()`, и который раньше LLM-агент получал лишь потому, что наследовал `os.environ`
+backend-процесса. Никакой изоляции сети/credentials между backend и бывшим CLI-агентом не было — перевод
+на детерминированный вызов ничего не теряет.
+
+**Идемпотентность и граничные случаи** (то, что раньше решал агент "по смыслу", теперь явно закодировано в
+`_clone_repositories`):
+
+- Если `{target_path}/.git` уже существует — репозиторий считается склонированным, `git clone` не
+  запускается (safe retry/resume).
+- Если `repository_url` пуст: репозиторий обязан уже существовать локально по целевому пути — иначе это
+  явная ошибка (`ValueError`), а не тихий пропуск.
+- Если целевая директория существует, но невалидна как git-checkout (обрывок прошлого неудачного клона) —
+  она удаляется (`shutil.rmtree`) и клонирование повторяется с нуля.
+- Клон всегда полный (без `--depth`) — `refresh_main_branches`/`plan_repository_order` читают `created_at`
+  по первому коммиту и полный `git log`, shallow-clone сломал бы исторический анализ.
+- `repository_name` валидируется (`_validate_repository_name`): пустая строка, `.`/`..` и `/`/`\` внутри
+  имени отклоняются до построения пути на диске.
+- Ошибки git классифицируются через `classify_git_access_failure()` (`auth_failed`/`timeout`/`error`) и
+  попадают в текст `step_error`, чтобы пользователь в `required_action` видел причину, а не голый exit code.
+- Таймаут на один `git clone` — 300s (`_GIT_CLONE_TIMEOUT_SECONDS`).
 
 **Файлы**: полные checkout'ы репозиториев появляются в raw layer — `{raw_workspace_dir}/<repository_name>`
 (например `.temp/svc-a/`), по одному подкаталогу на репозиторий из `session.repositories`. Это единственная
 нода, где реально скачивается весь исходный код, с которым потом будет работать анализ.
 
-**В базе**: + `LLM_TASK_REQUESTED`/`COMPLETED`/`cli_tasks`, как и у любой LLM-ноды.
+**В базе**: только `WORKFLOW_STEP_STARTED`/`COMPLETED`/`FAILED` — без `LLM_TASK_*` и без записи в
+`cli_tasks`, как и у остальных не-LLM нод.
 
 **На выходе**: `session.current_step = REFRESH_MAIN_BRANCHES`.
 
-**При ошибке**: стандартный `_simple_llm_step` путь (см. выше).
+**При ошибке**: `try/except` вокруг `_clone_repositories`/`advance_step` → `step_error` → retry ≤3 →
+`handle_error` (тот же паттерн, что у `refresh_main_branches`).
 
 **Логи и что видит пользователь**: `logger.info("workflow.node.clone_repositories", ...)` + те же
-`WORKFLOW_STEP_*` события. Пример реального провала: агент не смог склонировать приватный репозиторий
-(нет доступа) → `llm_result`/exit code некорректны → исключение → `step_error = "..."` → после 3 попыток
-`WORKFLOW_STEP_FAILED(step_id=clone_repositories, error=...)` → граф уходит в `handle_error`, который
-приостанавливает workflow и ждёт решения пользователя — см. раздел про `handle_error` ниже.
+`WORKFLOW_STEP_*` события; `cli_output` для этого шага не публикуется, т.к. CLI-агент не запускается.
+Пример реального провала: не удалось склонировать приватный репозиторий (нет доступа) → `git clone`
+завершается ненулевым кодом → `RuntimeError("git clone failed for ... (auth_failed): ...")` → `step_error`
+→ после 3 попыток `WORKFLOW_STEP_FAILED(step_id=clone_repositories, error=...)` → граф уходит в
+`handle_error`, который приостанавливает workflow и ждёт решения пользователя — см. раздел про
+`handle_error` ниже.
 
 **Зачем (по-человечески)**: получить реальный исходный код репозиториев локально — без него анализировать
 физически нечего, все последующие шаги (git log, чтение файлов, построение diff) работают именно с этими
@@ -280,7 +312,7 @@ checkout'ами.
 
 ### 5. `refresh_main_branches` — не LLM
 
-**Что делает** ([nodes.py:283](../../back/app/workflows/init_arch/nodes.py#L283)):
+**Что делает** ([nodes.py:381](../../back/app/workflows/init_arch/nodes.py#L381)):
 `historical_service.refresh_main_branches(...)` — детерминированный git fetch/read main branch, remote HEAD,
 `created_at` по каждому репозиторию.
 
@@ -312,7 +344,7 @@ Working tree остаётся на том же коммите, на которо
 
 ### 6. `plan_repository_order` — не LLM
 
-**Что делает** ([nodes.py:320](../../back/app/workflows/init_arch/nodes.py#L320)):
+**Что делает** ([nodes.py:418](../../back/app/workflows/init_arch/nodes.py#L418)):
 `historical_service.plan_repository_order(...)` (выбор anchor-репозитория, snapshot date, порядок обхода) +
 `resolve_target_commits(..., checkout=True)` (резолв target-коммитов под дату и checkout).
 
@@ -349,58 +381,108 @@ Working tree остаётся на том же коммите, на которо
 
 ---
 
-### 7. `assess_scope_and_domains` — LLM
+### 7. `assess_scope_and_domains` — LLM (несколько вызовов подряд, по одному на репозиторий)
 
-**Что делает** ([nodes.py:359](../../back/app/workflows/init_arch/nodes.py#L359)): `_simple_llm_step` просит
-агента разбить репозитории на домены/модули (`DomainDefinition`).
+**Что делает** ([nodes.py:474](../../back/app/workflows/init_arch/nodes.py#L474)): для каждого репозитория
+из `session.repositories` — `start_repository` (только чтобы `build_step_prompt()` корректно определил
+"текущий репозиторий") → отдельный LLM-вызов → `_require_domain_assessment(...)`
+([nodes.py:461](../../back/app/workflows/init_arch/nodes.py#L461)) достаёт структурный
+`domain_assessment` из ответа или роняет `DomainOperationError` → `guard_service.assess_repository_domains(...)`
+записывает результат в `session`. После цикла — `_require_domain_assessment_complete(...)`
+([nodes.py:468](../../back/app/workflows/init_arch/nodes.py#L468)) как финальная защитная проверка →
+`knowledge_service.write_domain_map(...)` → `advance_step` на `ANALYZE_REPOSITORIES`.
 
-**LLM**: да. Reference: [checklist-scope-and-domain-assessment.md](../../back/app/workflows/shared_assets/init_arch/references/checklist-scope-and-domain-assessment.md)
-([prompts.py:24](../../back/app/workflows/init_arch/prompts.py#L24)). Нужен LLM для смыслового разбиения
-кодовой базы на домены — требует понимания структуры и назначения кода.
+**LLM**: да, per repository. Reference: [checklist-scope-and-domain-assessment.md](../../back/app/workflows/shared_assets/init_arch/references/checklist-scope-and-domain-assessment.md)
+([prompts.py:22](../../back/app/workflows/init_arch/prompts.py#L22)). Нужен LLM для смыслового разбиения
+кодовой базы на домены — требует понимания структуры и назначения кода. В отличие от остальных LLM-шагов, у
+этого есть дополнительный top-level ключ в JSON-контракте — `domain_assessment` (`volume_class`/`strategy`/
+`domains`), подмешивается в эпилог промпта только для этого шага
+(`_DOMAIN_ASSESSMENT_CONTRACT_BLOCK`, [prompts.py](../../back/app/workflows/init_arch/prompts.py)).
 
-**Файлы**: агент может писать в `arch_repo_dir` по общей инструкции промпта (`"Все knowledge-артефакты и
-synthesis-результаты пиши только в {arch_repo_dir}"`), но **находка**: `node_assess_scope_and_domains` не
-вызывает `knowledge_service.collect_worker_artifacts(...)`, в отличие от `refine_features`/`interview_user`/
-`generate_release_notes` — то есть если агент что-то реально запишет на этом шаге, оно не попадёт в
-`session.artifacts` и не получит audit `ARTIFACT_WRITTEN`. Более того, сами структурированные результаты
-разбиения на домены (`repositories[*].domain_strategy`/`.domains` в `RepositoryExecution`) нигде в коде не
-заполняются — ни один модуль не пишет в эти поля. Reference-чеклист шага говорит, что результат должен
-храниться в `domain_map` ([checklist-scope-and-domain-assessment.md:5](../../back/app/workflows/shared_assets/init_arch/references/checklist-scope-and-domain-assessment.md#L5))
-— это терминология legacy standalone CLI (`analysis_guard.py`), а не текущей backend-модели; в
-service-owned workflow результат этого шага фактически нигде структурно не сохраняется, только в
-собственном тексте/файлах агента (если он их пишет) и в стенограмме диалога.
+**Файлы**: агент может писать в `arch_repo_dir` по общей инструкции промпта, но структурный результат (объём
+и домены) сюда не относится — он идёт через `domain_assessment` в JSON, а не через файлы. Единственный файл,
+который реально пишется на этом шаге, — `architecture/domain-map.yaml`, и пишет его **backend
+детерминированно**, а не агент: `KnowledgeArtifactService.write_domain_map(...)`
+([knowledge.py:171](../../back/app/workflows/init_arch/knowledge.py#L171)) сериализует уже накопленный
+`session.repositories[*].volume_class/.domain_strategy/.domains` через `yaml.safe_dump(...)` после цикла по
+всем репозиториям — тем же путём, что `compile_navigation()` пишет `wiki/index.md` (нода 11). Этот вызов
+регистрирует артефакт через `collect_worker_artifacts`-эквивалент (`_register_artifacts`), так что здесь,
+в отличие от `analyze_repositories`/`validate_final`, `ARTIFACT_WRITTEN` реально эмитится.
 
-**В базе**: + `LLM_TASK_*`/`cli_tasks`, без `ARTIFACT_WRITTEN`.
+**В базе**: `LLM_TASK_*`/`cli_tasks` на каждый репозиторий (аналогично `analyze_repositories`, но без
+диффа по checklist item — один вызов на repository) + `GUARD_COMMAND_REQUESTED`/`APPLIED(command="domain_assess")`
+на каждый репозиторий + `ARTIFACT_WRITTEN(architecture/domain-map.yaml)` один раз в конце.
 
-**На выходе**: `session.current_step = ANALYZE_REPOSITORIES`; поля `domain_strategy`/`domains` формально
-существуют в модели, но фактически остаются пустыми (см. «Файлы» выше).
+**На выходе**: `session.current_step = ANALYZE_REPOSITORIES`; по каждому репозиторию заполнены
+`volume_class`/`domain_strategy`/`domains` в `RepositoryExecution`; `architecture/domain-map.yaml` создан и
+зарегистрирован в `session.artifacts`.
 
-**При ошибке**: стандартный `_simple_llm_step` путь.
+**При ошибке**: один `try/except` вокруг всего цикла по репозиториям в рамках **одного** физического узла (в
+отличие от ноды 8, где цикл поднят в граф — см. ниже) — падение на любом репозитории (включая
+`DomainOperationError` от `_require_domain_assessment`, если LLM не вернул `domain_assessment`) уводит узел в
+`step_error`. **Retry здесь идемпотентен на уровне репозитория, но не на уровне графового чекпоинта**:
+except-ветка возвращает `session` с уже накопленным прогрессом (а не только `step_error`/
+`retry_count`, как в большинстве остальных нод), поэтому `apply_node_output()` фиксирует его в graph state
+ещё до следующей попытки. При повторном заходе цикл пропускает репозитории, у которых
+`domain_strategy is not None` (уже провалидированы в предыдущей попытке — `if repository.domain_strategy is
+not None: continue`), и заново обращается к LLM только для того репозитория, на котором реально упало.
+Это осознанный quality gate: шаг не может продвинуться на `ANALYZE_REPOSITORIES`, пока каждый репозиторий не
+получил структурный assessment — раньше (до этой доработки) шаг проходил дальше молча, даже если LLM ничего
+структурного не вернул.
 
 **Логи и что видит пользователь**: те же `WORKFLOW_STEP_*` события; примечательно, что этот шаг требует
-`requires_historical_prep=True` ([steps.py:53](../../back/app/workflows/init_arch/domain/steps.py#L53)) —
-если historical prep неполный, сюда вообще не попадём (см. ноду 6).
+`requires_historical_prep=True` ([steps.py:54](../../back/app/workflows/init_arch/domain/steps.py#L54)) —
+если historical prep неполный, сюда вообще не попадём (см. ноду 6). Пример реального провала: агент вернул
+JSON без поля `domain_assessment` (забыл про него в отчёте) → `_require_domain_assessment` роняет
+`DomainOperationError("missing domain assessment for repository ...")` → после 3 попыток
+`WORKFLOW_STEP_FAILED` → `handle_error`.
 
-**Зачем (по-человечески)**: по замыслу — решить, насколько крупный репозиторий и есть ли в нём выраженные
-бизнес-домены, чтобы на следующем шаге анализировать его либо целиком, либо домен за доменом. По факту, из-за
-находки выше, это решение сейчас остаётся "в голове" у агента и в его тексте, а не в структурированном
-состоянии, которое использовалось бы дальше по графу.
+**Зачем (по-человечески)**: решить, насколько крупный репозиторий и есть ли в нём выраженные бизнес-домены,
+чтобы на следующем шаге анализировать его либо целиком, либо домен за доменом — и, в отличие от более ранней
+версии этого шага, результат этого решения реально сохраняется структурно (в `session` и в
+`architecture/domain-map.yaml`), а не растворяется в тексте одного LLM-ответа. Подробный план этой доработки
+и мини-отчёты по каждой фазе — [2026-07-21-assess-scope-domain-persistence.md](../spec/2026-07-21-assess-scope-domain-persistence.md).
 
 ---
 
-### 8. `analyze_repositories` — LLM (несколько вызовов подряд), самый тяжёлый узел
+### 8. `analyze_repositories` / `analyze_repositories_item` — два физических узла графа, самый тяжёлый шаг
 
-**Что делает** ([nodes.py:368](../../back/app/workflows/init_arch/nodes.py#L368)): для каждого репозитория —
-`start_repository` → `route_checklist_items(...)` (детерминированно выбирает релевантные пункты чеклиста по
-diff severity, без LLM) → на **каждый** выбранный пункт отдельный LLM-вызов
-(`task_kind=REPOSITORY_CHECKLIST_ITEM`) → `complete_repository_item` → если найдены open questions —
-`register_open_questions` → в конце `complete_repository`; после всех репозиториев — `sync_open_questions` и
-`advance_step` на `interview_user`.
+Логически это один шаг (`StepId.ANALYZE_REPOSITORIES`, одна запись в `completed_steps`), но физически в графе
+он расщеплён на два узла с собственным self-loop/loop-back поверх conditional edges — по тому же паттерну,
+что уже применяется для `confirm_next_temporal_window`/`refresh_main_branches`. Причина и полная история
+реализации (три фазы, интеграционные тесты через реальный `compile_graph()`/`MemorySaver`) —
+[2026-07-21-analyze-repositories-per-item-nodes.md](../spec/2026-07-21-analyze-repositories-per-item-nodes.md).
+До этого расщепления весь цикл «репозитории × пункты чеклиста» жил внутри одного Python-цикла одной ноды —
+persist (Postgres-чекпоинтер + YAML progress-снепшот) срабатывает только на границах физических узлов графа
+(`_drive_graph_stream()` в `init_arch_workflow.py`), поэтому падение на 5-м пункте 2-го репозитория откатывало
+**весь** шаг, а не только незавершённый пункт.
+
+**`analyze_repositories`** ([nodes.py](../../back/app/workflows/init_arch/nodes.py), repo-loop entry, без LLM):
+находит `next_pending_repository(session)` — первый репозиторий с `analysis_status != "completed"`. Если
+такого нет — синхронизирует `open_questions` (если есть) и `advance_step` на `interview_user`. Если найден и
+его `analysis_status == "pending"` — вызывает `start_repository` (помечает `in_progress`) и возвращает
+`session` без advance; граф идёт дальше в `analyze_repositories_item`. Если репозиторий уже `in_progress`
+(резюме после падения item-ноды) — `start_repository` повторно **не** вызывается.
+
+**`analyze_repositories_item`** (обрабатывает ровно один пункт чеклиста текущего `in_progress` репозитория):
+`route_checklist_items(...)` (детерминированно, без LLM, по diff severity) минус уже
+`checklist_items_completed` → если пункт есть — один LLM-вызов (`task_kind=REPOSITORY_CHECKLIST_ITEM`) →
+`complete_repository_item` → если найдены open questions — `register_open_questions`. Если пунктов не
+осталось — `complete_repository` (помечает `analysis_status = "completed"`) без LLM-вызова. После каждого
+исполнения узел возвращает управление графу — а значит, Postgres-чекпоинт и YAML-снепшот фиксируют прогресс
+**по одному пункту**, а не по всему шагу целиком.
 
 **LLM**: да, per checklist item. Своего единого reference у шага нет (`STEP_TO_REFERENCE["analyze_repositories"] = ""`);
 вместо этого на каждый пункт подставляется свой файл через
-[`CHECKLIST_ITEM_TO_REFERENCE`](../../back/app/workflows/init_arch/prompts.py#L36-L58)
-(см. подстановку в [prompts.py:207-208](../../back/app/workflows/init_arch/prompts.py#L207-L208)):
+[`CHECKLIST_ITEM_TO_REFERENCE`](../../back/app/workflows/init_arch/prompts.py#L33-L55)
+(см. подстановку в [prompts.py:189-191](../../back/app/workflows/init_arch/prompts.py#L189-L191)). Кроме
+чеклист-референса, промпт этого шага (и только этого шага) содержит отдельную секцию «Домены репозитория»
+(`_build_domain_context_block()`) с результатом ноды 7 — `volume_class`/`strategy`/`domains` текущего
+репозитория, плюс строка в инструкциях просить агента не пере-открывать домены через `find`/`ls`, а
+использовать уже показанные. **Осознанное ограничение**: это только контекст для агента —
+`route_checklist_items(...)` (детерминированный роутер ниже) домены не учитывает вообще, его решения
+по-прежнему чисто path/diff-based; связывать домены с выбором чеклист-пунктов — отдельная, ещё не принятая
+архитектурная задача (см. [2026-07-21-assess-scope-domain-persistence.md](../spec/2026-07-21-assess-scope-domain-persistence.md), Фаза 6).
 
 | checklist item | reference |
 |---|---|
@@ -424,31 +506,41 @@ diff severity, без LLM) → на **каждый** выбранный пунк
 **Файлы**: это основной "пишущий" шаг всего workflow — агент реально читает код в raw layer и пишет находки
 в `arch_repo_dir` (какие именно файлы — зависит от routed checklist item: `features/*.md`,
 `architecture/*.md`, `architecture/contracts/*`, `architecture/storage/*.yml` и т.д., см. reference-таблицу
-выше). **Находка, аналогичная ноде 7**: `node_analyze_repositories` тоже не вызывает
-`collect_worker_artifacts(...)` ни разу за весь цикл — файлы, которые агент пишет здесь, физически
-появляются на диске, но не регистрируются в `session.artifacts`/audit `ARTIFACT_WRITTEN`. Единственное, что
-регистрируется структурно — `checklist_items_completed` (какие пункты прошли) и `open_questions` (если
-агент вернул `open_questions_found` в JSON-контракте).
+выше). **Находка**: `node_analyze_repositories_item` не вызывает `collect_worker_artifacts(...)` ни разу —
+файлы, которые агент пишет здесь, физически появляются на диске, но не регистрируются в
+`session.artifacts`/audit `ARTIFACT_WRITTEN`. Единственное, что регистрируется структурно —
+`checklist_items_completed` (какие пункты прошли) и `open_questions` (если агент вернул
+`open_questions_found` в JSON-контракте). В отличие от ноды 7, где артефакт (`architecture/domain-map.yaml`)
+теперь пишет и регистрирует сам backend, здесь такого детерминированного пути нет — весь вывод целиком в
+руках агента.
 
-**В базе**: `DIFF_SIGNAL_ROUTED` на каждый репозиторий (routing-решение) + `LLM_TASK_*`/`cli_tasks` на
+**В базе**: `DIFF_SIGNAL_ROUTED` на каждый репозиторий (routing-решение, эмитится из
+`analyze_repositories_item` перед LLM-вызовом на первый найденный пункт) + `LLM_TASK_*`/`cli_tasks` на
 **каждый** пункт чеклиста отдельно — на репозиторий с полным чеклистом это может быть 15-17 отдельных
-LLM-вызовов, каждый со своей строкой в `cli_tasks`.
+LLM-вызовов, каждый со своей строкой в `cli_tasks`, и каждый — в отдельном физическом узле графа со своим
+Postgres-чекпоинтом.
 
-**На выходе**: `session.current_step = INTERVIEW_USER`; по каждому репозиторию —
-`checklist_items_completed`, `analysis_status = "completed"`, новые `open_questions` (если найдены).
-Файлы в `arch_repo_dir` уже написаны агентом, но в `session.artifacts` не отражены (см. «Файлы» выше).
+**На выходе**: `session.current_step = INTERVIEW_USER` (выставляется только `analyze_repositories`, когда
+`next_pending_repository(session)` возвращает `None`); по каждому репозиторию — `checklist_items_completed`,
+`analysis_status = "completed"`, новые `open_questions` (если найдены). Файлы в `arch_repo_dir` уже написаны
+агентом, но в `session.artifacts` не отражены (см. «Файлы» выше).
 
-**При ошибке**: один общий `try/except` вокруг всего цикла по всем репозиториям и всем пунктам чеклиста —
-если упадёт LLM-вызов на любом пункте любого репозитория, весь узел считается failed
-(`step_error`), а не только этот конкретный пункт; retry ≤3 повторяет **весь** узел заново (включая уже
-пройденные репозитории/пункты, если session state не сохранил частичный прогресс на диске — стоит явно
-проверить идемпотентность при реальном прогоне).
+**При ошибке**: у каждого из двух узлов свой `try/except` и свой retry-бюджет (≤3), полностью независимый от
+соседних пунктов/репозиториев — так как один физический узел = один пункт чеклиста одного репозитория, а не
+весь шаг целиком. Падение на LLM-вызове одного пункта уводит в `step_error` только этот пункт: соседние
+пункты/репозитории, для которых `complete_repository_item`/`complete_repository` уже отработали, зафиксированы
+в предыдущих чекпоинтах и **не** переигрываются при retry или при рестарте процесса (Postgres-чекпоинтер и
+YAML-снепшот уже содержат их прогресс — оба узла на каждом входе заново вычисляют «что осталось» через
+`next_pending_repository`/`next_pending_checklist_item`, а не хранят отдельную in-memory очередь). Подтверждено
+интеграционными тестами через реальный `compile_graph()`/`MemorySaver` — см. спеку выше.
 
 **Логи и что видит пользователь**: на каждый репозиторий — audit `DIFF_SIGNAL_ROUTED`
 (`diff_severity`, `routed_items`, `total_items`); пользователю в UI имеет смысл показывать прогресс
-"репозиторий N из M, пункт K из routed". Пример реальной ошибки: агент вернул невалидный JSON
-(не соответствует `LlmTaskResult`-контракту) → парсинг падает → `step_error` → после исчерпания retry
-пользователь видит карточку `step_failed` с текстом ошибки парсинга и может нажать «Повторить», не теряя
+"репозиторий N из M, пункт K из routed" — теперь это буквально соответствует физическому прогрессу по узлам
+графа, а не только логическому счётчику внутри одной ноды. Пример реальной ошибки: агент вернул невалидный
+JSON (не соответствует `LlmTaskResult`-контракту) → парсинг падает → `step_error` на этом пункте → после
+исчерпания retry пользователь видит карточку `step_failed` с текстом ошибки парсинга и может нажать
+«Повторить», не теряя
 уже пройденные репозитории/пункты чеклиста (см. раздел про `handle_error`).
 
 **Зачем (по-человечески)**: это и есть сам анализ — по каждому релевантному аспекту (структура кода, API,
@@ -460,14 +552,14 @@ LLM-вызовов, каждый со своей строкой в `cli_tasks`.
 
 ### 9. `interview_user` — LLM внутри цикла, ⏸ interrupt
 
-**Что делает** ([nodes.py:465](../../back/app/workflows/init_arch/nodes.py#L465)): `while True` по открытым
+**Что делает** ([nodes.py:563](../../back/app/workflows/init_arch/nodes.py#L563)): `while True` по открытым
 `open_questions`: если вопросов нет — `advance_step` на `refine_features`; иначе `interrupt(...)` с текущим
 вопросом → на resume `record_user_answer` → LLM reconciliation → `collect_worker_artifacts` →
 `close_user_question` → `sync_open_questions` → следующая итерация.
 
 **LLM**: да, `task_kind=INTERVIEW_RECONCILIATION`. Reference:
 [checklist-glossary-and-open-questions.md](../../back/app/workflows/shared_assets/init_arch/references/checklist-glossary-and-open-questions.md)
-([prompts.py:26](../../back/app/workflows/init_arch/prompts.py#L26)). Нужен LLM, чтобы интерпретировать
+([prompts.py:24](../../back/app/workflows/init_arch/prompts.py#L24)). Нужен LLM, чтобы интерпретировать
 свободный ответ пользователя и обновить knowledge-артефакты соответствующим образом.
 
 **Файлы**: `arch_repo_dir/open-questions.md` **перезаписывается целиком** на каждой итерации
@@ -499,12 +591,12 @@ LLM-вызовов, каждый со своей строкой в `cli_tasks`.
 
 ### 10. `refine_features` — LLM
 
-**Что делает** ([nodes.py:551](../../back/app/workflows/init_arch/nodes.py#L551)):
+**Что делает** ([nodes.py:649](../../back/app/workflows/init_arch/nodes.py#L649)):
 `knowledge_service.bootstrap_arch_repo` (детерминированно создаёт скелет `features/`, `architecture/`,
 `wiki/`) → LLM пишет/уточняет фичи → `collect_worker_artifacts` фиксирует созданные файлы.
 
 **LLM**: да. Reference: [checklist-features-and-index.md](../../back/app/workflows/shared_assets/init_arch/references/checklist-features-and-index.md)
-([prompts.py:27](../../back/app/workflows/init_arch/prompts.py#L27)). Нужен для синтеза текстовых
+([prompts.py:25](../../back/app/workflows/init_arch/prompts.py#L25)). Нужен для синтеза текстовых
 артефактов фич из собранных находок.
 
 **Файлы**: `bootstrap_arch_repo()` ([knowledge.py:85](../../back/app/workflows/init_arch/knowledge.py#L85))
@@ -534,13 +626,13 @@ LLM-вызовов, каждый со своей строкой в `cli_tasks`.
 
 ### 11. `build_navigation_index` — не LLM
 
-**Что делает** ([nodes.py:598](../../back/app/workflows/init_arch/nodes.py#L598)):
+**Что делает** ([nodes.py:696](../../back/app/workflows/init_arch/nodes.py#L696)):
 `knowledge_service.compile_navigation(...)` — механическая сборка `wiki/index.md` и
 `wiki/maps/compile-report.md` по уже написанным файлам.
 
 **LLM**: нет. Хотя в `STEP_TO_REFERENCE` для этого шага числится
 [knowledge-workflow.md](../../back/app/workflows/shared_assets/init_arch/references/knowledge-workflow.md)
-([prompts.py:28](../../back/app/workflows/init_arch/prompts.py#L28)) — это мёртвая запись, промпт для этой
+([prompts.py:26](../../back/app/workflows/init_arch/prompts.py#L26)) — это мёртвая запись, промпт для этой
 ноды никогда не строится, т.к. `_run_step_worker` тут не вызывается вовсе. Стоит либо убрать эту строку из
 словаря, либо (если по замыслу здесь должен быть LLM-шаг) добавить вызов.
 
@@ -564,7 +656,7 @@ LLM-вызовов, каждый со своей строкой в `cli_tasks`.
 
 ### 12. `run_knowledge_lint` — не LLM
 
-**Что делает** ([nodes.py:635](../../back/app/workflows/init_arch/nodes.py#L635)):
+**Что делает** ([nodes.py:733](../../back/app/workflows/init_arch/nodes.py#L733)):
 `knowledge_service.lint_knowledge(...)` — формальные структурные проверки knowledge-слоя (residue от
 шаблонов, обязательные файлы, контракты OpenAPI/AsyncAPI, консистентность commit между landscape и structure
 — см. [init.md → Knowledge Pipeline Gates](init.md#knowledge-pipeline-gates)).
@@ -600,13 +692,13 @@ OpenAPI/AsyncAPI, консистентность commit между landscape и 
 
 ### 13. `validate_final` — LLM (несмотря на `uses_llm_worker=False` в декларации шага)
 
-**Что делает** ([nodes.py:672](../../back/app/workflows/init_arch/nodes.py#L672)): `_simple_llm_step` —
+**Что делает** ([nodes.py:770](../../back/app/workflows/init_arch/nodes.py#L770)): `_simple_llm_step` —
 просит агента выполнить финальную ревизию консистентности knowledge-слоя.
 
 **LLM**: да, фактически. Reference:
 [checklist-repository-consistency-review.md](../../back/app/workflows/shared_assets/init_arch/references/checklist-repository-consistency-review.md)
-([prompts.py:30](../../back/app/workflows/init_arch/prompts.py#L30)). **Несостыковка**: в
-[steps.py:87](../../back/app/workflows/init_arch/domain/steps.py#L87) шаг объявлен как
+([prompts.py:28](../../back/app/workflows/init_arch/prompts.py#L28)). **Несостыковка**: в
+[steps.py:88](../../back/app/workflows/init_arch/domain/steps.py#L88) шаг объявлен как
 `uses_llm_worker=False`, но `node_validate_final` жёстко вызывает `_simple_llm_step`, которая всегда зовёт
 `_run_step_worker`. Похоже, поле `uses_llm_worker` в `StepDefinition` сейчас не влияет на реальное
 поведение ноды (просто метаданные/декларация) — стоит либо синхронизировать флаг, либо перепроверить, где
@@ -633,12 +725,12 @@ OpenAPI/AsyncAPI, консистентность commit между landscape и 
 
 ### 14. `generate_release_notes` — LLM
 
-**Что делает** ([nodes.py:681](../../back/app/workflows/init_arch/nodes.py#L681)): зовёт агента с
+**Что делает** ([nodes.py:779](../../back/app/workflows/init_arch/nodes.py#L779)): зовёт агента с
 контекстным блоком release notes (`_build_release_notes_context_block`, temporal delta текущего окна) →
 `collect_worker_artifacts` → `advance_step`.
 
 **LLM**: да. Reference: [checklist-release-notes.md](../../back/app/workflows/shared_assets/init_arch/references/checklist-release-notes.md)
-([prompts.py:31](../../back/app/workflows/init_arch/prompts.py#L31)). Нужен для генерации связного текста
+([prompts.py:29](../../back/app/workflows/init_arch/prompts.py#L29)). Нужен для генерации связного текста
 на основе диффов окна.
 
 **Файлы**: один новый файл с именем по строгому шаблону —
@@ -662,7 +754,7 @@ OpenAPI/AsyncAPI, консистентность commit между landscape и 
 
 ### 15. `confirm_next_temporal_window` — не LLM, ⏸ interrupt, единственная развилка вне error-петли
 
-**Что делает** ([nodes.py:741](../../back/app/workflows/init_arch/nodes.py#L741)):
+**Что делает** ([nodes.py:839](../../back/app/workflows/init_arch/nodes.py#L839)):
 `historical_service.compute_next_window(...)`; если следующего окна нет — сразу `advance_step` на
 `finalize_progress`; если есть — `interrupt({"interrupt_type": "temporal_window_confirmation", "next_snapshot_at": ...})`,
 на resume читает `action` (`continue_to_next_window` / `finish_temporal_analysis`). При `continue` — сбрасывает
@@ -694,7 +786,7 @@ interrupt-ноды — см. ноду 2).
 
 ### 16. `finalize_progress` — не LLM, terminal
 
-**Что делает** ([nodes.py:823](../../back/app/workflows/init_arch/nodes.py#L823)):
+**Что делает** ([nodes.py:921](../../back/app/workflows/init_arch/nodes.py#L921)):
 `guard_service.finalize_progress(...)` — закрывающая механика progress-файла/сессии.
 
 **LLM**: нет.
@@ -706,12 +798,12 @@ interrupt-ноды — см. ноду 2).
 
 **На выходе**: `session.status` фиксируется как завершённый; это последняя нода перед `END` (или
 `handle_error`, если и она сама упадёт после исчерпания retry — единственная нода с отдельным условным
-ребром вне общего `_route_after_node()`, `graph.py:99-103`).
+ребром вне общего `_route_after_node()`, `graph.py:105-108`).
 
 **При ошибке**: тот же `try/except` → `step_error` → retry ≤3 → `handle_error` → `END`.
 
 **Логи и что видит пользователь**: после этой ноды `run_workflow()` выставляет
-`WorkflowStatus.SUCCESS`/`FAILED` на верхнем уровне ([init_arch_workflow.py:779-784](../../back/app/services/init_arch_workflow.py#L779-L784)),
+`WorkflowStatus.SUCCESS`/`FAILED` на верхнем уровне ([init_arch_workflow.py:796-798](../../back/app/services/init_arch_workflow.py#L796-L798)),
 пользователь получает финальный SSE `{"event_type": "workflow_done", "workflow_status": "success"}`.
 
 **Зачем (по-человечески)**: формально закрыть workflow run — зафиксировать, что все данные собраны и сессия
@@ -721,7 +813,7 @@ interrupt-ноды — см. ноду 2).
 
 ## `handle_error` — не LLM, ⏸ interrupt, точка восстановления после отказа шага
 
-**Что делает** ([nodes.py:856](../../back/app/workflows/init_arch/nodes.py#L856)): логирует
+**Что делает** ([nodes.py:954](../../back/app/workflows/init_arch/nodes.py#L954)): логирует
 (`logger.error("workflow.node.error", step=..., error=..., retry_count=...)`), затем **сама делает паузу**:
 
 ```python
@@ -773,7 +865,7 @@ payload в `record.pending_interrupt` без единой правки в это
 
 Отдельный путь отказа — необработанное исключение вне графа (например, в `compile_graph`/`get_checkpointer`
 до первого `astream`): тогда `run_workflow()` ловит его собственным внешним `except Exception`
-([init_arch_workflow.py:793-797](../../back/app/services/init_arch_workflow.py#L793-L797)) и сразу ставит
+([init_arch_workflow.py:811-815](../../back/app/services/init_arch_workflow.py#L811-L815)) и сразу ставит
 `FAILED` + `error_message = str(exc)` — без прохода через `handle_error`/retry графа и без возможности
 retry вообще. Это по-прежнему единственный по-настоящему терминальный путь отказа; все отказы *внутри* графа
 (включая `request_repository_list`, у которой раньше не было своего `try/except`, — теперь исправлено) идут
@@ -841,24 +933,28 @@ as_node=as_node)` — это досоздаёт LangGraph checkpoint новог�
 1. `STEP_TO_REFERENCE["build_navigation_index"]` и `["run_knowledge_lint"]` указывают на
    [knowledge-workflow.md](../../back/app/workflows/shared_assets/init_arch/references/knowledge-workflow.md),
    но обе ноды никогда не вызывают LLM — файл фактически мёртвый в контексте промптов.
-2. `StepDefinition.uses_llm_worker=False` для `validate_final` ([steps.py:87](../../back/app/workflows/init_arch/domain/steps.py#L87))
+2. `StepDefinition.uses_llm_worker=False` для `validate_final` ([steps.py:88](../../back/app/workflows/init_arch/domain/steps.py#L88))
    не соответствует реальному коду ноды (`_simple_llm_step` всегда зовёт LLM). Поле, похоже, сейчас не
    является source of truth для поведения графа.
 3. `run_knowledge_lint` кодирует смысловой "lint failed" как обычное исключение — на уровне графа это
    неотличимо от инфраструктурного сбоя (сеть, таймаут CLI и т.д.), различие видно только в тексте
    `error_message`, который пользователь увидит в карточке `step_failed` перед тем, как решить —
    повторять или прерывать.
-4. Три LLM-ноды — `assess_scope_and_domains`, `analyze_repositories`, `validate_final` — не вызывают
+4. Две LLM-ноды — `analyze_repositories_item`, `validate_final` — не вызывают
    `knowledge_service.collect_worker_artifacts(...)`, в отличие от `refine_features`/`interview_user`/
-   `generate_release_notes`. Файлы, которые агент пишет в `arch_repo_dir` на этих трёх шагах, физически
+   `generate_release_notes`. Файлы, которые агент пишет в `arch_repo_dir` на этих шагах, физически
    появляются на диске, но не попадают в `session.artifacts` и не эмитят audit `ARTIFACT_WRITTEN` — то есть
    artifact-registry (то, на что опирается `wiki/index.md`/`compile-report.md` и общая наблюдаемость) не
-   полный.
-5. `RepositoryExecution.domain_strategy`/`.domains` — поля, которые по смыслу должен заполнять
-   `assess_scope_and_domains`, — ни разу не устанавливаются ни одним модулем backend'а. Reference-чеклист
-   шага говорит о `domain_map` ([checklist-scope-and-domain-assessment.md:5](../../back/app/workflows/shared_assets/init_arch/references/checklist-scope-and-domain-assessment.md#L5)) —
-   это терминология legacy standalone CLI (`analysis_guard.py`), не текущей backend-модели данных. Результат
-   разбиения на домены сейчас нигде структурно не сохраняется.
+   полный. `assess_scope_and_domains` больше не входит в этот список — там артефакт (`architecture/domain-map.yaml`)
+   пишет и регистрирует сам backend, а не агент (см. ноду 7 выше).
+5. ~~`RepositoryExecution.domain_strategy`/`.domains` нигде не заполняются~~ — исправлено: `assess_scope_and_domains`
+   теперь структурно сохраняет `volume_class`/`domain_strategy`/`domains` через `guard_service.assess_repository_domains(...)`
+   и пишет `architecture/domain-map.yaml`; `analyze_repositories` теперь тоже показывает эти поля агенту
+   (секция «Домены репозитория» в промпте, см. ноду 8 выше). Подробности —
+   [2026-07-21-assess-scope-domain-persistence.md](../spec/2026-07-21-assess-scope-domain-persistence.md).
+   Оставшееся более узкое расхождение: `route_checklist_items(...)` — детерминированный роутер чеклиста
+   внутри той же ноды — домены по-прежнему не учитывает, роутинг остаётся чисто path/diff-based; агент видит
+   домены как контекст, но структурно они на выбор чеклист-пунктов не влияют (см. Фазу 6 той же спеки).
 6. ~~`progress_file_path` не создаётся и не пишется~~ — исправлено: `_drive_graph_stream()` пишет
    YAML-снепшот на каждый шаг, а `resume_init_arch_from_snapshot` умеет по нему восстановить
    workflow на другой машине — см. раздел «Progress-снепшот `progress_file_path` и восстановление

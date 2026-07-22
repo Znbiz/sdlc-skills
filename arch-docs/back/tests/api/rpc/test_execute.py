@@ -4,7 +4,7 @@ import unittest.mock
 import httpx
 from fastapi import status
 
-from app.services.task_registry import TaskStatus, get_registry
+from app.services.task_registry import CliTask, TaskStatus, get_registry
 
 
 def _make_stream_reader(data: bytes) -> unittest.mock.MagicMock:
@@ -30,6 +30,26 @@ def _make_mock_process(returncode: int = 0, stdout: bytes = b"", stderr: bytes =
     mock_proc.kill = unittest.mock.MagicMock()
     mock_proc.wait = unittest.mock.AsyncMock(return_value=returncode)
     return mock_proc
+
+
+_TERMINAL_TASK_STATUSES = frozenset({TaskStatus.SUCCESS, TaskStatus.FAILED, TaskStatus.CANCELLED})
+
+
+async def _wait_for_task_completion(task_id: str, *, timeout_seconds: float = 2.0) -> CliTask:
+    """Poll the registry until the background task reaches a terminal status.
+
+    A fixed number of `asyncio.sleep(0)` yields is a race under any scheduler that
+    needs more (or fewer) turns than assumed to run `run_cli_task` to completion.
+    """
+    registry = get_registry()
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout_seconds
+    while loop.time() < deadline:
+        cli_task = registry[task_id]
+        if cli_task.task_status in _TERMINAL_TASK_STATUSES:
+            return cli_task
+        await asyncio.sleep(0.01)
+    return registry[task_id]
 
 
 class TestExecuteAuth:
@@ -117,7 +137,13 @@ class TestExecuteResponse:
         async_client: httpx.AsyncClient,
         auth_headers: dict[str, str],
     ) -> None:
-        mock_proc = _make_mock_process(returncode=0, stdout=b"generated result", stderr=b"")
+        # `claude --output-format stream-json` emits NDJSON; the answer lives in the `result`
+        # field of the `type: result` event (see `_extract_claude_result_text`).
+        mock_proc = _make_mock_process(
+            returncode=0,
+            stdout=b'{"type":"result","result":"generated result"}',
+            stderr=b"",
+        )
 
         with unittest.mock.patch("asyncio.create_subprocess_exec", return_value=mock_proc):
             response = await async_client.post(
@@ -127,12 +153,8 @@ class TestExecuteResponse:
             )
 
         task_id = response.json()["task_id"]
-        # Yield control to let background task finish
-        for _ in range(10):
-            await asyncio.sleep(0)
+        cli_task = await _wait_for_task_completion(task_id)
 
-        registry = get_registry()
-        cli_task = registry[task_id]
         assert cli_task.task_status == TaskStatus.SUCCESS
         assert cli_task.task_result == "generated result"
 
@@ -151,12 +173,10 @@ class TestExecuteResponse:
             )
 
         task_id = response.json()["task_id"]
-        for _ in range(10):
-            await asyncio.sleep(0)
+        cli_task = await _wait_for_task_completion(task_id)
 
-        registry = get_registry()
-        assert registry[task_id].task_status == TaskStatus.FAILED
-        assert registry[task_id].task_error == "command failed"
+        assert cli_task.task_status == TaskStatus.FAILED
+        assert cli_task.task_error == "command failed"
 
     async def test_background_task_detects_auth_error(
         self,
@@ -177,12 +197,10 @@ class TestExecuteResponse:
             )
 
         task_id = response.json()["task_id"]
-        for _ in range(10):
-            await asyncio.sleep(0)
+        cli_task = await _wait_for_task_completion(task_id)
 
-        registry = get_registry()
-        assert registry[task_id].task_status == TaskStatus.FAILED
-        assert "auth_expired" in registry[task_id].task_error
+        assert cli_task.task_status == TaskStatus.FAILED
+        assert "auth_expired" in cli_task.task_error
 
 
 class TestHealth:

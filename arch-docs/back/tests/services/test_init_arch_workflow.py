@@ -11,6 +11,7 @@ import pytest
 
 from app.services import init_arch_workflow as workflow_module
 from app.services.task_registry import CliTask, TaskStatus
+from app.services.workflow_event_bus import get_workflow_event_bus, reset_workflow_event_bus
 from app.services.workflow_registry import WorkflowRecord, WorkflowStatus, reset_workflow_registry
 from app.workflows.init_arch.domain import (
     OpenQuestionRecord,
@@ -23,8 +24,10 @@ from app.workflows.init_arch.domain import (
 @pytest.fixture(autouse=True)
 def clean_workflow_registry():
     reset_workflow_registry()
+    reset_workflow_event_bus()
     yield
     reset_workflow_registry()
+    reset_workflow_event_bus()
 
 
 async def test_get_workflow_record_async_returns_registry_hit():
@@ -253,6 +256,34 @@ def test_build_resume_value_supports_step_failed():
     assert resume_value == {"action": "abort"}
 
 
+async def test_submit_response_action_async_dispatches_pause():
+    record = WorkflowRecord(workflow_id="wf-pause-dispatch", workflow_status=WorkflowStatus.RUNNING)
+    workflow_module.get_workflow_registry()["wf-pause-dispatch"] = record
+
+    with (
+        patch("app.services.init_arch_workflow.pause_init_arch_workflow", new=AsyncMock()) as mock_pause,
+        patch("app.services.init_arch_workflow.get_response_async", new=AsyncMock(return_value={"ok": True})),
+    ):
+        result = await workflow_module.submit_response_action_async("wf-pause-dispatch", action_type="pause")
+
+    mock_pause.assert_awaited_once_with("wf-pause-dispatch")
+    assert result == {"ok": True}
+
+
+async def test_submit_response_action_async_dispatches_continue():
+    record = WorkflowRecord(workflow_id="wf-continue-dispatch", workflow_status=WorkflowStatus.PAUSED)
+    workflow_module.get_workflow_registry()["wf-continue-dispatch"] = record
+
+    with (
+        patch("app.services.init_arch_workflow.continue_init_arch_workflow", new=AsyncMock()) as mock_continue,
+        patch("app.services.init_arch_workflow.get_response_async", new=AsyncMock(return_value={"ok": True})),
+    ):
+        result = await workflow_module.submit_response_action_async("wf-continue-dispatch", action_type="continue")
+
+    mock_continue.assert_awaited_once_with("wf-continue-dispatch")
+    assert result == {"ok": True}
+
+
 async def test_submit_response_action_async_dispatches_retry():
     record = WorkflowRecord(
         workflow_id="wf-retry-dispatch",
@@ -472,6 +503,115 @@ async def test_stream_persisted_workflow_events_emits_cli_output_and_terminal_st
     assert any("step_started" in chunk for chunk in chunks)
     assert any("last line" in chunk for chunk in chunks)
     assert any("workflow_done" in chunk for chunk in chunks)
+
+
+def test_conversation_item_to_sse_payload_maps_actor_and_llm_event_types():
+    payload = workflow_module._conversation_item_to_sse_payload(
+        {
+            "item_kind": "llm_task_requested",
+            "actor": "llm_worker",
+            "step_id": "analyze_repositories",
+            "payload": {"llm_call_id": "call-1", "prompt_text": "do work"},
+        }
+    )
+
+    assert payload["event_type"] == "llm_call_started"
+    assert payload["actor"] == "llm"
+    assert payload["prompt_text"] == "do work"
+
+
+def test_conversation_item_to_sse_payload_step_transition_includes_label():
+    payload = workflow_module._conversation_item_to_sse_payload(
+        {
+            "item_kind": "step_transition",
+            "step_id": "analyze_repositories",
+            "payload": {"current_step_id": "analyze_repositories", "current_repo_name": "svc-a"},
+        }
+    )
+
+    assert payload == {
+        "event_type": "step_started",
+        "actor": "workflow",
+        "step_id": "analyze_repositories",
+        "step_label": "Анализ репозиториев",
+        "repo_name": "svc-a",
+    }
+
+
+def test_conversation_item_to_sse_payload_defaults_unknown_actor_to_workflow():
+    payload = workflow_module._conversation_item_to_sse_payload(
+        {"item_kind": "artifact_written", "payload": {"artifact_path": "features/x.md"}}
+    )
+
+    assert payload["actor"] == "workflow"
+    assert payload["event_type"] == "artifact_written"
+
+
+def test_terminal_event_for_status_reports_paused_with_step_meta():
+    record = WorkflowRecord(
+        workflow_id="wf-paused",
+        workflow_status=WorkflowStatus.PAUSED,
+        current_step_id="analyze_repositories",
+        current_repo_name="svc-a",
+    )
+
+    event = workflow_module._terminal_event_for_status(record)
+
+    assert event == {
+        "event_type": "workflow_paused",
+        "actor": "workflow",
+        "step_id": "analyze_repositories",
+        "step_label": "Анализ репозиториев",
+        "repo_name": "svc-a",
+    }
+
+
+async def test_stream_persisted_workflow_events_reports_paused_status():
+    record = WorkflowRecord(
+        workflow_id="wf-paused-replay",
+        workflow_status=WorkflowStatus.PAUSED,
+        current_step_id="interview_user",
+    )
+
+    with (
+        patch("app.services.init_arch_workflow.get_workflow_record_async", new=AsyncMock(return_value=record)),
+        patch("app.services.init_arch_workflow.list_workflow_events_async", new=AsyncMock(return_value=[])),
+    ):
+        chunks = [chunk async for chunk in workflow_module._stream_persisted_workflow_events("wf-paused-replay")]
+
+    assert any("workflow_paused" in chunk for chunk in chunks)
+
+
+async def test_stream_live_workflow_events_forwards_bus_events_before_terminal():
+    record = WorkflowRecord(
+        workflow_id="wf-live",
+        conversation_id="wf-live",
+        workflow_status=WorkflowStatus.RUNNING,
+        current_step_id="define_scope",
+    )
+    workflow_module.get_workflow_registry()["wf-live"] = record
+    bus = get_workflow_event_bus()
+
+    gen = workflow_module._stream_live_workflow_events("wf-live")
+    try:
+        first_chunk = await gen.__anext__()
+        assert '"event_type": "step_started"' in first_chunk
+        assert "define_scope" in first_chunk
+
+        bus.publish("wf-live", {"event_type": "llm_call_started", "actor": "llm", "prompt_text": "hi"})
+        second_chunk = await gen.__anext__()
+        assert '"event_type": "llm_call_started"' in second_chunk
+        assert '"prompt_text": "hi"' in second_chunk
+
+        record.workflow_status = WorkflowStatus.SUCCESS
+        remaining = [chunk async for chunk in gen]
+        assert any("workflow_done" in chunk for chunk in remaining)
+    finally:
+        await gen.aclose()
+
+    # generator's `finally: bus.unsubscribe(...)` must have run by now (loop `break` on
+    # workflow_done, or the `aclose()` above as a safety net) - no dangling queue left behind.
+    assert "wf-live" not in bus._subscribers
 
 
 async def test_stream_task_events_replays_persisted_task(monkeypatch):
@@ -1030,6 +1170,152 @@ async def test_cancel_init_arch_workflow_rejects_terminal_status():
 
     with pytest.raises(workflow_module.WorkflowConflictError, match="not cancellable"):
         await workflow_module.cancel_init_arch_workflow("wf-terminal")
+
+
+async def test_pause_init_arch_workflow_rejects_non_running_status():
+    record = WorkflowRecord(workflow_id="wf-not-running", workflow_status=WorkflowStatus.INTERRUPTED)
+    workflow_module.get_workflow_registry()["wf-not-running"] = record
+
+    with pytest.raises(workflow_module.WorkflowConflictError, match="not pausable"):
+        await workflow_module.pause_init_arch_workflow("wf-not-running")
+
+
+async def test_pause_init_arch_workflow_cancels_task_and_sets_paused_immediately():
+    record = WorkflowRecord(workflow_id="wf-pause", workflow_status=WorkflowStatus.RUNNING)
+    fake_task = MagicMock()
+    fake_task.done.return_value = False
+    record.asyncio_task = fake_task
+    workflow_module.get_workflow_registry()["wf-pause"] = record
+
+    with patch("app.services.init_arch_workflow.persist_workflow_record", new=AsyncMock()) as mock_persist:
+        resolved = await workflow_module.pause_init_arch_workflow("wf-pause")
+
+    assert resolved.workflow_status == WorkflowStatus.PAUSED
+    assert resolved.pause_requested is True
+    fake_task.cancel.assert_called_once()
+    mock_persist.assert_awaited_once_with(record)
+
+
+async def test_pause_init_arch_workflow_without_live_task_still_sets_paused():
+    # e.g. a record rehydrated from the DB in a process that isn't the one running it - there's
+    # no asyncio.Task to cancel, but the caller must still see PAUSED, not a stale RUNNING.
+    record = WorkflowRecord(workflow_id="wf-pause-no-task", workflow_status=WorkflowStatus.RUNNING)
+    workflow_module.get_workflow_registry()["wf-pause-no-task"] = record
+
+    with patch("app.services.init_arch_workflow.persist_workflow_record", new=AsyncMock()):
+        resolved = await workflow_module.pause_init_arch_workflow("wf-pause-no-task")
+
+    assert resolved.workflow_status == WorkflowStatus.PAUSED
+
+
+async def test_continue_init_arch_workflow_rejects_non_paused_status():
+    record = WorkflowRecord(workflow_id="wf-not-paused", workflow_status=WorkflowStatus.RUNNING)
+    workflow_module.get_workflow_registry()["wf-not-paused"] = record
+
+    with pytest.raises(workflow_module.WorkflowConflictError, match="not paused"):
+        await workflow_module.continue_init_arch_workflow("wf-not-paused")
+
+
+async def test_continue_init_arch_workflow_resumes_from_checkpoint_with_no_resume_value():
+    record = WorkflowRecord(workflow_id="wf-continue", workflow_status=WorkflowStatus.PAUSED)
+    workflow_module.get_workflow_registry()["wf-continue"] = record
+    resume_calls: list[tuple[WorkflowRecord, object]] = []
+    created_tasks = []
+    real_create_task = asyncio.create_task
+
+    async def _fake_resume_workflow_task(current_record: WorkflowRecord, resume_value: object) -> None:
+        resume_calls.append((current_record, resume_value))
+
+    def _fake_create_task(coro):
+        task = real_create_task(coro)
+        created_tasks.append(task)
+        return task
+
+    with (
+        patch("app.services.init_arch_workflow.persist_workflow_record", new=AsyncMock()),
+        patch("app.services.init_arch_workflow.resume_workflow_task", new=_fake_resume_workflow_task),
+        patch("app.services.init_arch_workflow.asyncio.create_task", side_effect=_fake_create_task),
+    ):
+        resolved = await workflow_module.continue_init_arch_workflow("wf-continue")
+        await asyncio.gather(*created_tasks)
+
+    assert resolved.workflow_status == WorkflowStatus.RUNNING
+    assert resume_calls == [(record, None)]
+
+
+async def test_handle_workflow_cancellation_sets_paused_when_pause_was_requested():
+    record = WorkflowRecord(
+        workflow_id="wf-cancel-branch-paused", workflow_status=WorkflowStatus.RUNNING, pause_requested=True
+    )
+
+    with patch("app.services.init_arch_workflow.persist_workflow_record", new=AsyncMock()) as mock_persist:
+        await workflow_module._handle_workflow_cancellation(record)
+
+    assert record.workflow_status == WorkflowStatus.PAUSED
+    assert record.pause_requested is False
+    assert record.error_message is None
+    mock_persist.assert_awaited_once_with(record)
+
+
+async def test_handle_workflow_cancellation_sets_cancelled_when_pause_was_not_requested():
+    record = WorkflowRecord(
+        workflow_id="wf-cancel-branch-cancelled", workflow_status=WorkflowStatus.RUNNING, pause_requested=False
+    )
+
+    with patch("app.services.init_arch_workflow.persist_workflow_record", new=AsyncMock()):
+        await workflow_module._handle_workflow_cancellation(record)
+
+    assert record.workflow_status == WorkflowStatus.CANCELLED
+    assert record.error_message == "Workflow cancelled"
+
+
+async def test_run_workflow_cancellation_sets_paused_status_end_to_end(monkeypatch):
+    # Mirrors test_run_workflow_failure_marks_record_failed's _Graph fixture, but the graph
+    # raises CancelledError (as it would when pause_init_arch_workflow() cancels the task
+    # mid-`astream`) instead of a plain exception.
+    session = WorkflowSessionRecord(session_id="wf-paused-e2e", product_name="arch-docs", analysis_scope="full")
+    record = WorkflowRecord(
+        workflow_id="wf-paused-e2e",
+        conversation_id="conv-paused-e2e",
+        session=session,
+        pause_requested=True,
+    )
+
+    class _Graph:
+        async def astream(self, _state, *, config):
+            del config
+            if False:
+                yield {}
+            raise asyncio.CancelledError
+
+        async def aget_state(self, config):
+            del config
+            return types.SimpleNamespace(values={})
+
+    monkeypatch.setattr("app.services.init_arch_workflow.get_checkpointer", AsyncMock(return_value="checkpoint"))
+    monkeypatch.setattr("app.services.init_arch_workflow.compile_graph", lambda **_kwargs: _Graph())
+    monkeypatch.setattr("app.services.init_arch_workflow.persist_workflow_record", AsyncMock())
+
+    with pytest.raises(asyncio.CancelledError):
+        await workflow_module.run_workflow(
+            record,
+            workflow_module.InitArchState(
+                session_id=session.session_id,
+                session=session,
+                workspace_dir="/workspace",
+                arch_repo_dir="/workspace/arch-doc",
+                engine_name="claude",
+                timeout_seconds=60,
+                progress_file_path="/workspace/arch-doc/progress.yaml",
+                last_llm_result=None,
+                last_guard_output="",
+                step_error=None,
+                retry_count=0,
+            ),
+        )
+
+    assert record.workflow_status is WorkflowStatus.PAUSED
+    assert record.pause_requested is False
 
 
 async def test_start_init_arch_workflow_persists_resolved_paths(monkeypatch):

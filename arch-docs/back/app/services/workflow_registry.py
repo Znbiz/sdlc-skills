@@ -12,6 +12,7 @@ from app.workflows.init_arch.domain import WorkflowSessionRecord
 class WorkflowStatus(enum.StrEnum):
     RUNNING = enum.auto()
     INTERRUPTED = enum.auto()
+    PAUSED = enum.auto()
     SUCCESS = enum.auto()
     FAILED = enum.auto()
     CANCELLED = enum.auto()
@@ -38,6 +39,7 @@ class WorkflowRecord:
     )
     asyncio_task: asyncio.Task | None = None
     error_message: str | None = None
+    pause_requested: bool = False
 
 
 WorkflowRegistry: typing.TypeAlias = dict[str, WorkflowRecord]

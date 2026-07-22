@@ -100,6 +100,19 @@ class DomainDefinition(pydantic.BaseModel):
     subdomains: list[str] = pydantic.Field(default_factory=list)
 
 
+class VolumeClass(str, enum.Enum):
+    SMALL = "small"
+    MEDIUM = "medium"
+    LARGE = "large"
+    XLARGE = "xlarge"
+
+
+class RepositoryDomainAssessment(pydantic.BaseModel):
+    volume_class: VolumeClass
+    strategy: DomainStrategy
+    domains: list[DomainDefinition] = pydantic.Field(default_factory=list)
+
+
 class RepositoryExecution(pydantic.BaseModel):
     repository_name: str
     role: str = ""
@@ -121,6 +134,7 @@ class RepositoryExecution(pydantic.BaseModel):
     renamed_paths: list[str] = pydantic.Field(default_factory=list)
     deleted_paths: list[str] = pydantic.Field(default_factory=list)
     temporal_delta_note: str = ""
+    volume_class: VolumeClass | None = None
     domain_strategy: DomainStrategy | None = None
     domains: list[DomainDefinition] = pydantic.Field(default_factory=list)
     checklist_items_completed: list[str] = pydantic.Field(default_factory=list)
@@ -199,6 +213,7 @@ class LlmTaskResult(pydantic.BaseModel):
     open_questions_found: list[str] = pydantic.Field(default_factory=list)
     diff_based_findings: list[str] = pydantic.Field(default_factory=list)
     snapshot_based_findings: list[str] = pydantic.Field(default_factory=list)
+    domain_assessment: RepositoryDomainAssessment | None = None
     notes: str = ""
     raw_output: str = ""
 

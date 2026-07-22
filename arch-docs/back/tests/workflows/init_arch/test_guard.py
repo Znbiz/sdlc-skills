@@ -3,11 +3,15 @@ from unittest.mock import MagicMock
 
 from app.workflows.init_arch.domain import (
     AuditActor,
+    DomainDefinition,
+    DomainStrategy,
     EventType,
     NextWindowConfirmationStatus,
     OpenQuestionRecord,
+    RepositoryDomainAssessment,
     RepositoryExecution,
     StepId,
+    VolumeClass,
     WorkflowStatus,
     advance_step,
     open_question,
@@ -124,6 +128,42 @@ async def test_guard_service_start_repository_emits_repo_audit_events() -> None:
     assert recorded_events[1].repository_name == "svc-a"
 
 
+async def test_guard_service_assess_repository_domains_updates_session_and_emits_events() -> None:
+    audit_service = MagicMock()
+    service = InitArchGuardService(audit_service=audit_service)
+    session = start_session(session_id="wf-1", product_name="arch-docs", analysis_scope="full")
+    session = service.register_repository_sync(
+        session,
+        RepositoryExecution(repository_name="svc-a"),
+    )
+
+    result = await service.assess_repository_domains(
+        session,
+        repository_name="svc-a",
+        assessment=RepositoryDomainAssessment(
+            volume_class=VolumeClass.LARGE,
+            strategy=DomainStrategy.PER_DOMAIN,
+            domains=[DomainDefinition(domain_id="billing", name="Биллинг", paths=["apps/billing/"])],
+        ),
+        progress_file_path="/workspace/tmp/progress.yaml",
+    )
+
+    repository = result.session.repositories[0]
+    assert repository.volume_class is VolumeClass.LARGE
+    assert repository.domain_strategy is DomainStrategy.PER_DOMAIN
+    assert [domain.domain_id for domain in repository.domains] == ["billing"]
+
+    recorded_events = [call.args[0] for call in audit_service.record.call_args_list]
+    assert [event.event_type for event in recorded_events] == [
+        EventType.GUARD_COMMAND_REQUESTED,
+        EventType.GUARD_COMMAND_APPLIED,
+    ]
+    assert recorded_events[0].payload["command"] == "domain_assess"
+    assert recorded_events[1].payload["strategy"] == "per_domain"
+    assert recorded_events[1].payload["volume_class"] == "large"
+    assert recorded_events[1].payload["domain_count"] == "1"
+
+
 async def test_guard_service_finalize_progress_marks_done() -> None:
     service = InitArchGuardService()
     session = start_session(session_id="wf-1", product_name="arch-docs", analysis_scope="full")
@@ -141,7 +181,11 @@ async def test_guard_service_requests_and_confirms_next_temporal_window() -> Non
     service = InitArchGuardService(audit_service=audit_service)
     session = start_session(session_id="wf-1", product_name="arch-docs", analysis_scope="full")
     session = session.model_copy(
-        update={"historical_analysis": session.historical_analysis.model_copy(update={"current_snapshot_at": dt.date(2024, 4, 10)})}
+        update={
+            "historical_analysis": session.historical_analysis.model_copy(
+                update={"current_snapshot_at": dt.date(2024, 4, 10)}
+            )
+        }
     )
 
     requested_result = await service.request_next_temporal_window(
@@ -161,7 +205,10 @@ async def test_guard_service_requests_and_confirms_next_temporal_window() -> Non
     )
 
     assert confirmed_result.session.historical_analysis.current_snapshot_at == dt.date(2024, 7, 10)
-    assert confirmed_result.session.historical_analysis.next_window_confirmation_status is NextWindowConfirmationStatus.CONFIRMED
+    assert (
+        confirmed_result.session.historical_analysis.next_window_confirmation_status
+        is NextWindowConfirmationStatus.CONFIRMED
+    )
     recorded_commands = [
         call.args[0].payload.get("command") for call in audit_service.record.call_args_list if call.args[0].payload
     ]

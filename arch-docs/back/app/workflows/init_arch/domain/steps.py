@@ -33,6 +33,7 @@ STEP_DEFINITIONS: tuple[StepDefinition, ...] = (
         step_id=StepId.CLONE_REPOSITORIES,
         title="Clone repositories",
         required_previous_steps=[StepId.PREPARE_TEMP_WORKSPACE],
+        uses_llm_worker=False,
     ),
     StepDefinition(
         step_id=StepId.REFRESH_MAIN_BRANCHES,
@@ -108,3 +109,33 @@ STEP_DEFINITIONS: tuple[StepDefinition, ...] = (
 
 
 STEP_DEFINITION_BY_ID = {definition.step_id: definition for definition in STEP_DEFINITIONS}
+
+
+# Человекочитаемые названия шагов для SSE/UI (см. arch-docs/docs/spec/2026-07-22-realtime-workflow-observability.md).
+# Ключ — строковое значение StepId (не сам enum): `step_started` в SSE и `WorkflowRecord.current_step_id`
+# оперируют строками, в том числе "analyze_repositories_item" — физическим графовым узлом внутри
+# StepId.ANALYZE_REPOSITORIES, не отдельным StepId (см. init-graph-reference.md, нода 8).
+STEP_LABELS_RU: dict[str, str] = {
+    StepId.DEFINE_SCOPE.value: "Определение области анализа",
+    StepId.REQUEST_REPOSITORY_LIST.value: "Запрос списка репозиториев",
+    StepId.PREPARE_TEMP_WORKSPACE.value: "Подготовка рабочей директории",
+    StepId.CLONE_REPOSITORIES.value: "Клонирование репозиториев",
+    StepId.REFRESH_MAIN_BRANCHES.value: "Обновление main-веток",
+    StepId.PLAN_REPOSITORY_ORDER.value: "Планирование порядка анализа",
+    StepId.ASSESS_SCOPE_AND_DOMAINS.value: "Оценка объёма и доменов репозитория",
+    StepId.ANALYZE_REPOSITORIES.value: "Анализ репозиториев",
+    "analyze_repositories_item": "Анализ репозитория (пункт чеклиста)",
+    StepId.INTERVIEW_USER.value: "Интервью с пользователем",
+    StepId.REFINE_FEATURES.value: "Описание фич продукта",
+    StepId.BUILD_NAVIGATION_INDEX.value: "Сборка навигационного индекса",
+    StepId.RUN_KNOWLEDGE_LINT.value: "Проверка целостности документации",
+    StepId.VALIDATE_FINAL.value: "Финальная проверка консистентности",
+    StepId.GENERATE_RELEASE_NOTES.value: "Генерация release notes",
+    StepId.CONFIRM_NEXT_TEMPORAL_WINDOW.value: "Подтверждение следующего временного окна",
+    StepId.FINALIZE_PROGRESS.value: "Завершение прогона",
+    StepId.DONE.value: "Готово",
+}
+
+
+def step_label_ru(step_id: str) -> str:
+    return STEP_LABELS_RU.get(step_id, step_id)

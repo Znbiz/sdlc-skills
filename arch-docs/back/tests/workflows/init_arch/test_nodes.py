@@ -8,12 +8,16 @@ from app.workflows.init_arch.domain import (
     AnalysisTargetCommitStatus,
     AuditActor,
     CommitRangeStatus,
+    DomainDefinition,
+    DomainStrategy,
     EventType,
     LlmTaskKind,
     LlmTaskResult,
     OpenQuestionRecord,
+    RepositoryDomainAssessment,
     RepositoryExecution,
     StepId,
+    VolumeClass,
     WorkflowSessionRecord,
 )
 from app.workflows.init_arch.guard import GuardOperationResult, InitArchGuardService
@@ -195,6 +199,120 @@ async def test_node_prepare_temp_workspace_wraps_advance_step_failure_in_step_er
     assert any(event.event_type == EventType.WORKFLOW_STEP_FAILED for event in recorded_events)
 
 
+async def test_node_clone_repositories_clones_missing_and_skips_existing_checkouts(tmp_path) -> None:
+    raw_workspace_dir = tmp_path / ".temp"
+    existing_repo_dir = raw_workspace_dir / "svc-existing"
+    (existing_repo_dir / ".git").mkdir(parents=True)
+
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="Prod",
+        analysis_scope="full",
+        repositories=[
+            RepositoryExecution(repository_name="svc-existing", repository_url="https://example.com/svc-existing.git"),
+            RepositoryExecution(repository_name="svc-new", repository_url="https://example.com/svc-new.git"),
+        ],
+    )
+    state = _make_state(session=session, raw_workspace_dir=str(raw_workspace_dir))
+    guard_service = MagicMock()
+    audit_service = MagicMock()
+    advanced_session = session.model_copy(
+        update={
+            "current_step": StepId.REFRESH_MAIN_BRANCHES,
+            "completed_steps": [
+                StepId.DEFINE_SCOPE,
+                StepId.REQUEST_REPOSITORY_LIST,
+                StepId.PREPARE_TEMP_WORKSPACE,
+                StepId.CLONE_REPOSITORIES,
+            ],
+        }
+    )
+    guard_service.advance_step = AsyncMock(return_value=GuardOperationResult(session=advanced_session))
+
+    async def fake_run_git_clone(repository_url, target_path):
+        target_path.mkdir(parents=True)
+        (target_path / ".git").mkdir()
+
+    with (
+        patch("app.workflows.init_arch.nodes.get_guard_service", return_value=guard_service),
+        patch("app.workflows.init_arch.nodes.get_workflow_audit_service", return_value=audit_service),
+        patch("app.workflows.init_arch.nodes.get_llm_worker_service") as llm_service,
+        patch("app.workflows.init_arch.nodes.ensure_git_credentials_store", AsyncMock()),
+        patch("app.workflows.init_arch.nodes._run_git_clone", side_effect=fake_run_git_clone) as run_git_clone,
+    ):
+        result = await nodes_module.node_clone_repositories(state)
+
+    assert result["current_step_id"] == "refresh_main_branches"
+    assert result["last_llm_result"] is None
+    llm_service.assert_not_called()
+    run_git_clone.assert_awaited_once_with("https://example.com/svc-new.git", raw_workspace_dir / "svc-new")
+    assert (raw_workspace_dir / "svc-new" / ".git").is_dir()
+
+
+async def test_node_clone_repositories_fails_when_url_missing_and_no_local_checkout(tmp_path) -> None:
+    raw_workspace_dir = tmp_path / ".temp"
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="Prod",
+        analysis_scope="full",
+        repositories=[RepositoryExecution(repository_name="svc-a")],
+    )
+    state = _make_state(session=session, raw_workspace_dir=str(raw_workspace_dir))
+    guard_service = MagicMock()
+    audit_service = MagicMock()
+
+    with (
+        patch("app.workflows.init_arch.nodes.get_guard_service", return_value=guard_service),
+        patch("app.workflows.init_arch.nodes.get_workflow_audit_service", return_value=audit_service),
+        patch("app.workflows.init_arch.nodes.ensure_git_credentials_store", AsyncMock()),
+    ):
+        result = await nodes_module.node_clone_repositories(state)
+
+    assert result["retry_count"] == 1
+    assert "svc-a" in result["step_error"]
+    guard_service.advance_step.assert_not_called()
+    recorded_events = [call.args[0] for call in audit_service.record.call_args_list]
+    assert any(event.event_type == EventType.WORKFLOW_STEP_FAILED for event in recorded_events)
+
+
+async def test_node_clone_repositories_wraps_git_clone_failure_in_step_error(tmp_path) -> None:
+    raw_workspace_dir = tmp_path / ".temp"
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="Prod",
+        analysis_scope="full",
+        repositories=[RepositoryExecution(repository_name="svc-a", repository_url="https://example.com/svc-a.git")],
+    )
+    state = _make_state(session=session, raw_workspace_dir=str(raw_workspace_dir))
+    guard_service = MagicMock()
+    audit_service = MagicMock()
+
+    with (
+        patch("app.workflows.init_arch.nodes.get_guard_service", return_value=guard_service),
+        patch("app.workflows.init_arch.nodes.get_workflow_audit_service", return_value=audit_service),
+        patch("app.workflows.init_arch.nodes.ensure_git_credentials_store", AsyncMock()),
+        patch(
+            "app.workflows.init_arch.nodes._run_git_clone",
+            AsyncMock(
+                side_effect=RuntimeError("git clone failed for https://example.com/svc-a.git (auth_failed): denied")
+            ),
+        ),
+    ):
+        result = await nodes_module.node_clone_repositories(state)
+
+    assert result["retry_count"] == 1
+    assert "auth_failed" in result["step_error"]
+    guard_service.advance_step.assert_not_called()
+
+
+def test_validate_repository_name_rejects_path_traversal() -> None:
+    for invalid_name in ("", ".", "..", "a/b", "a\\b"):
+        with pytest.raises(ValueError, match="invalid repository_name"):
+            nodes_module._validate_repository_name(invalid_name)
+
+    nodes_module._validate_repository_name("svc-a")
+
+
 async def test_node_refresh_main_branches_uses_historical_service_without_llm() -> None:
     state = _make_state()
     guard_service = MagicMock()
@@ -373,56 +491,78 @@ async def test_node_plan_repository_order_blocks_when_checkout_done_but_temporal
     llm_service.assert_not_called()
 
 
-async def test_node_analyze_repositories_uses_typed_services() -> None:
-    repository = RepositoryExecution(
-        repository_name="svc-a", analysis_target_commit_status=AnalysisTargetCommitStatus.PENDING
-    )
+async def test_node_assess_scope_and_domains_persists_assessment_per_repository() -> None:
+    repo_a = RepositoryExecution(repository_name="svc-a")
+    repo_b = RepositoryExecution(repository_name="svc-b")
     session = WorkflowSessionRecord(
-        session_id="wf-1", product_name="Prod", analysis_scope="full", repositories=[repository]
+        session_id="wf-1", product_name="Prod", analysis_scope="full", repositories=[repo_a, repo_b]
     )
     state = _make_state(session=session)
     guard_service = MagicMock()
     knowledge_service = MagicMock()
     llm_service = MagicMock()
 
-    running_session = session.model_copy(
+    started_session = session.model_copy()
+    assessed_a_session = session.model_copy(
         update={
-            "historical_analysis": session.historical_analysis.model_copy(
-                update={"ordered_repository_names": ["svc-a"]}
-            ),
-            "current_step": StepId.ANALYZE_REPOSITORIES,
+            "repositories": [
+                repo_a.model_copy(
+                    update={
+                        "volume_class": VolumeClass.SMALL,
+                        "domain_strategy": DomainStrategy.PER_MODULE,
+                    }
+                ),
+                repo_b,
+            ]
         }
     )
-    completed_repo_session = running_session.model_copy()
-    questioned_session = completed_repo_session.model_copy(
-        update={"open_questions": [OpenQuestionRecord(question_id="Q-1", question_text="What protocol is exposed?")]}
+    assessed_b_session = assessed_a_session.model_copy(
+        update={
+            "repositories": [
+                assessed_a_session.repositories[0],
+                repo_b.model_copy(
+                    update={
+                        "volume_class": VolumeClass.LARGE,
+                        "domain_strategy": DomainStrategy.PER_DOMAIN,
+                        "domains": [DomainDefinition(domain_id="billing", name="Биллинг", paths=["apps/billing/"])],
+                    }
+                ),
+            ]
+        }
     )
-    next_session = running_session.model_copy(
-        update={"current_step": StepId.INTERVIEW_USER, "completed_steps": [StepId.ANALYZE_REPOSITORIES]}
+    domain_map_session = assessed_b_session.model_copy()
+    next_session = assessed_b_session.model_copy(
+        update={"current_step": StepId.ANALYZE_REPOSITORIES, "completed_steps": [StepId.ASSESS_SCOPE_AND_DOMAINS]}
     )
-    guard_service.start_repository = AsyncMock(return_value=GuardOperationResult(session=running_session))
-    guard_service.complete_repository_item = AsyncMock(
-        return_value=GuardOperationResult(session=completed_repo_session)
+
+    guard_service.start_repository = AsyncMock(return_value=GuardOperationResult(session=started_session))
+    guard_service.assess_repository_domains = AsyncMock(
+        side_effect=[
+            GuardOperationResult(session=assessed_a_session),
+            GuardOperationResult(session=assessed_b_session),
+        ]
     )
-    guard_service.complete_repository = AsyncMock(return_value=GuardOperationResult(session=questioned_session))
-    guard_service.register_open_questions = AsyncMock(return_value=GuardOperationResult(session=questioned_session))
     guard_service.advance_step = AsyncMock(return_value=GuardOperationResult(session=next_session))
-    knowledge_service.sync_open_questions = AsyncMock(
-        return_value=KnowledgeArtifactResult(session=questioned_session, summary="synced")
+    knowledge_service.write_domain_map = AsyncMock(
+        return_value=KnowledgeArtifactResult(session=domain_map_session, summary="wrote domain map")
     )
     llm_service.run_task = AsyncMock(
         side_effect=[
-            *[
-                LlmTaskResult(
-                    task_kind=LlmTaskKind.REPOSITORY_CHECKLIST_ITEM,
-                    step_id=StepId.ANALYZE_REPOSITORIES,
-                )
-                for _ in range(len(nodes_module.CHECKLIST_ITEM_TO_REFERENCE) - 1)
-            ],
             LlmTaskResult(
-                task_kind=LlmTaskKind.REPOSITORY_CHECKLIST_ITEM,
-                step_id=StepId.ANALYZE_REPOSITORIES,
-                open_questions_found=["What protocol is exposed?"],
+                task_kind=LlmTaskKind.STEP_EXECUTION,
+                step_id=StepId.ASSESS_SCOPE_AND_DOMAINS,
+                domain_assessment=RepositoryDomainAssessment(
+                    volume_class=VolumeClass.SMALL, strategy=DomainStrategy.PER_MODULE
+                ),
+            ),
+            LlmTaskResult(
+                task_kind=LlmTaskKind.STEP_EXECUTION,
+                step_id=StepId.ASSESS_SCOPE_AND_DOMAINS,
+                domain_assessment=RepositoryDomainAssessment(
+                    volume_class=VolumeClass.LARGE,
+                    strategy=DomainStrategy.PER_DOMAIN,
+                    domains=[DomainDefinition(domain_id="billing", name="Биллинг", paths=["apps/billing/"])],
+                ),
             ),
         ]
     )
@@ -432,60 +572,461 @@ async def test_node_analyze_repositories_uses_typed_services() -> None:
         patch("app.workflows.init_arch.nodes.get_knowledge_artifact_service", return_value=knowledge_service),
         patch("app.workflows.init_arch.nodes.get_llm_worker_service", return_value=llm_service),
     ):
-        result = await nodes_module.node_analyze_repositories(state)
+        result = await nodes_module.node_assess_scope_and_domains(state)
 
-    assert result["current_step_id"] == "interview_user"
-    assert llm_service.run_task.await_count == len(nodes_module.CHECKLIST_ITEM_TO_REFERENCE)
-    guard_service.start_repository.assert_awaited_once()
-    guard_service.complete_repository.assert_awaited_once()
-    guard_service.register_open_questions.assert_awaited()
-    knowledge_service.sync_open_questions.assert_awaited_once()
+    assert result["current_step_id"] == "analyze_repositories"
+    assert guard_service.start_repository.await_count == 2
+    assert guard_service.assess_repository_domains.await_count == 2
+    knowledge_service.write_domain_map.assert_awaited_once()
+    first_call_kwargs = guard_service.assess_repository_domains.await_args_list[0].kwargs
+    assert first_call_kwargs["repository_name"] == "svc-a"
+    assert first_call_kwargs["assessment"].strategy is DomainStrategy.PER_MODULE
+    second_call_kwargs = guard_service.assess_repository_domains.await_args_list[1].kwargs
+    assert second_call_kwargs["repository_name"] == "svc-b"
+    assert second_call_kwargs["assessment"].domains[0].domain_id == "billing"
 
 
-async def test_node_analyze_repositories_routes_reduced_checklist_for_no_changes_window() -> None:
-    from app.workflows.init_arch.domain import CommitRangeStatus
-
-    repository = RepositoryExecution(
-        repository_name="svc-a",
-        analysis_target_commit_status=AnalysisTargetCommitStatus.CHECKED_OUT,
-        commit_range_status=CommitRangeStatus.NO_CHANGES,
-    )
+async def test_node_assess_scope_and_domains_blocks_when_llm_omits_assessment() -> None:
+    repo_a = RepositoryExecution(repository_name="svc-a")
     session = WorkflowSessionRecord(
-        session_id="wf-1", product_name="Prod", analysis_scope="full", repositories=[repository]
+        session_id="wf-1", product_name="Prod", analysis_scope="full", repositories=[repo_a]
     )
     state = _make_state(session=session)
     guard_service = MagicMock()
     knowledge_service = MagicMock()
     llm_service = MagicMock()
-    audit_service = MagicMock()
 
-    running_session = session.model_copy(update={"current_step": StepId.ANALYZE_REPOSITORIES})
-    completed_repo_session = running_session.model_copy()
-    next_session = running_session.model_copy(
-        update={"current_step": StepId.INTERVIEW_USER, "completed_steps": [StepId.ANALYZE_REPOSITORIES]}
-    )
-    guard_service.start_repository = AsyncMock(return_value=GuardOperationResult(session=running_session))
-    guard_service.complete_repository_item = AsyncMock(
-        return_value=GuardOperationResult(session=completed_repo_session)
-    )
-    guard_service.complete_repository = AsyncMock(return_value=GuardOperationResult(session=completed_repo_session))
-    guard_service.advance_step = AsyncMock(return_value=GuardOperationResult(session=next_session))
+    guard_service.start_repository = AsyncMock(return_value=GuardOperationResult(session=session))
     llm_service.run_task = AsyncMock(
-        return_value=LlmTaskResult(task_kind=LlmTaskKind.REPOSITORY_CHECKLIST_ITEM, step_id=StepId.ANALYZE_REPOSITORIES)
+        return_value=LlmTaskResult(
+            task_kind=LlmTaskKind.STEP_EXECUTION,
+            step_id=StepId.ASSESS_SCOPE_AND_DOMAINS,
+            notes="забыл вернуть domain_assessment",
+        )
     )
 
     with (
         patch("app.workflows.init_arch.nodes.get_guard_service", return_value=guard_service),
         patch("app.workflows.init_arch.nodes.get_knowledge_artifact_service", return_value=knowledge_service),
         patch("app.workflows.init_arch.nodes.get_llm_worker_service", return_value=llm_service),
-        patch("app.workflows.init_arch.nodes.get_workflow_audit_service", return_value=audit_service),
+    ):
+        result = await nodes_module.node_assess_scope_and_domains(state)
+
+    assert result["retry_count"] == 1
+    assert "missing domain assessment" in result["step_error"]
+    guard_service.assess_repository_domains.assert_not_called()
+    guard_service.advance_step.assert_not_called()
+    knowledge_service.write_domain_map.assert_not_called()
+
+
+async def test_node_assess_scope_and_domains_preserves_partial_progress_on_failure() -> None:
+    """A failure on the second repository must not discard the first repository's already-saved assessment.
+
+    Returning `session` from the exception branch is what makes retry pick up only the
+    repository that actually failed, instead of redoing the whole loop from scratch.
+    """
+    repo_a = RepositoryExecution(repository_name="svc-a")
+    repo_b = RepositoryExecution(repository_name="svc-b")
+    session = WorkflowSessionRecord(
+        session_id="wf-1", product_name="Prod", analysis_scope="full", repositories=[repo_a, repo_b]
+    )
+    state = _make_state(session=session)
+    guard_service = MagicMock()
+    knowledge_service = MagicMock()
+    llm_service = MagicMock()
+
+    assessed_a_session = session.model_copy(
+        update={
+            "repositories": [
+                repo_a.model_copy(
+                    update={"volume_class": VolumeClass.SMALL, "domain_strategy": DomainStrategy.PER_MODULE}
+                ),
+                repo_b,
+            ]
+        }
+    )
+
+    guard_service.start_repository = AsyncMock(
+        side_effect=lambda current_session, **_kwargs: GuardOperationResult(session=current_session)
+    )
+    guard_service.assess_repository_domains = AsyncMock(return_value=GuardOperationResult(session=assessed_a_session))
+    llm_service.run_task = AsyncMock(
+        side_effect=[
+            LlmTaskResult(
+                task_kind=LlmTaskKind.STEP_EXECUTION,
+                step_id=StepId.ASSESS_SCOPE_AND_DOMAINS,
+                domain_assessment=RepositoryDomainAssessment(
+                    volume_class=VolumeClass.SMALL, strategy=DomainStrategy.PER_MODULE
+                ),
+            ),
+            LlmTaskResult(
+                task_kind=LlmTaskKind.STEP_EXECUTION,
+                step_id=StepId.ASSESS_SCOPE_AND_DOMAINS,
+                notes="забыл вернуть domain_assessment для svc-b",
+            ),
+        ]
+    )
+
+    with (
+        patch("app.workflows.init_arch.nodes.get_guard_service", return_value=guard_service),
+        patch("app.workflows.init_arch.nodes.get_knowledge_artifact_service", return_value=knowledge_service),
+        patch("app.workflows.init_arch.nodes.get_llm_worker_service", return_value=llm_service),
+    ):
+        result = await nodes_module.node_assess_scope_and_domains(state)
+
+    assert result["retry_count"] == 1
+    assert "missing domain assessment for repository 'svc-b'" in result["step_error"]
+    assert result["session"].repositories[0].domain_strategy is DomainStrategy.PER_MODULE
+    assert result["session"].repositories[1].domain_strategy is None
+    knowledge_service.write_domain_map.assert_not_called()
+
+
+async def test_node_assess_scope_and_domains_skips_already_assessed_repository_on_retry() -> None:
+    repo_a = RepositoryExecution(
+        repository_name="svc-a", volume_class=VolumeClass.SMALL, domain_strategy=DomainStrategy.PER_MODULE
+    )
+    repo_b = RepositoryExecution(repository_name="svc-b")
+    session = WorkflowSessionRecord(
+        session_id="wf-1", product_name="Prod", analysis_scope="full", repositories=[repo_a, repo_b]
+    )
+    state = _make_state(session=session)
+    guard_service = MagicMock()
+    knowledge_service = MagicMock()
+    llm_service = MagicMock()
+
+    assessed_b_session = session.model_copy(
+        update={
+            "repositories": [
+                repo_a,
+                repo_b.model_copy(
+                    update={"volume_class": VolumeClass.LARGE, "domain_strategy": DomainStrategy.PER_DOMAIN}
+                ),
+            ]
+        }
+    )
+    next_session = assessed_b_session.model_copy(
+        update={"current_step": StepId.ANALYZE_REPOSITORIES, "completed_steps": [StepId.ASSESS_SCOPE_AND_DOMAINS]}
+    )
+
+    guard_service.start_repository = AsyncMock(return_value=GuardOperationResult(session=session))
+    guard_service.assess_repository_domains = AsyncMock(return_value=GuardOperationResult(session=assessed_b_session))
+    guard_service.advance_step = AsyncMock(return_value=GuardOperationResult(session=next_session))
+    knowledge_service.write_domain_map = AsyncMock(
+        return_value=KnowledgeArtifactResult(session=assessed_b_session, summary="wrote domain map")
+    )
+    llm_service.run_task = AsyncMock(
+        return_value=LlmTaskResult(
+            task_kind=LlmTaskKind.STEP_EXECUTION,
+            step_id=StepId.ASSESS_SCOPE_AND_DOMAINS,
+            domain_assessment=RepositoryDomainAssessment(
+                volume_class=VolumeClass.LARGE, strategy=DomainStrategy.PER_DOMAIN
+            ),
+        )
+    )
+
+    with (
+        patch("app.workflows.init_arch.nodes.get_guard_service", return_value=guard_service),
+        patch("app.workflows.init_arch.nodes.get_knowledge_artifact_service", return_value=knowledge_service),
+        patch("app.workflows.init_arch.nodes.get_llm_worker_service", return_value=llm_service),
+    ):
+        result = await nodes_module.node_assess_scope_and_domains(state)
+
+    assert result["current_step_id"] == "analyze_repositories"
+    guard_service.start_repository.assert_awaited_once_with(
+        session, repository_name="svc-b", progress_file_path=state["progress_file_path"]
+    )
+    llm_service.run_task.assert_awaited_once()
+    guard_service.assess_repository_domains.assert_awaited_once()
+    assert guard_service.assess_repository_domains.await_args.kwargs["repository_name"] == "svc-b"
+
+
+def test_require_domain_assessment_complete_raises_on_incomplete_session() -> None:
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="Prod",
+        analysis_scope="full",
+        repositories=[RepositoryExecution(repository_name="svc-a")],
+    )
+
+    with pytest.raises(nodes_module.DomainOperationError, match="incomplete"):
+        nodes_module._require_domain_assessment_complete(session)
+
+
+async def test_node_analyze_repositories_advances_to_interview_user_without_pending_repository() -> None:
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="Prod",
+        analysis_scope="full",
+        current_step=StepId.ANALYZE_REPOSITORIES,
+        repositories=[RepositoryExecution(repository_name="svc-a", analysis_status="completed")],
+    )
+    state = _make_state(session=session)
+    guard_service = MagicMock()
+    knowledge_service = MagicMock()
+    next_session = session.model_copy(
+        update={"current_step": StepId.INTERVIEW_USER, "completed_steps": [StepId.ANALYZE_REPOSITORIES]}
+    )
+    guard_service.advance_step = AsyncMock(return_value=GuardOperationResult(session=next_session))
+    guard_service.start_repository = AsyncMock()
+    knowledge_service.sync_open_questions = AsyncMock()
+
+    with (
+        patch("app.workflows.init_arch.nodes.get_guard_service", return_value=guard_service),
+        patch("app.workflows.init_arch.nodes.get_knowledge_artifact_service", return_value=knowledge_service),
     ):
         result = await nodes_module.node_analyze_repositories(state)
 
     assert result["current_step_id"] == "interview_user"
-    assert llm_service.run_task.await_count == 1
+    guard_service.advance_step.assert_awaited_once_with(
+        session, StepId.INTERVIEW_USER, progress_file_path=state["progress_file_path"]
+    )
+    guard_service.start_repository.assert_not_awaited()
+    knowledge_service.sync_open_questions.assert_not_awaited()
+
+
+async def test_node_analyze_repositories_syncs_open_questions_before_advancing() -> None:
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="Prod",
+        analysis_scope="full",
+        current_step=StepId.ANALYZE_REPOSITORIES,
+        repositories=[RepositoryExecution(repository_name="svc-a", analysis_status="completed")],
+        open_questions=[OpenQuestionRecord(question_id="Q-1", question_text="What protocol is exposed?")],
+    )
+    state = _make_state(session=session)
+    guard_service = MagicMock()
+    knowledge_service = MagicMock()
+    synced_session = session.model_copy()
+    next_session = synced_session.model_copy(update={"current_step": StepId.INTERVIEW_USER})
+    knowledge_service.sync_open_questions = AsyncMock(
+        return_value=KnowledgeArtifactResult(session=synced_session, summary="synced")
+    )
+    guard_service.advance_step = AsyncMock(return_value=GuardOperationResult(session=next_session))
+
+    with (
+        patch("app.workflows.init_arch.nodes.get_guard_service", return_value=guard_service),
+        patch("app.workflows.init_arch.nodes.get_knowledge_artifact_service", return_value=knowledge_service),
+    ):
+        result = await nodes_module.node_analyze_repositories(state)
+
+    assert result["current_step_id"] == "interview_user"
+    knowledge_service.sync_open_questions.assert_awaited_once_with(session, arch_repo_dir=state["arch_repo_dir"])
+    guard_service.advance_step.assert_awaited_once_with(
+        synced_session, StepId.INTERVIEW_USER, progress_file_path=state["progress_file_path"]
+    )
+
+
+async def test_node_analyze_repositories_starts_pending_repository_without_advancing() -> None:
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="Prod",
+        analysis_scope="full",
+        current_step=StepId.ANALYZE_REPOSITORIES,
+        repositories=[RepositoryExecution(repository_name="svc-a", analysis_status="pending")],
+    )
+    state = _make_state(session=session)
+    guard_service = MagicMock()
+    started_session = session.model_copy(
+        update={"repositories": [session.repositories[0].model_copy(update={"analysis_status": "in_progress"})]}
+    )
+    guard_service.start_repository = AsyncMock(return_value=GuardOperationResult(session=started_session))
+    guard_service.advance_step = AsyncMock()
+
+    with patch("app.workflows.init_arch.nodes.get_guard_service", return_value=guard_service):
+        result = await nodes_module.node_analyze_repositories(state)
+
+    guard_service.start_repository.assert_awaited_once_with(
+        session, repository_name="svc-a", progress_file_path=state["progress_file_path"]
+    )
+    guard_service.advance_step.assert_not_awaited()
+    assert result["session"] is started_session
+    assert result["current_step_id"] == StepId.ANALYZE_REPOSITORIES.value
+
+
+async def test_node_analyze_repositories_resumes_in_progress_repository_without_restarting_it() -> None:
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="Prod",
+        analysis_scope="full",
+        current_step=StepId.ANALYZE_REPOSITORIES,
+        repositories=[RepositoryExecution(repository_name="svc-a", analysis_status="in_progress")],
+    )
+    state = _make_state(session=session)
+    guard_service = MagicMock()
+    guard_service.start_repository = AsyncMock()
+
+    with patch("app.workflows.init_arch.nodes.get_guard_service", return_value=guard_service):
+        result = await nodes_module.node_analyze_repositories(state)
+
+    guard_service.start_repository.assert_not_awaited()
+    assert result["session"] is session
+
+
+async def test_node_analyze_repositories_returns_partial_session_on_error() -> None:
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="Prod",
+        analysis_scope="full",
+        current_step=StepId.ANALYZE_REPOSITORIES,
+        repositories=[RepositoryExecution(repository_name="svc-a", analysis_status="pending")],
+    )
+    state = _make_state(session=session)
+    guard_service = MagicMock()
+    guard_service.start_repository = AsyncMock(side_effect=RuntimeError("guard boom"))
+
+    with patch("app.workflows.init_arch.nodes.get_guard_service", return_value=guard_service):
+        result = await nodes_module.node_analyze_repositories(state)
+
+    assert result["session"] is session
+    assert result["step_error"] == "guard boom"
+    assert result["retry_count"] == 1
+
+
+async def test_node_analyze_repositories_item_processes_next_pending_item() -> None:
+    repository = RepositoryExecution(
+        repository_name="svc-a",
+        analysis_target_commit_status=AnalysisTargetCommitStatus.PENDING,
+        analysis_status="in_progress",
+    )
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="Prod",
+        analysis_scope="full",
+        current_step=StepId.ANALYZE_REPOSITORIES,
+        repositories=[repository],
+    )
+    state = _make_state(session=session)
+    guard_service = MagicMock()
+    llm_service = MagicMock()
+    audit_service = MagicMock()
+
+    first_item_id = next(iter(nodes_module.CHECKLIST_ITEM_TO_REFERENCE))
+    item_completed_session = session.model_copy(
+        update={
+            "repositories": [repository.model_copy(update={"checklist_items_completed": [first_item_id]})],
+        }
+    )
+    guard_service.complete_repository_item = AsyncMock(
+        return_value=GuardOperationResult(session=item_completed_session, bridge_output="done")
+    )
+    llm_service.run_task = AsyncMock(
+        return_value=LlmTaskResult(task_kind=LlmTaskKind.REPOSITORY_CHECKLIST_ITEM, step_id=StepId.ANALYZE_REPOSITORIES)
+    )
+
+    with (
+        patch("app.workflows.init_arch.nodes.get_guard_service", return_value=guard_service),
+        patch("app.workflows.init_arch.nodes.get_llm_worker_service", return_value=llm_service),
+        patch("app.workflows.init_arch.nodes.get_workflow_audit_service", return_value=audit_service),
+    ):
+        result = await nodes_module.node_analyze_repositories_item(state)
+
+    llm_service.run_task.assert_awaited_once()
     guard_service.complete_repository_item.assert_awaited_once_with(
-        running_session,
+        session, repository_name="svc-a", item_id=first_item_id, progress_file_path=state["progress_file_path"]
+    )
+    assert result["session"] is item_completed_session
+    routed_events = [
+        call.args[0]
+        for call in audit_service.record.call_args_list
+        if call.args[0].event_type is EventType.DIFF_SIGNAL_ROUTED
+    ]
+    assert len(routed_events) == 1
+    assert routed_events[0].payload["routed_items"] == "1"
+
+
+async def test_node_analyze_repositories_item_registers_open_questions_from_llm_result() -> None:
+    repository = RepositoryExecution(
+        repository_name="svc-a",
+        analysis_target_commit_status=AnalysisTargetCommitStatus.PENDING,
+        analysis_status="in_progress",
+    )
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="Prod",
+        analysis_scope="full",
+        current_step=StepId.ANALYZE_REPOSITORIES,
+        repositories=[repository],
+    )
+    state = _make_state(session=session)
+    guard_service = MagicMock()
+    llm_service = MagicMock()
+
+    first_item_id = next(iter(nodes_module.CHECKLIST_ITEM_TO_REFERENCE))
+    item_completed_session = session.model_copy(
+        update={
+            "repositories": [repository.model_copy(update={"checklist_items_completed": [first_item_id]})],
+        }
+    )
+    questioned_session = item_completed_session.model_copy(
+        update={"open_questions": [OpenQuestionRecord(question_id="Q-1", question_text="What protocol is exposed?")]}
+    )
+    guard_service.complete_repository_item = AsyncMock(
+        return_value=GuardOperationResult(session=item_completed_session)
+    )
+    guard_service.register_open_questions = AsyncMock(return_value=GuardOperationResult(session=questioned_session))
+    llm_service.run_task = AsyncMock(
+        return_value=LlmTaskResult(
+            task_kind=LlmTaskKind.REPOSITORY_CHECKLIST_ITEM,
+            step_id=StepId.ANALYZE_REPOSITORIES,
+            open_questions_found=["What protocol is exposed?"],
+        )
+    )
+
+    with (
+        patch("app.workflows.init_arch.nodes.get_guard_service", return_value=guard_service),
+        patch("app.workflows.init_arch.nodes.get_llm_worker_service", return_value=llm_service),
+    ):
+        result = await nodes_module.node_analyze_repositories_item(state)
+
+    guard_service.register_open_questions.assert_awaited_once_with(
+        item_completed_session,
+        question_texts=["What protocol is exposed?"],
+        repository_name="svc-a",
+        progress_file_path=state["progress_file_path"],
+    )
+    assert result["session"] is questioned_session
+
+
+async def test_node_analyze_repositories_item_routes_reduced_checklist_for_no_changes_window() -> None:
+    repository = RepositoryExecution(
+        repository_name="svc-a",
+        analysis_target_commit_status=AnalysisTargetCommitStatus.CHECKED_OUT,
+        commit_range_status=CommitRangeStatus.NO_CHANGES,
+        analysis_status="in_progress",
+    )
+    session = WorkflowSessionRecord(
+        session_id="wf-1", product_name="Prod", analysis_scope="full", repositories=[repository]
+    )
+    state = _make_state(session=session)
+    guard_service = MagicMock()
+    llm_service = MagicMock()
+    audit_service = MagicMock()
+
+    item_completed_session = session.model_copy(
+        update={
+            "repositories": [
+                repository.model_copy(update={"checklist_items_completed": ["repository_consistency_review"]})
+            ],
+        }
+    )
+    guard_service.complete_repository_item = AsyncMock(
+        return_value=GuardOperationResult(session=item_completed_session)
+    )
+    llm_service.run_task = AsyncMock(
+        return_value=LlmTaskResult(task_kind=LlmTaskKind.REPOSITORY_CHECKLIST_ITEM, step_id=StepId.ANALYZE_REPOSITORIES)
+    )
+
+    with (
+        patch("app.workflows.init_arch.nodes.get_guard_service", return_value=guard_service),
+        patch("app.workflows.init_arch.nodes.get_llm_worker_service", return_value=llm_service),
+        patch("app.workflows.init_arch.nodes.get_workflow_audit_service", return_value=audit_service),
+    ):
+        result = await nodes_module.node_analyze_repositories_item(state)
+
+    assert result["session"] is item_completed_session
+    llm_service.run_task.assert_awaited_once()
+    guard_service.complete_repository_item.assert_awaited_once_with(
+        session,
         repository_name="svc-a",
         item_id="repository_consistency_review",
         progress_file_path=state["progress_file_path"],
@@ -499,6 +1040,81 @@ async def test_node_analyze_repositories_routes_reduced_checklist_for_no_changes
     assert routed_events[0].repository_name == "svc-a"
     assert routed_events[0].payload["diff_severity"] == "no_signal"
     assert routed_events[0].payload["routed_items"] == "1"
+
+
+async def test_node_analyze_repositories_item_completes_repository_when_no_items_remain() -> None:
+    all_items = list(nodes_module.CHECKLIST_ITEM_TO_REFERENCE)
+    repository = RepositoryExecution(
+        repository_name="svc-a",
+        analysis_target_commit_status=AnalysisTargetCommitStatus.PENDING,
+        analysis_status="in_progress",
+        checklist_items_completed=all_items,
+    )
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="Prod",
+        analysis_scope="full",
+        repositories=[repository],
+    )
+    state = _make_state(session=session)
+    guard_service = MagicMock()
+    llm_service = MagicMock()
+    completed_repo_session = session.model_copy(
+        update={"repositories": [repository.model_copy(update={"analysis_status": "completed"})]}
+    )
+    guard_service.complete_repository = AsyncMock(
+        return_value=GuardOperationResult(session=completed_repo_session, bridge_output="repo done")
+    )
+
+    with (
+        patch("app.workflows.init_arch.nodes.get_guard_service", return_value=guard_service),
+        patch("app.workflows.init_arch.nodes.get_llm_worker_service", return_value=llm_service),
+    ):
+        result = await nodes_module.node_analyze_repositories_item(state)
+
+    llm_service.run_task.assert_not_called()
+    guard_service.complete_repository.assert_awaited_once_with(
+        session, repository_name="svc-a", progress_file_path=state["progress_file_path"]
+    )
+    assert result["session"] is completed_repo_session
+
+
+async def test_node_analyze_repositories_item_reports_step_error_without_in_progress_repository() -> None:
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="Prod",
+        analysis_scope="full",
+        repositories=[RepositoryExecution(repository_name="svc-a", analysis_status="pending")],
+    )
+    state = _make_state(session=session)
+
+    result = await nodes_module.node_analyze_repositories_item(state)
+
+    assert result["session"] is session
+    assert result["step_error"] is not None
+    assert "no in-progress repository" in result["step_error"]
+    assert result["retry_count"] == 1
+
+
+async def test_node_analyze_repositories_item_returns_partial_session_on_error() -> None:
+    repository = RepositoryExecution(
+        repository_name="svc-a",
+        analysis_target_commit_status=AnalysisTargetCommitStatus.PENDING,
+        analysis_status="in_progress",
+    )
+    session = WorkflowSessionRecord(
+        session_id="wf-1", product_name="Prod", analysis_scope="full", repositories=[repository]
+    )
+    state = _make_state(session=session)
+    llm_service = MagicMock()
+    llm_service.run_task = AsyncMock(side_effect=RuntimeError("llm boom"))
+
+    with patch("app.workflows.init_arch.nodes.get_llm_worker_service", return_value=llm_service):
+        result = await nodes_module.node_analyze_repositories_item(state)
+
+    assert result["session"] is session
+    assert result["step_error"] == "llm boom"
+    assert result["retry_count"] == 1
 
 
 async def test_node_interview_user_interrupts_on_open_question() -> None:

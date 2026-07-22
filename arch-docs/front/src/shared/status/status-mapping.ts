@@ -34,6 +34,7 @@ export function toneFromResponseStatus(responseStatus: string, hasRequiredAction
     case "cancelled":
       return "failed";
     case "interrupted":
+    case "paused":
       return "needs_action";
     case "running":
       return "in_progress";
@@ -48,6 +49,8 @@ export function responseStatusLabel(responseStatus: string): string {
       return "Выполняется";
     case "interrupted":
       return "Требует действия";
+    case "paused":
+      return "На паузе";
     case "success":
       return "Завершено успешно";
     case "failed":

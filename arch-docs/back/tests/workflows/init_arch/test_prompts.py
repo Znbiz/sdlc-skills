@@ -5,8 +5,11 @@ from app.workflows.init_arch import prompts as prompts_module
 from app.workflows.init_arch.domain import (
     ArtifactRecord,
     CommitRangeStatus,
+    DomainDefinition,
+    DomainStrategy,
     RepositoryExecution,
     StepId,
+    VolumeClass,
     WorkflowSessionRecord,
 )
 from app.workflows.init_arch.prompts import build_step_prompt
@@ -96,13 +99,107 @@ def test_build_step_prompt_release_notes_block_not_applicable_for_other_steps():
     assert "(не применимо для этого шага)" in result
 
 
+def test_build_step_prompt_includes_domain_assessment_contract_for_its_step():
+    with patch.object(prompts_module, "_load_skill_md", return_value="SKILL"):
+        result = build_step_prompt("assess_scope_and_domains", _make_state())
+
+    assert "domain_assessment" in result
+    assert "per_module|per_domain" in result
+
+
+def test_build_step_prompt_omits_domain_assessment_contract_for_other_steps():
+    with patch.object(prompts_module, "_load_skill_md", return_value="SKILL"):
+        result = build_step_prompt("define_scope", _make_state())
+
+    assert "per_module|per_domain" not in result
+
+
+def test_build_step_prompt_domain_context_not_applicable_for_other_steps():
+    with patch.object(prompts_module, "_load_skill_md", return_value="SKILL"):
+        result = build_step_prompt("refine_features", _make_state())
+
+    assert "# Домены репозитория" in result
+    domain_section = result.split("# Домены репозитория")[1].split("---")[0]
+    assert "(не применимо для этого шага)" in domain_section
+
+
+def test_build_step_prompt_domain_context_no_active_repository():
+    state = _make_state()
+    with patch.object(prompts_module, "_load_skill_md", return_value="SKILL"):
+        result = build_step_prompt("analyze_repositories", state)
+
+    domain_section = result.split("# Домены репозитория")[1].split("---")[0]
+    assert "Нет активного репозитория в работе — домены недоступны" in domain_section
+
+
+def test_build_step_prompt_domain_context_not_yet_assessed():
+    repo = RepositoryExecution(repository_name="svc-a", analysis_status="in_progress")
+    state = _make_state()
+    state["session"] = state["session"].model_copy(update={"repositories": [repo]})
+
+    with patch.object(prompts_module, "_load_skill_md", return_value="SKILL"):
+        result = build_step_prompt("analyze_repositories", state)
+
+    domain_section = result.split("# Домены репозитория")[1].split("---")[0]
+    assert "ещё не выполнена" in domain_section
+
+
+def test_build_step_prompt_domain_context_per_module_repository():
+    repo = RepositoryExecution(
+        repository_name="svc-a",
+        analysis_status="in_progress",
+        volume_class=VolumeClass.SMALL,
+        domain_strategy=DomainStrategy.PER_MODULE,
+    )
+    state = _make_state()
+    state["session"] = state["session"].model_copy(update={"repositories": [repo]})
+
+    with patch.object(prompts_module, "_load_skill_md", return_value="SKILL"):
+        result = build_step_prompt("analyze_repositories", state)
+
+    domain_section = result.split("# Домены репозитория")[1].split("---")[0]
+    assert "Volume class: small" in domain_section
+    assert "Strategy: per_module" in domain_section
+    assert "Домены не выделены" in domain_section
+    assert "Используй границы доменов из раздела «Домены репозитория»" in result
+
+
+def test_build_step_prompt_domain_context_per_domain_repository_lists_domains():
+    repo = RepositoryExecution(
+        repository_name="svc-a",
+        analysis_status="in_progress",
+        volume_class=VolumeClass.LARGE,
+        domain_strategy=DomainStrategy.PER_DOMAIN,
+        domains=[
+            DomainDefinition(
+                domain_id="billing",
+                name="Биллинг",
+                paths=["apps/billing/", "apps/payments/"],
+                signal="Отдельные Django-приложения",
+                subdomains=["subscriptions"],
+            ),
+        ],
+    )
+    state = _make_state()
+    state["session"] = state["session"].model_copy(update={"repositories": [repo]})
+
+    with patch.object(prompts_module, "_load_skill_md", return_value="SKILL"):
+        result = build_step_prompt("analyze_repositories", state)
+
+    domain_section = result.split("# Домены репозитория")[1].split("---")[0]
+    assert "Strategy: per_domain" in domain_section
+    assert 'billing "Биллинг" (paths: apps/billing/, apps/payments/)' in domain_section
+    assert "signal: Отдельные Django-приложения" in domain_section
+    assert "subdomains: subscriptions" in domain_section
+
+
 def test_build_step_prompt_includes_completed_steps():
     state = _make_state()
     state["session"] = state["session"].model_copy(
         update={"completed_steps": [StepId.DEFINE_SCOPE, StepId.REQUEST_REPOSITORY_LIST]}
     )
     with patch.object(prompts_module, "_load_skill_md", return_value="SKILL"):
-        result = build_step_prompt("clone_repositories", state)
+        result = build_step_prompt("assess_scope_and_domains", state)
     assert "define_scope" in result
     assert "request_repository_list" in result
 
@@ -324,33 +421,3 @@ def test_build_step_prompt_release_notes_lists_artifacts_changed_this_window(tmp
 
     assert "architecture/hld.md" in result
     assert "glossary.md" not in result
-
-
-def test_build_step_prompt_clone_repositories_lists_urls_and_instructs_cloning():
-    session = WorkflowSessionRecord(
-        session_id="wf-1",
-        product_name="MyProduct",
-        analysis_scope="full",
-        repositories=[
-            RepositoryExecution(repository_name="svc-a", repository_url="https://example.com/org/svc-a.git"),
-            RepositoryExecution(repository_name="svc-b"),
-        ],
-    )
-    state = _make_state(session=session, raw_workspace_dir="/workspace/repo/.temp")
-
-    with patch.object(prompts_module, "_load_skill_md", return_value="SKILL"):
-        result = build_step_prompt("clone_repositories", state)
-
-    assert "https://example.com/org/svc-a.git" in result
-    assert "/workspace/repo/.temp/svc-a" in result
-    assert "/workspace/repo/.temp/svc-b" in result
-    assert "URL не указан" in result
-    assert "git clone" in result
-
-
-def test_build_step_prompt_non_clone_step_has_no_repository_list_block():
-    with patch.object(prompts_module, "_load_skill_md", return_value="SKILL"):
-        result = build_step_prompt("define_scope", _make_state())
-
-    assert "# Список репозиториев" in result
-    assert "git clone <url>" not in result

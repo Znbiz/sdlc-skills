@@ -6,13 +6,17 @@ from app.workflows.init_arch.domain.models import (
     AnalysisTargetCommitStatus,
     ArtifactRecord,
     CommitRangeStatus,
+    DomainDefinition,
+    DomainStrategy,
     NextWindowConfirmationStatus,
     OpenQuestionRecord,
     RepositoryExecution,
     StepId,
+    VolumeClass,
     WorkflowSessionRecord,
     WorkflowStatus,
 )
+from app.workflows.init_arch.domain.signal_routing import route_checklist_items
 from app.workflows.init_arch.domain.steps import STEP_DEFINITION_BY_ID
 
 TemporalWindowConfirmationAction = typing.Literal["continue_to_next_window", "finish_temporal_analysis"]
@@ -138,6 +142,53 @@ def mark_checklist_item(session: WorkflowSessionRecord, *, repository_name: str,
         raise DomainOperationError(f"repository not found: {repository_name}")
 
     return session.model_copy(update={"repositories": repositories})
+
+
+def next_pending_repository(session: WorkflowSessionRecord) -> RepositoryExecution | None:
+    return next((repository for repository in session.repositories if repository.analysis_status != "completed"), None)
+
+
+def next_pending_checklist_item(repository: RepositoryExecution, *, all_checklist_item_ids: list[str]) -> str | None:
+    routed_item_ids = route_checklist_items(repository, all_checklist_item_ids=all_checklist_item_ids)
+    return next((item_id for item_id in routed_item_ids if item_id not in repository.checklist_items_completed), None)
+
+
+def set_domain_assessment(
+    session: WorkflowSessionRecord,
+    *,
+    repository_name: str,
+    volume_class: VolumeClass,
+    strategy: DomainStrategy,
+    domains: list[DomainDefinition],
+) -> WorkflowSessionRecord:
+    repositories: list[RepositoryExecution] = []
+    found = False
+    for repository in session.repositories:
+        if repository.repository_name == repository_name:
+            found = True
+            repositories.append(
+                repository.model_copy(
+                    update={
+                        "volume_class": volume_class,
+                        "domain_strategy": strategy,
+                        "domains": list(domains),
+                    }
+                )
+            )
+        else:
+            repositories.append(repository)
+
+    if not found:
+        raise DomainOperationError(f"repository not found: {repository_name}")
+
+    return session.model_copy(update={"repositories": repositories})
+
+
+def domain_assessment_is_complete(session: WorkflowSessionRecord) -> bool:
+    repositories = list(session.repositories)
+    if not repositories:
+        return False
+    return all(repository.domain_strategy is not None for repository in repositories)
 
 
 def finalize_session(session: WorkflowSessionRecord) -> WorkflowSessionRecord:
