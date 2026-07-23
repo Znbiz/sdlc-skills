@@ -5,9 +5,15 @@
   padding: 0;
 }
 
+.nodeRow {
+  display: flex;
+  align-items: center;
+}
+
 .nodeButton {
   display: block;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   text-align: left;
   background: none;
   border: none;
@@ -26,4 +32,26 @@
   background: var(--color-info-bg);
   color: var(--color-info-text);
   font-weight: 600;
+}
+
+.deleteButton {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  font: inherit;
+  line-height: 1;
+  padding: 0.15rem 0.4rem;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  opacity: 0;
+}
+
+.nodeRow:hover .deleteButton {
+  opacity: 1;
+}
+
+.deleteButton:hover {
+  background: var(--color-danger-bg);
+  color: var(--color-danger-text);
 }

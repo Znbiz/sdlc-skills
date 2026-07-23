@@ -501,6 +501,72 @@ async def test_conversation_workspace_tree_self_heals_when_directory_missing_on_
         get_gateway_settings.cache_clear()
 
 
+async def test_delete_conversation_workspace_file_removes_file_and_directory(
+    async_client, auth_headers, tmp_path, monkeypatch
+):
+    from app.services.init_arch_workflow import create_conversation_async
+    from app.settings import get_gateway_settings
+
+    workspace_root = tmp_path / "workspace-root"
+    workspace_root.mkdir()
+    monkeypatch.setenv("WORKSPACE_DIR", str(workspace_root))
+    get_gateway_settings.cache_clear()
+    try:
+        await create_conversation_async("conv-workspace-delete")
+        conversation_dir = workspace_root / "conv-workspace-delete"
+        (conversation_dir / "arch-doc").mkdir(parents=True)
+        (conversation_dir / "arch-doc" / "index.md").write_text("# Hello")
+        (conversation_dir / ".temp" / "some-repo").mkdir(parents=True)
+
+        file_resp = await async_client.delete(
+            "/api/rest/conversations/conv-workspace-delete/workspace/file/",
+            params={"path": "arch-doc/index.md"},
+            headers=auth_headers,
+        )
+        assert file_resp.status_code == 204
+        assert not (conversation_dir / "arch-doc" / "index.md").exists()
+
+        dir_resp = await async_client.delete(
+            "/api/rest/conversations/conv-workspace-delete/workspace/file/",
+            params={"path": ".temp/some-repo"},
+            headers=auth_headers,
+        )
+        assert dir_resp.status_code == 204
+        assert not (conversation_dir / ".temp" / "some-repo").exists()
+    finally:
+        get_gateway_settings.cache_clear()
+
+
+async def test_delete_conversation_workspace_file_rejects_traversal_and_missing_path(
+    async_client, auth_headers, tmp_path, monkeypatch
+):
+    from app.services.init_arch_workflow import create_conversation_async
+    from app.settings import get_gateway_settings
+
+    workspace_root = tmp_path / "workspace-root"
+    workspace_root.mkdir()
+    monkeypatch.setenv("WORKSPACE_DIR", str(workspace_root))
+    get_gateway_settings.cache_clear()
+    try:
+        await create_conversation_async("conv-workspace-delete-guard")
+
+        traversal_resp = await async_client.delete(
+            "/api/rest/conversations/conv-workspace-delete-guard/workspace/file/",
+            params={"path": "../outside.md"},
+            headers=auth_headers,
+        )
+        assert traversal_resp.status_code == 403
+
+        missing_resp = await async_client.delete(
+            "/api/rest/conversations/conv-workspace-delete-guard/workspace/file/",
+            params={"path": "missing.md"},
+            headers=auth_headers,
+        )
+        assert missing_resp.status_code == 404
+    finally:
+        get_gateway_settings.cache_clear()
+
+
 async def test_get_response_returns_required_actions(async_client, auth_headers):
     get_workflow_registry()["wf-response-1"] = WorkflowRecord(
         workflow_id="wf-response-1",
@@ -738,7 +804,7 @@ async def test_post_response_action_restart_deletes_workflow_and_returns_convers
     from app.services.init_arch_workflow import persist_workflow_record
 
     workspace_dir = tmp_path / "workspace"
-    (workspace_dir / "runs" / "wf-response-restart").mkdir(parents=True)
+    (workspace_dir / ".temp" / "svc-a").mkdir(parents=True)
     (workspace_dir / "arch-doc").mkdir(parents=True)
 
     record = WorkflowRecord(
@@ -774,7 +840,9 @@ async def test_post_response_action_restart_deletes_workflow_and_returns_convers
         "active_response": None,
         "previous_init_input": None,
     }
-    assert not (workspace_dir / "runs" / "wf-response-restart").exists()
+    # restart no longer touches disk - repository clones under `.temp/` and `arch-doc/` are
+    # project-level artifacts shared by every run of the conversation.
+    assert (workspace_dir / ".temp" / "svc-a").exists()
     assert (workspace_dir / "arch-doc").exists()
     assert "wf-response-restart" not in get_workflow_registry()
 
@@ -786,7 +854,7 @@ async def test_post_response_action_restart_returns_previous_init_input_for_pref
     from app.workflows.init_arch.domain import RepositoryExecution, WorkflowSessionRecord
 
     workspace_dir = tmp_path / "workspace"
-    (workspace_dir / "runs" / "wf-response-restart-prefill").mkdir(parents=True)
+    (workspace_dir / ".temp").mkdir(parents=True)
     (workspace_dir / "arch-doc").mkdir(parents=True)
 
     session = WorkflowSessionRecord(

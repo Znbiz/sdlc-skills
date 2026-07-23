@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime
 import enum
 import pathlib
+import shutil
 import typing
 
 
@@ -108,3 +109,14 @@ def read_docs_file(arch_repo_root: str, relative_path: str) -> dict[str, typing.
         return {**base, "media_kind": MediaKind.UNSUPPORTED.value, "content": None, "encoding": None}
 
     return {**base, "content": content, "encoding": "utf-8"}
+
+
+def delete_docs_path(arch_repo_root: str, relative_path: str) -> None:
+    if not relative_path.strip():
+        raise DocsPathForbiddenError("Root path cannot be deleted")
+
+    resolved = resolve_within_root(arch_repo_root, relative_path)
+    if resolved.is_dir():
+        shutil.rmtree(resolved)
+    else:
+        resolved.unlink()

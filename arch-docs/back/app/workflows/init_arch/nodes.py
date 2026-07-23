@@ -11,6 +11,7 @@ import structlog
 from langgraph.types import interrupt
 
 from app.services.git_credentials import classify_git_access_failure, ensure_git_credentials_store
+from app.services.repository_url import normalize_repository_url
 from app.workflows.init_arch.audit import get_workflow_audit_service
 from app.workflows.init_arch.domain import (
     AuditActor,
@@ -110,7 +111,9 @@ async def _run_step_worker(  # noqa: PLR0913
         repository_name=repository_name,
         autofix_findings=autofix_findings,
     )
-    return await worker_service.run_task(request, engine_name=state["engine_name"])
+    return await worker_service.run_task(
+        request, engine_name=state["engine_name"], provider_connection_id=state.get("provider_connection_id")
+    )
 
 
 def _raise_if_blocking(prefix: str, blocking_issues: list[str]) -> None:
@@ -327,36 +330,47 @@ async def _run_git_clone(repository_url: str, target_path: pathlib.Path) -> None
 
 
 async def _clone_repositories(session: WorkflowSessionRecord, *, raw_workspace_dir: str) -> str:
+    """Clone each repository into `raw_workspace_dir/<repository_name>`.
+
+    `raw_workspace_dir` (`workspace_dir/.temp/`, see `_resolve_init_arch_paths()` in
+    init_arch_workflow.py) is a project-level artifact shared across every run of this
+    conversation, not scoped to this particular `workflow_id`. A checkout with a known
+    `repository_url` is therefore always deleted and re-cloned fresh, rather than reused as-is -
+    a leftover local checkout from an earlier run would otherwise have stale remote-tracking refs
+    (`refresh_main_branches()` reads `origin/<branch>` as of clone time, there is no fetch step)
+    and could still be mid-checkout at some historical commit from that earlier run's analysis.
+    Only repositories with no `repository_url` at all (nothing to re-clone from) reuse whatever
+    checkout is already on disk.
+    """
     await ensure_git_credentials_store()
     cloned: list[str] = []
-    already_present: list[str] = []
+    reused: list[str] = []
     for repository in session.repositories:
         repository_name = repository.repository_name
         _validate_repository_name(repository_name)
         target_path = pathlib.Path(raw_workspace_dir) / repository_name
 
-        if (target_path / ".git").exists():
-            already_present.append(repository_name)
-            continue
-
         if not repository.repository_url:
             if not target_path.exists():
                 msg = f"repository {repository_name!r} has no repository_url and no existing checkout at {target_path}"
                 raise ValueError(msg)
-            already_present.append(repository_name)
+            reused.append(repository_name)
             continue
 
         if target_path.exists():
-            # Leftover from a previous failed/partial clone attempt — not a valid git checkout.
             shutil.rmtree(target_path)
-        await _run_git_clone(repository.repository_url, target_path)
+        # Re-normalize at clone time, not just when the entry was added to the conversation -
+        # the host's registered connection (see app/services/git_connections.py) can have
+        # changed since, and a stale URL from before that change would fail to authenticate.
+        clone_url = await normalize_repository_url(repository.repository_url)
+        await _run_git_clone(clone_url, target_path)
         cloned.append(repository_name)
 
     summary_parts = []
     if cloned:
         summary_parts.append(f"cloned: {', '.join(cloned)}")
-    if already_present:
-        summary_parts.append(f"already present: {', '.join(already_present)}")
+    if reused:
+        summary_parts.append(f"reused existing checkout: {', '.join(reused)}")
     return "; ".join(summary_parts) if summary_parts else "no repositories to clone"
 
 

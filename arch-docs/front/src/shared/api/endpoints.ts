@@ -12,6 +12,8 @@ import type {
   GitConnectionType,
   GitSshPublicKeyResponse,
   InitAuthResponse,
+  LlmProviderConnectionDetailResponse,
+  LlmProviderConnectionSummaryResponse,
   ResponseStatusResponse,
 } from "./models";
 
@@ -50,6 +52,40 @@ export const gitConnectionsApi = {
 
 export const gitSshApi = {
   getPublicKey: () => httpClient.get<GitSshPublicKeyResponse>("/rest/git-ssh/public-key/"),
+};
+
+export interface LlmProviderConnectionParams {
+  name: string;
+  baseUrl: string;
+  model: string;
+  token?: string;
+  wireApi?: string;
+  requiresOpenaiAuth?: boolean;
+}
+
+export const llmProvidersApi = {
+  list: () => httpClient.get<LlmProviderConnectionSummaryResponse[]>("/rest/llm-providers/"),
+  get: (connectionId: string) =>
+    httpClient.get<LlmProviderConnectionDetailResponse>(`/rest/llm-providers/${encodeURIComponent(connectionId)}/`),
+  create: (params: LlmProviderConnectionParams) =>
+    httpClient.post<LlmProviderConnectionSummaryResponse>("/rest/llm-providers/", {
+      name: params.name,
+      base_url: params.baseUrl,
+      model: params.model,
+      token: params.token,
+      wire_api: params.wireApi ?? "chat",
+      requires_openai_auth: params.requiresOpenaiAuth ?? false,
+    }),
+  update: (connectionId: string, params: LlmProviderConnectionParams) =>
+    httpClient.put<LlmProviderConnectionSummaryResponse>(`/rest/llm-providers/${encodeURIComponent(connectionId)}/`, {
+      name: params.name,
+      base_url: params.baseUrl,
+      model: params.model,
+      token: params.token,
+      wire_api: params.wireApi ?? "chat",
+      requires_openai_auth: params.requiresOpenaiAuth ?? false,
+    }),
+  delete: (connectionId: string) => httpClient.delete<void>(`/rest/llm-providers/${encodeURIComponent(connectionId)}/`),
 };
 
 export const workflowApi = {
@@ -105,10 +141,6 @@ export const workspaceApi = {
   getTree: (conversationId: string) => httpClient.get<DocsTreeNode>(`/rest/conversations/${conversationId}/workspace/tree/`),
   getFile: (conversationId: string, path: string) =>
     httpClient.get<DocsFileResponse>(`/rest/conversations/${conversationId}/workspace/file/`, { query: { path } }),
-};
-
-export const docsApi = {
-  getTree: (responseId: string) => httpClient.get<DocsTreeNode>(`/rest/responses/${responseId}/docs/tree/`),
-  getFile: (responseId: string, path: string) =>
-    httpClient.get<DocsFileResponse>(`/rest/responses/${responseId}/docs/file/`, { query: { path } }),
+  deletePath: (conversationId: string, path: string) =>
+    httpClient.delete<void>(`/rest/conversations/${conversationId}/workspace/file/`, { query: { path } }),
 };

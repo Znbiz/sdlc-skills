@@ -10,6 +10,12 @@ import structlog
 from app.db.session import get_session
 from app.db.task_repo import upsert_cli_task
 from app.services.agent_pool import AgentPool, get_agent_pool
+from app.services.llm_provider_credentials import EXTERNAL_LLM_API_KEY_ENV_VAR
+from app.services.llm_providers import (
+    LlmProviderConnectionDetail,
+    LlmProviderConnectionNotFoundError,
+    get_llm_provider_connection_async,
+)
 from app.services.task_registry import CliTask, TaskRegistry, TaskStatus
 from app.services.text_sanitization import sanitize_text
 from app.services.workflow_event_bus import get_workflow_event_bus
@@ -25,6 +31,14 @@ from app.workflows.init_arch.domain import (
 )
 
 logger = structlog.get_logger()
+
+# asyncio.StreamReader defaults to a 64 KiB line limit (`asyncio.streams._DEFAULT_LIMIT`) - codex
+# routinely emits single --json lines well past that (e.g. a tool-output line embedding a whole
+# file's contents), which makes `reader.readline()` raise `LimitOverrunError: Separator is found,
+# but chunk is longer than limit`. That's deterministic for the same input, so the workflow's
+# step-retry loop just re-runs the same losing call three times before giving up. Raise the limit
+# instead of retrying around it.
+_STDOUT_STREAM_LIMIT: typing.Final[int] = 10 * 1024 * 1024
 
 _db_enabled: bool = False
 
@@ -69,13 +83,34 @@ FAILURE_REASON_AUTH_EXPIRED: typing.Final[str] = "auth_expired"
 FAILURE_REASON_LIMIT_EXHAUSTED: typing.Final[str] = "limit_exhausted"
 
 
-def _build_cmd(cli_task: CliTask) -> list[str]:
+def _external_provider_overrides(connection: LlmProviderConnectionDetail) -> list[str]:
+    # Passed as `-c` overrides on this one `codex exec` invocation rather than written into the
+    # shared config.toml, so concurrent tasks using different connections (or none at all) never
+    # collide - see arch-docs/docs/spec/2026-07-24-external-llm-provider.md, section 4.
+    requires_openai_auth = "true" if connection.requires_openai_auth else "false"
+    overrides = [
+        "model_provider=external",
+        "model_providers.external.name=external",
+        f"model_providers.external.base_url={connection.base_url}",
+        f"model_providers.external.env_key={EXTERNAL_LLM_API_KEY_ENV_VAR}",
+        f"model_providers.external.wire_api={connection.wire_api}",
+        f"model_providers.external.requires_openai_auth={requires_openai_auth}",
+        f"model={connection.model}",
+    ]
+    args: list[str] = []
+    for override in overrides:
+        args.extend(["-c", override])
+    return args
+
+
+def _build_cmd(cli_task: CliTask, provider_connection: LlmProviderConnectionDetail | None = None) -> list[str]:
     if cli_task.engine_name == "claude":
         # Non-interactive (`-p`) runs have nobody to approve tool calls, so without this the
         # agent silently fails every write/Bash action (mkdir, git clone, ...) and only reports
         # the block in its final text answer - the CLI still exits 0, so callers see "success".
         # The container's own filesystem/user isolation is the actual security boundary here,
-        # matching how `codex` is configured (see config.toml `approval_policy = "never"`).
+        # matching how `codex` is configured (see config.toml `approval_policy = "never"`,
+        # `sandbox_mode = "danger-full-access"`).
         cmd = [
             "claude",
             "-p",
@@ -89,21 +124,30 @@ def _build_cmd(cli_task: CliTask) -> list[str]:
         if cli_task.session_id:
             cmd.extend(["--resume", cli_task.session_id])
         return cmd
+    provider_overrides = _external_provider_overrides(provider_connection) if provider_connection else []
     if cli_task.session_id:
         return [
             "codex",
             "exec",
             "resume",
             cli_task.session_id,
+            *provider_overrides,
             "--json",
             cli_task.prompt_text,
         ]
+    # `--sandbox` mirrors `claude`'s `bypassPermissions` above: codex's own sandbox modes
+    # (`workspace-write`/`read-only`) set up a nested bubblewrap sandbox on Linux, which needs
+    # an unprivileged user namespace (`unshare(CLONE_NEWUSER)`) - blocked by Docker's default
+    # seccomp profile, so it fails with a bwrap namespace error and the agent can't touch the
+    # filesystem at all. `danger-full-access` skips that nested sandbox and relies on the
+    # container's own isolation instead, same as claude.
     return [
         "codex",
         "exec",
         "--sandbox",
         cli_task.sandbox_mode,
         "--skip-git-repo-check",
+        *provider_overrides,
         "--json",
         cli_task.prompt_text,
     ]
@@ -311,7 +355,20 @@ async def _terminate_subprocess(proc: asyncio.subprocess.Process) -> None:
         proc.kill()
 
 
-async def run_cli_task(cli_task: CliTask, agent_pool: AgentPool) -> None:
+class _ProviderConnectionMissingError(Exception):
+    pass
+
+
+async def _resolve_provider_connection(cli_task: CliTask) -> LlmProviderConnectionDetail | None:
+    if cli_task.provider_connection_id is None:
+        return None
+    try:
+        return await get_llm_provider_connection_async(uuid.UUID(cli_task.provider_connection_id))
+    except LlmProviderConnectionNotFoundError:
+        raise _ProviderConnectionMissingError from None
+
+
+async def run_cli_task(cli_task: CliTask, agent_pool: AgentPool) -> None:  # noqa: PLR0915
     logger.info("cli_task.queued", **_task_log_context(cli_task), engine=cli_task.engine_name)
     await _persist_task(cli_task)
 
@@ -325,7 +382,24 @@ async def run_cli_task(cli_task: CliTask, agent_pool: AgentPool) -> None:
         logger.info("cli_task.started", **_task_log_context(cli_task), engine=cli_task.engine_name)
         await _persist_task(cli_task)
 
-        cmd = _build_cmd(cli_task)
+        try:
+            provider_connection = await _resolve_provider_connection(cli_task)
+        except _ProviderConnectionMissingError:
+            cli_task.task_status = TaskStatus.FAILED
+            cli_task.task_error = f"LLM provider connection not found: {cli_task.provider_connection_id}"
+            cli_task.finished_at = datetime.datetime.now(datetime.timezone.utc)
+            logger.warning("cli_task.provider_connection_missing", **_task_log_context(cli_task))
+            await _persist_task(cli_task)
+            return
+
+        cmd = _build_cmd(cli_task, provider_connection)
+
+        # Per-call env, NOT a mutation of the shared os.environ (unlike git_credentials'
+        # GIT_CONFIG_GLOBAL) - concurrent CliTask runs against different external LLM connections
+        # (or none) must never observe each other's token. See spec §4.
+        subprocess_env = {**os.environ}
+        if provider_connection is not None and provider_connection.token:
+            subprocess_env[EXTERNAL_LLM_API_KEY_ENV_VAR] = provider_connection.token
 
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -333,7 +407,8 @@ async def run_cli_task(cli_task: CliTask, agent_pool: AgentPool) -> None:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cli_task.workspace_dir,
-                env={**os.environ},
+                env=subprocess_env,
+                limit=_STDOUT_STREAM_LIMIT,
             )
             cli_task.subprocess_handle = proc
 
@@ -387,10 +462,14 @@ async def run_cli_task(cli_task: CliTask, agent_pool: AgentPool) -> None:
                 cli_task.task_result = _extract_result_text(cli_task.engine_name, cli_task.stdout_lines)
                 cli_task.task_status = TaskStatus.SUCCESS
 
-        except OSError as exc:
+        except (OSError, asyncio.LimitOverrunError) as exc:
+            # LimitOverrunError still possible even past _STDOUT_STREAM_LIMIT for a truly
+            # pathological single line - fail the task cleanly instead of letting it escape
+            # run_cli_task uncaught (which left task_status stuck on RUNNING and made the workflow
+            # node's retry loop burn 3 attempts on a deterministically-doomed re-run).
             cli_task.task_status = TaskStatus.FAILED
             cli_task.task_error = str(exc)
-            logger.error("cli_task.os_error", **_task_log_context(cli_task), error=str(exc))
+            logger.error("cli_task.stream_error", **_task_log_context(cli_task), error=str(exc))
         finally:
             cli_task.finished_at = datetime.datetime.now(datetime.timezone.utc)
             logger.info("cli_task.finished", **_task_log_context(cli_task), task_status=cli_task.task_status)
@@ -427,8 +506,10 @@ class LlmCliService:
     def __init__(self, audit_service: WorkflowAuditService | None = None) -> None:
         self._audit_service = audit_service or get_workflow_audit_service()
 
-    async def run_task(self, request: LlmTaskRequest, *, engine_name: str) -> LlmTaskResult:
-        cli_task = self._build_cli_task(request, engine_name=engine_name)
+    async def run_task(
+        self, request: LlmTaskRequest, *, engine_name: str, provider_connection_id: str | None = None
+    ) -> LlmTaskResult:
+        cli_task = self._build_cli_task(request, engine_name=engine_name, provider_connection_id=provider_connection_id)
         self._bind_request_metadata(cli_task, request)
         settings = get_gateway_settings()
         masked_prompt = sanitize_text(request.prompt_text, max_chars=settings.audit.max_prompt_chars) or ""
@@ -504,10 +585,13 @@ class LlmCliService:
             raw_output=cli_task.task_result or "",
         )
 
-    def _build_cli_task(self, request: LlmTaskRequest, *, engine_name: str) -> CliTask:
+    def _build_cli_task(
+        self, request: LlmTaskRequest, *, engine_name: str, provider_connection_id: str | None = None
+    ) -> CliTask:
         return CliTask(
             task_id=str(uuid.uuid4()),
             engine_name=engine_name,
+            provider_connection_id=provider_connection_id,
             prompt_text=request.prompt_text,
             workspace_dir=request.workspace_dir,
             workflow_id=request.session_id or None,

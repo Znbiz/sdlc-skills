@@ -20,6 +20,7 @@ class CliTaskModel(Base):
         default=uuid.uuid4,
     )
     engine_name: orm.Mapped[str] = orm.mapped_column(sa.Text, nullable=False)
+    provider_connection_id: orm.Mapped[str | None] = orm.mapped_column(sa.Text, nullable=True)
     task_status: orm.Mapped[str] = orm.mapped_column(sa.Text, nullable=False, default="pending")
     prompt_text: orm.Mapped[str] = orm.mapped_column(sa.Text, nullable=False)
     workspace_dir: orm.Mapped[str] = orm.mapped_column(sa.Text, nullable=False)
@@ -184,6 +185,31 @@ class GitHostConnectionModel(Base):
     )
     host: orm.Mapped[str] = orm.mapped_column(sa.Text, nullable=False, unique=True)
     connection_type: orm.Mapped[str] = orm.mapped_column(sa.Text, nullable=False)
+    created_at: orm.Mapped[datetime.datetime] = orm.mapped_column(
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+    )
+    updated_at: orm.Mapped[datetime.datetime] = orm.mapped_column(
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+    )
+
+
+class LlmProviderConnectionModel(Base):
+    __tablename__ = "llm_provider_connections"
+
+    connection_id: orm.Mapped[uuid.UUID] = orm.mapped_column(
+        sa.Uuid,
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    name: orm.Mapped[str] = orm.mapped_column(sa.Text, nullable=False, unique=True)
+    base_url: orm.Mapped[str] = orm.mapped_column(sa.Text, nullable=False)
+    model: orm.Mapped[str] = orm.mapped_column(sa.Text, nullable=False)
+    wire_api: orm.Mapped[str] = orm.mapped_column(sa.Text, nullable=False, default="chat")
+    requires_openai_auth: orm.Mapped[bool] = orm.mapped_column(sa.Boolean, nullable=False, default=False)
     created_at: orm.Mapped[datetime.datetime] = orm.mapped_column(
         sa.DateTime(timezone=True),
         nullable=False,

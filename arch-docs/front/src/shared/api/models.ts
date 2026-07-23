@@ -52,6 +52,25 @@ export interface GitSshPublicKeyResponse {
   public_key: string;
 }
 
+export interface LlmProviderConnectionSummaryResponse {
+  connection_id: string;
+  name: string;
+  base_url: string;
+  model: string;
+  wire_api: string;
+  requires_openai_auth: boolean;
+}
+
+export interface LlmProviderConnectionDetailResponse {
+  connection_id: string;
+  name: string;
+  base_url: string;
+  model: string;
+  wire_api: string;
+  requires_openai_auth: boolean;
+  token: string | null;
+}
+
 // action_type здесь всегда равен backend-овскому interrupt_type. Известные значения:
 // "user_question", "user_input", "temporal_window_confirmation", "step_failed".
 export interface RequiredActionResponse {
@@ -68,6 +87,7 @@ export interface InitArchInput {
   arch_repo_dir: string;
   engine_name: CliEngine;
   timeout_seconds: number;
+  provider_connection_id?: string | null;
 }
 
 export interface RepositoryStatusResponse {

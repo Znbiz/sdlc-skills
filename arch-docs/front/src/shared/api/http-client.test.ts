@@ -2,7 +2,7 @@ import { HttpResponse, http } from "msw";
 import { describe, expect, it } from "vitest";
 import { server } from "../../test/msw-server";
 import { ApiError } from "../errors/api-error";
-import { cliAuthApi, docsApi, gitConnectionsApi } from "./endpoints";
+import { cliAuthApi, gitConnectionsApi, workspaceApi } from "./endpoints";
 
 describe("cliAuthApi.getStatus", () => {
   it("парсит успешный ответ backend в типизированную модель", async () => {
@@ -37,13 +37,13 @@ describe("маппинг ошибок backend", () => {
 
   it("извлекает typed reason_code из detail-объекта вместо парсинга свободного текста", async () => {
     server.use(
-      http.get("/api/rest/responses/resp-1/docs/file/", () =>
+      http.get("/api/rest/conversations/conv-1/workspace/file/", () =>
         HttpResponse.json({ detail: { reason_code: "path_forbidden", message: "запрещённый путь" } }, { status: 403 }),
       ),
     );
 
     try {
-      await docsApi.getFile("resp-1", "../../etc/passwd");
+      await workspaceApi.getFile("conv-1", "../../etc/passwd");
       expect.unreachable("ожидалась ошибка");
     } catch (error) {
       expect(error).toBeInstanceOf(ApiError);

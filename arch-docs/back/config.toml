@@ -2,4 +2,9 @@
 # Устраняет необходимость передавать флаги при каждом вызове codex exec
 
 approval_policy = "never"
-sandbox_mode = "workspace-write"
+# workspace-write/read-only set up a nested bubblewrap sandbox on Linux, which needs an
+# unprivileged user namespace - blocked by Docker's default seccomp profile, so codex fails
+# with a bwrap namespace error and can't touch the filesystem at all. The container itself is
+# already the isolation boundary (same reasoning as claude's --permission-mode bypassPermissions),
+# so skip codex's own nested sandbox entirely.
+sandbox_mode = "danger-full-access"

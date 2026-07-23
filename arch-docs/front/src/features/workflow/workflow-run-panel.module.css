@@ -63,6 +63,13 @@
   min-width: 3.5rem;
 }
 
+.streamTime {
+  flex-shrink: 0;
+  font-size: 0.7rem;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
 .streamMessage {
   flex: 1;
   word-break: break-word;

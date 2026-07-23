@@ -79,7 +79,14 @@ export function useSubmitResponseAction(conversationId: string | undefined) {
       value?: unknown;
     }) => workflowApi.submitAction(params.responseId, params),
     onSuccess: (_data, params) => {
-      queryClient.invalidateQueries({ queryKey: workflowQueryKeys.response(params.responseId) });
+      if (params.actionType === "restart") {
+        // `restart` deletes the WorkflowRecord entirely - the old response_id 404s from now on,
+        // so drop it from the cache instead of invalidating (which would refetch and surface the 404).
+        queryClient.removeQueries({ queryKey: workflowQueryKeys.response(params.responseId) });
+        queryClient.removeQueries({ queryKey: workflowQueryKeys.responseItems(params.responseId) });
+      } else {
+        queryClient.invalidateQueries({ queryKey: workflowQueryKeys.response(params.responseId) });
+      }
       if (conversationId) {
         queryClient.invalidateQueries({ queryKey: workflowQueryKeys.conversation(conversationId) });
         queryClient.invalidateQueries({ queryKey: workflowQueryKeys.responses(conversationId) });
@@ -185,5 +192,15 @@ export function useConversationWorkspaceFile(conversationId: string | undefined,
     queryKey: workflowQueryKeys.workspaceFile(conversationId ?? "none", path ?? "none"),
     queryFn: () => workspaceApi.getFile(conversationId!, path!),
     enabled: conversationId !== undefined && path !== undefined,
+  });
+}
+
+export function useDeleteConversationWorkspacePath(conversationId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (path: string) => workspaceApi.deletePath(conversationId, path),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: workflowQueryKeys.workspaceTree(conversationId) });
+    },
   });
 }

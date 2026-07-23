@@ -3,7 +3,7 @@ import type { ResponseStatusResponse } from "../../shared/api/models";
 import { Card } from "../../shared/ui/card";
 import { StatusBadge } from "../../shared/ui/status-badge";
 import { responseStatusLabel, toneFromResponseStatus } from "../../shared/status/status-mapping";
-import { setLastResponseId } from "../../shared/storage/recent-response";
+import { setLastConversationId } from "../../shared/storage/recent-conversation";
 import styles from "./terminal-result.module.css";
 
 export function TerminalResult({ response }: { response: ResponseStatusResponse }) {
@@ -23,8 +23,8 @@ export function TerminalResult({ response }: { response: ResponseStatusResponse 
       {canOpenDocs && (
         <Link
           className={styles.docsLink}
-          to={`/docs?responseId=${encodeURIComponent(response.response_id)}`}
-          onClick={() => setLastResponseId(response.response_id)}
+          to={`/docs?conversationId=${encodeURIComponent(response.conversation_id)}`}
+          onClick={() => setLastConversationId(response.conversation_id)}
         >
           Открыть документацию
         </Link>

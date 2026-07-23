@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { cliAuthApi, gitConnectionsApi, gitSshApi } from "../../shared/api/endpoints";
+import { cliAuthApi, gitConnectionsApi, gitSshApi, llmProvidersApi } from "../../shared/api/endpoints";
+import type { LlmProviderConnectionParams } from "../../shared/api/endpoints";
 import type { CliEngine, GitConnectionType } from "../../shared/api/models";
 
 export const setupQueryKeys = {
@@ -8,6 +9,8 @@ export const setupQueryKeys = {
   gitConnection: (connectionId: string) => ["setup", "git-connections", connectionId] as const,
   gitSshPublicKey: ["setup", "git-ssh-public-key"] as const,
   authSession: (authSessionId: string) => ["setup", "auth-session", authSessionId] as const,
+  llmProviderConnections: ["setup", "llm-provider-connections"] as const,
+  llmProviderConnection: (connectionId: string) => ["setup", "llm-provider-connections", connectionId] as const,
 };
 
 export function useCliAuthStatus() {
@@ -95,5 +98,48 @@ export function useGitSshPublicKey() {
   return useQuery({
     queryKey: setupQueryKeys.gitSshPublicKey,
     queryFn: gitSshApi.getPublicKey,
+  });
+}
+
+export function useLlmProviderConnections() {
+  return useQuery({
+    queryKey: setupQueryKeys.llmProviderConnections,
+    queryFn: llmProvidersApi.list,
+  });
+}
+
+export function useLlmProviderConnection(connectionId: string | null) {
+  return useQuery({
+    queryKey: setupQueryKeys.llmProviderConnection(connectionId ?? "none"),
+    queryFn: () => llmProvidersApi.get(connectionId!),
+    enabled: connectionId !== null,
+  });
+}
+
+export function useCreateLlmProviderConnection() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (params: LlmProviderConnectionParams) => llmProvidersApi.create(params),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: setupQueryKeys.llmProviderConnections }),
+  });
+}
+
+export function useUpdateLlmProviderConnection() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (params: { connectionId: string } & LlmProviderConnectionParams) =>
+      llmProvidersApi.update(params.connectionId, params),
+    onSuccess: (_data, params) => {
+      queryClient.invalidateQueries({ queryKey: setupQueryKeys.llmProviderConnections });
+      queryClient.invalidateQueries({ queryKey: setupQueryKeys.llmProviderConnection(params.connectionId) });
+    },
+  });
+}
+
+export function useDeleteLlmProviderConnection() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: llmProvidersApi.delete,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: setupQueryKeys.llmProviderConnections }),
   });
 }

@@ -22,6 +22,7 @@ class CliTask:
     task_id: str
     engine_name: str
     prompt_text: str
+    provider_connection_id: str | None = None
     workspace_dir: str
     conversation_id: str | None = None
     response_type: str | None = None
@@ -30,7 +31,7 @@ class CliTask:
     repository_name: str | None = None
     domain_id: str | None = None
     expected_schema_name: str | None = None
-    sandbox_mode: str = "workspace-write"
+    sandbox_mode: str = "danger-full-access"
     session_id: str | None = None
     timeout_seconds: int = 300
     task_status: TaskStatus = TaskStatus.PENDING

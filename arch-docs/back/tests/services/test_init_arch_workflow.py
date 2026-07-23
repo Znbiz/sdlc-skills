@@ -614,6 +614,50 @@ async def test_create_response_async_rejects_unsupported_engine(monkeypatch):
         )
 
 
+async def test_create_response_async_update_arch_accepts_provider_connection_id_with_codex(monkeypatch):
+    monkeypatch.setattr("app.services.init_arch_workflow.create_conversation_async", AsyncMock())
+    captured = {}
+
+    def _fake_enqueue(cli_task: CliTask):
+        captured["task"] = cli_task
+        return cli_task
+
+    monkeypatch.setattr("app.services.init_arch_workflow._enqueue_cli_task", _fake_enqueue)
+
+    await workflow_module.create_response_async(
+        conversation_id="conv-update",
+        workflow_type="update_arch",
+        input_payload={
+            "repo_path": "/repo",
+            "diff_context": "diff",
+            "engine_name": "codex",
+            "timeout_seconds": 12,
+            "provider_connection_id": "conn-1",
+        },
+    )
+
+    assert captured["task"].provider_connection_id == "conn-1"
+
+
+async def test_create_response_async_rejects_provider_connection_id_with_claude_engine(monkeypatch):
+    monkeypatch.setattr("app.services.init_arch_workflow.create_conversation_async", AsyncMock())
+
+    with pytest.raises(
+        workflow_module.WorkflowValidationError,
+        match="provider_connection_id is only supported with engine_name='codex'",
+    ):
+        await workflow_module.create_response_async(
+            conversation_id="conv-query",
+            workflow_type="query",
+            input_payload={
+                "repo_path": "/repo",
+                "question": "what",
+                "engine_name": "claude",
+                "provider_connection_id": "conn-1",
+            },
+        )
+
+
 async def test_submit_response_action_async_cancels_task_backed_response(monkeypatch):
     task = CliTask(
         task_id="task-cancel",
@@ -848,7 +892,7 @@ async def test_start_init_arch_workflow_parses_urls_into_repository_name_and_url
     monkeypatch.setattr("app.services.init_arch_workflow.asyncio.create_task", _fake_create_task)
     monkeypatch.setattr("app.services.init_arch_workflow.run_workflow", AsyncMock())
     # no host has a registered connection here, so both HTTPS and SSH-form URLs must be left untouched
-    monkeypatch.setattr("app.services.init_arch_workflow.get_connection_type_for_host", AsyncMock(return_value=None))
+    monkeypatch.setattr("app.services.repository_url.get_connection_type_for_host", AsyncMock(return_value=None))
 
     record = await workflow_module.start_init_arch_workflow(
         product_name="svc",
@@ -890,7 +934,7 @@ async def test_start_init_arch_workflow_rewrites_ssh_url_to_https_when_token_con
     monkeypatch.setattr("app.services.init_arch_workflow.asyncio.create_task", _fake_create_task)
     monkeypatch.setattr("app.services.init_arch_workflow.run_workflow", AsyncMock())
     monkeypatch.setattr(
-        "app.services.init_arch_workflow.get_connection_type_for_host",
+        "app.services.repository_url.get_connection_type_for_host",
         AsyncMock(return_value="token"),
     )
 
@@ -935,7 +979,7 @@ async def test_start_init_arch_workflow_rewrites_https_url_to_ssh_when_ssh_confi
     monkeypatch.setattr("app.services.init_arch_workflow.asyncio.create_task", _fake_create_task)
     monkeypatch.setattr("app.services.init_arch_workflow.run_workflow", AsyncMock())
     monkeypatch.setattr(
-        "app.services.init_arch_workflow.get_connection_type_for_host",
+        "app.services.repository_url.get_connection_type_for_host",
         AsyncMock(return_value="ssh"),
     )
 
@@ -963,14 +1007,13 @@ async def test_start_init_arch_workflow_rewrites_https_url_to_ssh_when_ssh_confi
 
 
 def test_resolve_init_arch_paths_rejects_arch_repo_inside_raw_workspace():
-    # arch_repo_dir must not live inside the per-run raw workspace (workspace_dir/runs/<workflow_id>/) -
-    # that directory is wiped wholesale on restart (see restart_init_arch_workflow()), and the
-    # accumulated documentation must survive it.
+    # arch_repo_dir must not live inside the project-level raw workspace (workspace_dir/.temp/) -
+    # repository clones there are deleted and re-cloned on every run's clone step (see
+    # _clone_repositories() in nodes.py), and the accumulated documentation must survive that.
     with pytest.raises(workflow_module.WorkflowValidationError, match="must not live inside raw workspace"):
         workflow_module._resolve_init_arch_paths(
             workspace_dir="/workspace",
-            arch_repo_dir="/workspace/runs/wf-1/arch-doc",
-            workflow_id="wf-1",
+            arch_repo_dir="/workspace/.temp/arch-doc",
         )
 
 
@@ -1520,12 +1563,14 @@ def _fake_checkpointer_with_adelete_thread() -> MagicMock:
     return checkpointer
 
 
-async def test_restart_init_arch_workflow_deletes_files_db_checkpoint_and_registry(tmp_path, monkeypatch, db_session):
+async def test_restart_init_arch_workflow_deletes_db_checkpoint_and_registry_but_not_disk(
+    tmp_path, monkeypatch, db_session
+):
     from app.db.task_repo import get_cli_task, upsert_cli_task
     from app.db.workflow_repo import get_workflow_run, upsert_workflow_run
 
     workspace_dir = tmp_path / "workspace"
-    raw_dir = workspace_dir / "runs" / "wf-restart" / "svc-a"
+    raw_dir = workspace_dir / ".temp" / "svc-a"
     arch_repo_dir = workspace_dir / "arch-doc"
     raw_dir.mkdir(parents=True)
     (raw_dir / "README.md").write_text("hello")
@@ -1557,9 +1602,10 @@ async def test_restart_init_arch_workflow_deletes_files_db_checkpoint_and_regist
 
     result = await workflow_module.restart_init_arch_workflow("wf-restart")
 
-    assert not raw_dir.parent.exists()  # runs/wf-restart itself is gone, not just its content
-    # arch_repo_dir survives restart - it's the accumulated documentation, shared by the whole
+    # Nothing on disk is touched by restart - repository clones under `.temp/` and the accumulated
+    # documentation in arch_repo_dir are project-level artifacts shared by every run of this
     # conversation, not scratch owned by this one run (see spec section 1 "Важный нюанс").
+    assert (raw_dir / "README.md").exists()
     assert arch_repo_dir.exists()
     fake_checkpointer.adelete_thread.assert_awaited_once_with("wf-restart")
     assert "wf-restart" not in workflow_module.get_workflow_registry()
@@ -1572,7 +1618,6 @@ async def test_restart_init_arch_workflow_deletes_files_db_checkpoint_and_regist
 
 async def test_restart_init_arch_workflow_waits_for_live_task_before_deleting(tmp_path, monkeypatch):
     workspace_dir = tmp_path / "workspace"
-    (workspace_dir / "runs" / "wf-restart-running").mkdir(parents=True)
     arch_repo_dir = workspace_dir / "arch-doc"
     arch_repo_dir.mkdir(parents=True)
 
@@ -1594,8 +1639,7 @@ async def test_restart_init_arch_workflow_waits_for_live_task_before_deleting(tm
     result = await workflow_module.restart_init_arch_workflow("wf-restart-running")
 
     assert task.cancelled()
-    assert not (workspace_dir / "runs" / "wf-restart-running").exists()
-    assert arch_repo_dir.exists()
+    fake_checkpointer.adelete_thread.assert_awaited_once_with("wf-restart-running")
     assert result["active_response"] is None
 
 
@@ -1603,7 +1647,6 @@ async def test_restart_init_arch_workflow_returns_previous_init_input_for_prefil
     from app.db.workflow_repo import upsert_workflow_run
 
     workspace_dir = tmp_path / "workspace"
-    (workspace_dir / "runs" / "wf-restart-prefill").mkdir(parents=True)
     arch_repo_dir = workspace_dir / "arch-doc"
     arch_repo_dir.mkdir(parents=True)
 
@@ -1638,9 +1681,6 @@ async def test_restart_init_arch_workflow_returns_previous_init_input_for_prefil
         "workspace_dir": str(workspace_dir),
         "arch_repo_dir": str(arch_repo_dir),
     }
-    # деструктивная часть restart всё ещё должна отработать для run_workspace_dir, но arch_repo_dir -
-    # накопленная документация проекта - restart больше не трогает (см. spec section 1).
-    assert not (workspace_dir / "runs" / "wf-restart-prefill").exists()
     assert arch_repo_dir.exists()
 
 
@@ -1667,30 +1707,6 @@ async def test_restart_init_arch_workflow_previous_init_input_is_none_without_se
     result = await workflow_module.restart_init_arch_workflow("wf-restart-no-session")
 
     assert result["previous_init_input"] is None
-
-
-async def test_restart_init_arch_workflow_is_tolerant_of_already_missing_directories(tmp_path, monkeypatch):
-    # e.g. a retry after a previous restart attempt failed partway through (files already gone,
-    # DB row still there) - rmtree(ignore_errors=True) must not raise on a nonexistent path.
-    workspace_dir = tmp_path / "workspace"
-    workspace_dir.mkdir()
-
-    record = WorkflowRecord(
-        workflow_id="wf-restart-missing-dirs",
-        conversation_id="conv-restart-missing-dirs",
-        workspace_dir=str(workspace_dir),
-        arch_repo_dir=str(workspace_dir / "arch-doc"),
-        workflow_status=WorkflowStatus.CANCELLED,
-    )
-    workflow_module.get_workflow_registry()["wf-restart-missing-dirs"] = record
-    await workflow_module.persist_workflow_record(record)
-
-    fake_checkpointer = _fake_checkpointer_with_adelete_thread()
-    monkeypatch.setattr("app.services.init_arch_workflow.get_checkpointer", AsyncMock(return_value=fake_checkpointer))
-
-    result = await workflow_module.restart_init_arch_workflow("wf-restart-missing-dirs")
-
-    assert result["active_response"] is None
 
 
 async def test_start_init_arch_workflow_persists_resolved_paths(monkeypatch):
@@ -1724,23 +1740,6 @@ async def test_workflow_response_payload_includes_path_metadata():
     payload = workflow_module._workflow_response_payload(record, [])
     assert payload["workspace_dir"] == "/workspace"
     assert payload["arch_repo_dir"] == "/workspace/arch"
-
-
-async def test_get_response_arch_repo_dir_async_returns_path(monkeypatch):
-    record = workflow_module.WorkflowRecord(workflow_id="wf-2", arch_repo_dir="/workspace/arch")
-    monkeypatch.setattr("app.services.init_arch_workflow.get_workflow_record_async", AsyncMock(return_value=record))
-
-    result = await workflow_module.get_response_arch_repo_dir_async("wf-2")
-
-    assert result == "/workspace/arch"
-
-
-async def test_get_response_arch_repo_dir_async_raises_when_missing(monkeypatch):
-    record = workflow_module.WorkflowRecord(workflow_id="wf-3", arch_repo_dir="")
-    monkeypatch.setattr("app.services.init_arch_workflow.get_workflow_record_async", AsyncMock(return_value=record))
-
-    with pytest.raises(workflow_module.ArchRepoNotAvailableError):
-        await workflow_module.get_response_arch_repo_dir_async("wf-3")
 
 
 def _make_snapshot_yaml(*, current_step: StepId, completed_steps: list[StepId]) -> str:
@@ -1813,7 +1812,7 @@ async def test_resume_init_arch_workflow_from_snapshot_raises_when_active_workfl
         completed_steps=[StepId.DEFINE_SCOPE, StepId.REQUEST_REPOSITORY_LIST, StepId.PREPARE_TEMP_WORKSPACE],
     )
     _, resolved_arch_repo_dir, _ = workflow_module._resolve_init_arch_paths(
-        workspace_dir="/new/workspace", arch_repo_dir="/new/workspace/arch-doc", workflow_id="wf-probe"
+        workspace_dir="/new/workspace", arch_repo_dir="/new/workspace/arch-doc"
     )
     workflow_module.get_workflow_registry()["wf-active"] = WorkflowRecord(
         workflow_id="wf-active",

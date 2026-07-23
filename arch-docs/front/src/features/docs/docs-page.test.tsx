@@ -29,8 +29,8 @@ const TREE_RESPONSE = {
 describe("DocsPage", () => {
   it("открывает файл из дерева и рендерит markdown", async () => {
     server.use(
-      http.get("/api/rest/responses/resp-1/docs/tree/", () => HttpResponse.json(TREE_RESPONSE)),
-      http.get("/api/rest/responses/resp-1/docs/file/", ({ request }) => {
+      http.get("/api/rest/conversations/conv-1/workspace/tree/", () => HttpResponse.json(TREE_RESPONSE)),
+      http.get("/api/rest/conversations/conv-1/workspace/file/", ({ request }) => {
         const path = new URL(request.url).searchParams.get("path");
         expect(path).toBe("README.md");
         return HttpResponse.json({
@@ -45,7 +45,7 @@ describe("DocsPage", () => {
       }),
     );
 
-    renderWithProviders(<DocsPage />, { route: "/docs?responseId=resp-1" });
+    renderWithProviders(<DocsPage />, { route: "/docs?conversationId=conv-1" });
 
     const fileButton = await screen.findByRole("button", { name: /README\.md/ });
     await userEvent.click(fileButton);
@@ -53,13 +53,13 @@ describe("DocsPage", () => {
     expect(await screen.findByRole("heading", { name: "Заголовок" })).toBeInTheDocument();
   });
 
-  it("предлагает ввести response_id, если он не передан и не сохранён", async () => {
+  it("предлагает ввести id проекта, если он не передан и не сохранён", async () => {
     server.use(http.get("/api/rest/conversations/", () => HttpResponse.json([])));
     renderWithProviders(<DocsPage />);
-    expect(await screen.findByText(/укажите response_id/i)).toBeInTheDocument();
+    expect(await screen.findByText(/укажите id проекта/i)).toBeInTheDocument();
   });
 
-  it("предлагает выбрать проект из picker и открывает его последний run", async () => {
+  it("предлагает выбрать проект из picker и открывает его дерево файлов", async () => {
     server.use(
       http.get("/api/rest/conversations/", () =>
         HttpResponse.json([
@@ -70,29 +70,12 @@ describe("DocsPage", () => {
             workspace_dir: "/workspace/conv-1",
             created_at: "2026-07-01T00:00:00Z",
             updated_at: "2026-07-01T00:00:00Z",
-            active_response: {
-              response_id: "resp-1",
-              conversation_id: "conv-1",
-              workflow_type: "init_arch",
-              response_status: "success",
-              current_step_id: "done",
-              current_repo_name: "",
-              workspace_dir: "/workspace/conv-1",
-              arch_repo_dir: "/workspace/conv-1/arch-doc",
-              completed_steps: [],
-              required_actions: [],
-              repositories: [],
-              repository_list_editable: false,
-              created_at: "2026-07-01T00:00:00Z",
-              updated_at: "2026-07-01T00:00:00Z",
-              error_message: null,
-              terminal_result: null,
-            },
+            active_response: null,
             previous_init_input: null,
           },
         ]),
       ),
-      http.get("/api/rest/responses/resp-1/docs/tree/", () => HttpResponse.json(TREE_RESPONSE)),
+      http.get("/api/rest/conversations/conv-1/workspace/tree/", () => HttpResponse.json(TREE_RESPONSE)),
     );
 
     renderWithProviders(<DocsPage />);

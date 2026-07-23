@@ -7,6 +7,7 @@ from app.services.docs_browser import (
     DocsPathForbiddenError,
     MediaKind,
     build_docs_tree,
+    delete_docs_path,
     detect_media_kind,
     read_docs_file,
     resolve_within_root,
@@ -130,3 +131,27 @@ class TestReadDocsFile:
     def test_raises_not_found_for_missing_file(self, arch_repo):
         with pytest.raises(DocsFileNotFoundError):
             read_docs_file(str(arch_repo), "missing.md")
+
+
+class TestDeleteDocsPath:
+    def test_deletes_file(self, arch_repo):
+        delete_docs_path(str(arch_repo), "README.md")
+
+        assert not (arch_repo / "README.md").exists()
+
+    def test_deletes_directory_recursively(self, arch_repo):
+        delete_docs_path(str(arch_repo), "architecture")
+
+        assert not (arch_repo / "architecture").exists()
+
+    def test_rejects_path_traversal(self, arch_repo):
+        with pytest.raises(DocsPathForbiddenError):
+            delete_docs_path(str(arch_repo), "../outside.md")
+
+    def test_rejects_deleting_root(self, arch_repo):
+        with pytest.raises(DocsPathForbiddenError):
+            delete_docs_path(str(arch_repo), "")
+
+    def test_raises_not_found_for_missing_path(self, arch_repo):
+        with pytest.raises(DocsFileNotFoundError):
+            delete_docs_path(str(arch_repo), "missing.md")

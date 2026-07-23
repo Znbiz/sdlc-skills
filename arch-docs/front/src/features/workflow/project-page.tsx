@@ -43,6 +43,13 @@ export function ProjectPage() {
     setSearchParams(next);
   };
 
+  const handlePathDeleted = (deletedPath: string) => {
+    if (!activePath || (activePath !== deletedPath && !activePath.startsWith(`${deletedPath}/`))) return;
+    const next = new URLSearchParams(searchParams);
+    next.delete("path");
+    setSearchParams(next);
+  };
+
   const selectResponse = (responseId: string | null) => {
     const next = new URLSearchParams(searchParams);
     if (responseId) next.set("run", responseId);
@@ -62,7 +69,12 @@ export function ProjectPage() {
         onWidthsCommit={setProjectColumnWidths}
         columns={[
           <>
-            <ProjectWorkspaceTree conversationId={conversationId} activePath={activePath} onSelect={selectPath} />
+            <ProjectWorkspaceTree
+              conversationId={conversationId}
+              activePath={activePath}
+              onSelect={selectPath}
+              onDeleted={handlePathDeleted}
+            />
             <ConversationRepositories conversationId={conversationId} run={runRepositoriesContext} />
           </>,
           <Card title="Содержимое">

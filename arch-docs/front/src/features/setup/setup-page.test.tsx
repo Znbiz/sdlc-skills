@@ -24,9 +24,13 @@ function mockGitSshPublicKey() {
   return http.get("/api/rest/git-ssh/public-key/", () => HttpResponse.json({ public_key: PUBLIC_KEY }));
 }
 
+function mockLlmProviderConnections() {
+  return http.get("/api/rest/llm-providers/", () => HttpResponse.json([]));
+}
+
 describe("SetupPage", () => {
   it("показывает статус авторизации обоих CLI-агентов и список Git-подключений", async () => {
-    server.use(mockCliAuth(), mockGitConnections(), mockGitSshPublicKey());
+    server.use(mockCliAuth(), mockGitConnections(), mockGitSshPublicKey(), mockLlmProviderConnections());
 
     renderWithProviders(<SetupPage />);
 
@@ -34,6 +38,8 @@ describe("SetupPage", () => {
     expect(await screen.findByText("Claude")).toBeInTheDocument();
     expect(await screen.findByText("Git-подключения")).toBeInTheDocument();
     expect(await screen.findByText("Пока нет подключённых Git-систем")).toBeInTheDocument();
+    expect(await screen.findByText("Внешние LLM-провайдеры (OpenAI-совместимые)")).toBeInTheDocument();
+    expect(await screen.findByText("Пока нет подключённых внешних LLM")).toBeInTheDocument();
   });
 
   it("показывает баннер ошибки при недоступности backend и позволяет повторить запрос", async () => {
@@ -41,6 +47,7 @@ describe("SetupPage", () => {
       http.get("/api/rest/cli-auth/", () => HttpResponse.json({ detail: "internal error" }, { status: 500 })),
       mockGitConnections(),
       mockGitSshPublicKey(),
+      mockLlmProviderConnections(),
     );
 
     renderWithProviders(<SetupPage />);

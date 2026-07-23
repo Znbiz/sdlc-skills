@@ -4,9 +4,11 @@ import { Card } from "../../shared/ui/card";
 import { ErrorBanner } from "../../shared/ui/error-banner";
 import { Spinner } from "../../shared/ui/spinner";
 import { StatusBadge } from "../../shared/ui/status-badge";
+import { ApiError } from "../../shared/api/http-client";
 import { useEventSource } from "../../shared/sse/use-event-source";
 import { workflowApi } from "../../shared/api/endpoints";
 import { toneFromResponseStatus, responseStatusLabel } from "../../shared/status/status-mapping";
+import { formatDateTime } from "../../shared/format/format";
 import {
   useConversation,
   useConversationResponses,
@@ -18,6 +20,7 @@ import {
 import { INITIAL_STREAM_STATE, reduceStreamEvent } from "./stream-events";
 import { Timeline } from "./timeline";
 import { RequiredActionCard } from "./required-action-card";
+import { QueuedQuestionsCard } from "./queued-questions-card";
 import { TerminalResult } from "./terminal-result";
 import { InitArchForm } from "./init-arch-form";
 import { INIT_ARCH_WORKFLOW_TYPE, WORKFLOW_TYPE_OPTIONS } from "./workflow-types";
@@ -133,6 +136,7 @@ export function WorkflowRunPanel({
           conversationId={conversationId}
           responseId={selectedResponseId}
           isLive={isLiveSelection}
+          onSelectionInvalid={() => onSelectResponse(null)}
         />
       )}
     </>
@@ -143,10 +147,12 @@ function SelectedRunPanel({
   conversationId,
   responseId,
   isLive,
+  onSelectionInvalid,
 }: {
   conversationId: string;
   responseId: string;
   isLive: boolean;
+  onSelectionInvalid: () => void;
 }) {
   const response = useResponse(responseId);
   const items = useResponseItems(responseId);
@@ -156,6 +162,14 @@ function SelectedRunPanel({
 
   const activeResponse = response.data ?? null;
   const isStreamable = isLive && activeResponse !== null && activeResponse.response_status === "running";
+
+  useEffect(() => {
+    // Response id can outlive its record - most commonly a `?run=` link left over from before a
+    // `restart` (which deletes the WorkflowRecord). Self-heal instead of getting stuck on a 404 forever.
+    if (response.isError && response.error instanceof ApiError && response.error.kind === "not_found") {
+      onSelectionInvalid();
+    }
+  }, [response.isError, response.error, onSelectionInvalid]);
 
   const onMessage = useCallback((event: MessageEvent<string>) => {
     try {
@@ -175,6 +189,15 @@ function SelectedRunPanel({
   if (response.isPending) return <Spinner label="Загрузка прогона…" />;
   if (response.isError) return <ErrorBanner error={response.error} onRetry={() => response.refetch()} />;
   if (!activeResponse) return null;
+
+  // Вопросы, зарегистрированные заранее (во время analyze_repositories), тоже попадают в required_actions,
+  // но workflow реально приостановлен только на одном из них — том, чей payload содержит "question"
+  // (пришёл из interrupt()). Остальные — просто очередь на будущее, backend пока не примет на них ответ,
+  // поэтому показываем их отдельным компактным списком без формы.
+  const queuedQuestions = activeResponse.required_actions.filter(
+    (action) => action.action_type === "user_question" && action.payload.question === undefined,
+  );
+  const actionableActions = activeResponse.required_actions.filter((action) => !queuedQuestions.includes(action));
 
   return (
     <>
@@ -210,9 +233,12 @@ function SelectedRunPanel({
           <p>Это действие необратимо и удалит для этого прогона:</p>
           <ul>
             <li>весь прогресс и историю (шаги, лог событий, действия);</li>
-            <li>все вызовы LLM и их полный вывод;</li>
-            <li>склонированные репозитории на диске.</li>
+            <li>все вызовы LLM и их полный вывод.</li>
           </ul>
+          <p>
+            Склонированные репозитории и накопленная документация — общие артефакты проекта, их restart не
+            затрагивает; они будут переиспользованы или переклонированы заново при следующем запуске.
+          </p>
           <div className={styles.statusRow}>
             <Button variant="secondary" disabled={submitAction.isPending} onClick={() => setShowRestartConfirm(false)}>
               Отмена
@@ -223,9 +249,10 @@ function SelectedRunPanel({
               onClick={() => {
                 submitAction.mutate({ responseId: activeResponse.response_id, actionType: "restart" });
                 setShowRestartConfirm(false);
+                onSelectionInvalid();
               }}
             >
-              Да, удалить всё и начать заново
+              Да, удалить прогресс и начать заново
             </Button>
           </div>
         </Card>
@@ -248,7 +275,7 @@ function SelectedRunPanel({
         </Card>
       )}
 
-      {activeResponse.required_actions.map((action, index) => (
+      {actionableActions.map((action, index) => (
         <RequiredActionCard
           key={action.question_id ?? `${action.action_type}-${index}`}
           responseId={activeResponse.response_id}
@@ -257,6 +284,8 @@ function SelectedRunPanel({
         />
       ))}
 
+      <QueuedQuestionsCard questions={queuedQuestions} />
+
       {activeResponse.response_status !== "success" && activeResponse.response_status !== "failed" && (
         <Card title="Поток событий">
           {isStreamable && streamState.entries.length > 0 ? (
@@ -264,6 +293,7 @@ function SelectedRunPanel({
               {streamState.entries.map((entry, index) => (
                 <div key={`${entry.eventType}-${index}`} className={`${styles.streamEntry} ${styles[`actor-${entry.actor}`]}`}>
                   <span className={styles.actorBadge}>{entry.actor}</span>
+                  <span className={styles.streamTime}>{formatDateTime(new Date(entry.receivedAt).toISOString())}</span>
                   <span className={styles.streamMessage}>{entry.message}</span>
                   {entry.detail && (
                     <details className={styles.streamDetail}>

@@ -199,10 +199,18 @@ async def test_node_prepare_temp_workspace_wraps_advance_step_failure_in_step_er
     assert any(event.event_type == EventType.WORKFLOW_STEP_FAILED for event in recorded_events)
 
 
-async def test_node_clone_repositories_clones_missing_and_skips_existing_checkouts(tmp_path) -> None:
+async def test_node_clone_repositories_reclones_existing_checkout_and_reuses_urlless_repo(tmp_path) -> None:
+    # `raw_workspace_dir` (`.temp/`) is a project-level artifact shared across every run of the
+    # conversation, not scoped to this workflow_id (see
+    # arch-docs/docs/spec/2026-07-23-per-workflow-workspace-and-browser.md) - a checkout left by an
+    # earlier run must not be trusted as-is: it's always deleted and re-cloned fresh whenever a
+    # repository_url is known. Only a repository with no URL at all reuses whatever is on disk.
     raw_workspace_dir = tmp_path / ".temp"
     existing_repo_dir = raw_workspace_dir / "svc-existing"
     (existing_repo_dir / ".git").mkdir(parents=True)
+    (existing_repo_dir / "stale-marker").write_text("stale")
+    urlless_repo_dir = raw_workspace_dir / "svc-local-only"
+    (urlless_repo_dir / ".git").mkdir(parents=True)
 
     session = WorkflowSessionRecord(
         session_id="wf-1",
@@ -211,6 +219,7 @@ async def test_node_clone_repositories_clones_missing_and_skips_existing_checkou
         repositories=[
             RepositoryExecution(repository_name="svc-existing", repository_url="https://example.com/svc-existing.git"),
             RepositoryExecution(repository_name="svc-new", repository_url="https://example.com/svc-new.git"),
+            RepositoryExecution(repository_name="svc-local-only"),
         ],
     )
     state = _make_state(session=session, raw_workspace_dir=str(raw_workspace_dir))
@@ -229,7 +238,10 @@ async def test_node_clone_repositories_clones_missing_and_skips_existing_checkou
     )
     guard_service.advance_step = AsyncMock(return_value=GuardOperationResult(session=advanced_session))
 
+    cloned_urls: list[str] = []
+
     async def fake_run_git_clone(repository_url, target_path):
+        cloned_urls.append(repository_url)
         target_path.mkdir(parents=True)
         (target_path / ".git").mkdir()
 
@@ -245,8 +257,52 @@ async def test_node_clone_repositories_clones_missing_and_skips_existing_checkou
     assert result["current_step_id"] == "refresh_main_branches"
     assert result["last_llm_result"] is None
     llm_service.assert_not_called()
-    run_git_clone.assert_awaited_once_with("https://example.com/svc-new.git", raw_workspace_dir / "svc-new")
+    assert run_git_clone.await_count == 2
+    assert set(cloned_urls) == {"https://example.com/svc-existing.git", "https://example.com/svc-new.git"}
     assert (raw_workspace_dir / "svc-new" / ".git").is_dir()
+    assert not (existing_repo_dir / "stale-marker").exists()  # old checkout was wiped before re-clone
+    assert (urlless_repo_dir / ".git").is_dir()  # untouched - no URL to re-clone from
+
+
+async def test_node_clone_repositories_renormalizes_stale_url_before_cloning(tmp_path) -> None:
+    # Regression: repository_url is normalized once, when the entry is first added to the
+    # conversation (see _parse_repo_list_entry() in init_arch_workflow.py). If the host's
+    # registered connection (ssh vs token) changes afterwards, that stored URL goes stale and
+    # cloning must re-normalize it at clone time instead of trusting the stored value - or it
+    # keeps failing with "could not read Username" even after the user fixes the connection.
+    raw_workspace_dir = tmp_path / ".temp"
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="Prod",
+        analysis_scope="full",
+        repositories=[
+            RepositoryExecution(repository_name="mobile-app", repository_url="https://github.com/org/mobile-app.git")
+        ],
+    )
+    state = _make_state(session=session, raw_workspace_dir=str(raw_workspace_dir))
+    guard_service = MagicMock()
+    audit_service = MagicMock()
+    guard_service.advance_step = AsyncMock(return_value=GuardOperationResult(session=session))
+
+    async def fake_run_git_clone(repository_url, target_path):
+        target_path.mkdir(parents=True)
+        (target_path / ".git").mkdir()
+
+    with (
+        patch("app.workflows.init_arch.nodes.get_guard_service", return_value=guard_service),
+        patch("app.workflows.init_arch.nodes.get_workflow_audit_service", return_value=audit_service),
+        patch("app.workflows.init_arch.nodes.get_llm_worker_service"),
+        patch("app.workflows.init_arch.nodes.ensure_git_credentials_store", AsyncMock()),
+        patch(
+            "app.workflows.init_arch.nodes.normalize_repository_url",
+            AsyncMock(return_value="git@github.com:org/mobile-app.git"),
+        ) as normalize_url,
+        patch("app.workflows.init_arch.nodes._run_git_clone", side_effect=fake_run_git_clone) as run_git_clone,
+    ):
+        await nodes_module.node_clone_repositories(state)
+
+    normalize_url.assert_awaited_once_with("https://github.com/org/mobile-app.git")
+    run_git_clone.assert_awaited_once_with("git@github.com:org/mobile-app.git", raw_workspace_dir / "mobile-app")
 
 
 async def test_node_clone_repositories_fails_when_url_missing_and_no_local_checkout(tmp_path) -> None:

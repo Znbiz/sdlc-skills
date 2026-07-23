@@ -6,7 +6,6 @@ import dataclasses
 import datetime
 import json
 import pathlib
-import re
 import shutil
 import typing
 import uuid
@@ -35,8 +34,8 @@ from app.db.workflow_repo import (
     upsert_workflow_run,
 )
 from app.services.agent_pool import get_agent_pool
-from app.services.docs_browser import build_docs_tree, read_docs_file
-from app.services.git_connections import get_connection_type_for_host
+from app.services.docs_browser import build_docs_tree, delete_docs_path, read_docs_file
+from app.services.repository_url import canonicalize_repo_path, normalize_repository_url
 from app.services.task_registry import CliTask, TaskStatus
 from app.services.task_registry import get_registry as get_task_registry
 from app.services.task_runner import cancel_cli_task, run_cli_task
@@ -80,10 +79,6 @@ _INIT_ARCH_REQUIRED_FIELDS: typing.Final = frozenset(
         "timeout_seconds",
     }
 )
-
-
-class ArchRepoNotAvailableError(RuntimeError):
-    pass
 
 
 @dataclasses.dataclass(frozen=True)
@@ -400,13 +395,6 @@ async def get_response_async(response_id: str) -> dict[str, typing.Any]:
     return _workflow_response_payload(record, required_actions)
 
 
-async def get_response_arch_repo_dir_async(response_id: str) -> str:
-    record = await get_workflow_record_async(response_id)
-    if not record.arch_repo_dir:
-        raise ArchRepoNotAvailableError(f"No arch_repo_dir recorded for response {response_id!r}")
-    return record.arch_repo_dir
-
-
 def _active_conversation_record(conversation_id: str) -> WorkflowRecord | None:
     records = [
         record
@@ -706,6 +694,13 @@ async def read_conversation_workspace_file_async(conversation_id: str, path: str
     return read_docs_file(workspace_dir, path)
 
 
+async def delete_conversation_workspace_path_async(conversation_id: str, path: str) -> None:
+    await _require_conversation(conversation_id)
+    workspace_dir = _resolve_conversation_workspace_dir(conversation_id)
+    _ensure_directory(workspace_dir)
+    delete_docs_path(workspace_dir, path)
+
+
 async def list_conversation_items_async(conversation_id: str) -> list[dict[str, typing.Any]]:
     active_record = _active_conversation_record(conversation_id)
     if active_record is not None:
@@ -812,6 +807,15 @@ def _validate_engine_name(engine_name: str) -> str:
     return engine_name
 
 
+def _validate_provider_connection_id(engine_name: str, provider_connection_id: str | None) -> str | None:
+    # An external LLM connection always runs under codex (see
+    # arch-docs/docs/spec/2026-07-24-external-llm-provider.md, section 3) - claude does not go
+    # through this mechanism.
+    if provider_connection_id is not None and engine_name != "codex":
+        raise WorkflowValidationError("provider_connection_id is only supported with engine_name='codex'")
+    return provider_connection_id
+
+
 _ACTIVE_WORKFLOW_STATUSES: typing.Final = {WorkflowStatus.RUNNING, WorkflowStatus.PAUSED, WorkflowStatus.INTERRUPTED}
 
 
@@ -880,9 +884,13 @@ async def create_response_async(
             raise WorkflowValidationError("update_arch requires repo_path")
         prompt_text = _build_update_arch_prompt(str(input_payload.get("diff_context", "")))
         engine_name = _validate_engine_name(str(input_payload.get("engine_name", "claude")))
+        provider_connection_id = _validate_provider_connection_id(
+            engine_name, input_payload.get("provider_connection_id")
+        )
         cli_task = CliTask(
             task_id=str(uuid.uuid4()),
             engine_name=engine_name,
+            provider_connection_id=provider_connection_id,
             prompt_text=prompt_text,
             workspace_dir=repo_path,
             conversation_id=conversation_id,
@@ -898,9 +906,13 @@ async def create_response_async(
         if not repo_path or not question:
             raise WorkflowValidationError("query requires repo_path and question")
         engine_name = _validate_engine_name(str(input_payload.get("engine_name", "claude")))
+        provider_connection_id = _validate_provider_connection_id(
+            engine_name, input_payload.get("provider_connection_id")
+        )
         cli_task = CliTask(
             task_id=str(uuid.uuid4()),
             engine_name=engine_name,
+            provider_connection_id=provider_connection_id,
             prompt_text=_build_query_prompt(question),
             workspace_dir=repo_path,
             conversation_id=conversation_id,
@@ -1349,15 +1361,15 @@ def _resolve_init_arch_paths(
     *,
     workspace_dir: str,
     arch_repo_dir: str,
-    workflow_id: str,
     settings: GatewaySettings | None = None,
 ) -> tuple[str, str, str]:
     resolved_settings = settings or get_gateway_settings()
     workspace_path = pathlib.Path(workspace_dir).expanduser().resolve()
-    # `run_workspace_dir` — свой на каждый workflow_id (не общий `.temp` на весь workspace_dir),
-    # чтобы два run одного и того же проекта (напр. после restart) не задевали клоны друг друга.
-    # См. раздел 1 в arch-docs/docs/spec/2026-07-23-per-workflow-workspace-and-browser.md.
-    raw_workspace_path = (workspace_path / "runs" / workflow_id).resolve()
+    # `raw_workspace_path` (`.temp/`) is project-level, not per-run: repositories are artifacts of
+    # the conversation, shared and reused by every workflow run in it, not scoped to whichever
+    # `workflow_id` happened to clone them first. `_clone_repositories()` (nodes.py) always deletes
+    # and re-clones on top of it, so a stale/partial checkout from an earlier run is never trusted.
+    raw_workspace_path = (workspace_path / ".temp").resolve()
     arch_repo_path = (
         pathlib.Path(arch_repo_dir).expanduser().resolve()
         if arch_repo_dir
@@ -1376,62 +1388,11 @@ def _resolve_init_arch_paths(
     return str(workspace_path), str(arch_repo_path), str(raw_workspace_path)
 
 
-_SCP_LIKE_SSH_URL_PATTERN: typing.Final[re.Pattern[str]] = re.compile(r"^git@(?P<host>[^:/]+):(?P<path>.+)$")
-_HTTP_URL_PATTERN: typing.Final[re.Pattern[str]] = re.compile(r"^(?P<scheme>https?)://(?P<host>[^/]+)/(?P<path>.+)$")
-
-
-def _canonicalize_repo_path(path: str) -> str:
-    return path.strip().rstrip("/").removesuffix(".git")
-
-
-def _extract_repo_host_and_path(url: str) -> tuple[str, str, str] | None:
-    """Parse `url` into `(scheme, host, path)`, where `scheme` is `"ssh"`, `"http"` or `"https"`."""
-    scp_match = _SCP_LIKE_SSH_URL_PATTERN.match(url)
-    if scp_match:
-        return "ssh", scp_match.group("host"), _canonicalize_repo_path(scp_match.group("path"))
-
-    http_match = _HTTP_URL_PATTERN.match(url)
-    if http_match:
-        return http_match.group("scheme"), http_match.group("host"), _canonicalize_repo_path(http_match.group("path"))
-
-    return None
-
-
-async def _normalize_repository_url(raw_url: str) -> str:
-    """Bring a user-submitted repository URL to a canonical clone URL for `host`'s transport.
-
-    Users paste this in error-prone shapes: the SCP-like SSH form (`git@host:path.git`) and a
-    bare web address-bar copy (`https://host/path`, no `.git`, maybe a trailing slash). The
-    transport that actually works is decided by how `host` is registered in "Git-подключения"
-    (see app/services/git_connections.py) — an https:// URL for a host with only a deploy key
-    (no PAT) can never authenticate over HTTPS ("could not read Username"), and a PAT is
-    HTTPS-only (git's credential helper never applies to the SSH transport), so this rewrites
-    the URL to whichever scheme matches the host's actual connection_type, regardless of which
-    form the user happened to paste. Unregistered hosts are left on their original scheme.
-    """
-    stripped = raw_url.strip()
-
-    parsed = _extract_repo_host_and_path(stripped)
-    if parsed is None:
-        return stripped
-    original_scheme, host, path = parsed
-
-    connection_type = await get_connection_type_for_host(host)
-    if connection_type == "ssh":
-        return f"git@{host}:{path}.git"
-    if connection_type == "token":
-        return f"https://{host}/{path}.git"
-
-    if original_scheme == "ssh":
-        return f"git@{host}:{path}.git"
-    return f"{original_scheme}://{host}/{path}.git"
-
-
 async def _parse_repo_list_entry(entry: str) -> RepositoryExecution:
     stripped = entry.strip()
     if "://" in stripped or stripped.startswith("git@"):
-        normalized_url = await _normalize_repository_url(stripped)
-        repository_name = _canonicalize_repo_path(normalized_url).rsplit("/", 1)[-1]
+        normalized_url = await normalize_repository_url(stripped)
+        repository_name = canonicalize_repo_path(normalized_url).rsplit("/", 1)[-1]
         return RepositoryExecution(repository_name=repository_name, repository_url=normalized_url)
     return RepositoryExecution(repository_name=stripped)
 
@@ -1463,6 +1424,7 @@ async def start_init_arch_workflow(
     timeout_seconds: int,
     conversation_id: str | None = None,
     repo_list: list[str] | None = None,
+    provider_connection_id: str | None = None,
 ) -> WorkflowRecord:
     """Start a fresh `init_arch` run.
 
@@ -1475,8 +1437,8 @@ async def start_init_arch_workflow(
     resolved_workspace_dir, resolved_arch_repo_dir, resolved_raw_workspace_dir = _resolve_init_arch_paths(
         workspace_dir=workspace_dir,
         arch_repo_dir=arch_repo_dir,
-        workflow_id=workflow_id,
     )
+    provider_connection_id = _validate_provider_connection_id(engine_name, provider_connection_id)
     progress_file_path = f"{resolved_arch_repo_dir}/repo-initialization-progress.yaml"
     if repo_list is not None:
         repositories = [await _parse_repo_list_entry(repo_entry) for repo_entry in repo_list]
@@ -1508,6 +1470,7 @@ async def start_init_arch_workflow(
         raw_workspace_dir=resolved_raw_workspace_dir,
         arch_repo_dir=resolved_arch_repo_dir,
         engine_name=engine_name,
+        provider_connection_id=provider_connection_id,
         timeout_seconds=timeout_seconds,
         progress_file_path=progress_file_path,
         last_llm_result=None,
@@ -1533,13 +1496,13 @@ async def resume_init_arch_workflow_from_snapshot(
     engine_name: str | None = None,
     timeout_seconds: int | None = None,
     conversation_id: str | None = None,
+    provider_connection_id: str | None = None,
 ) -> WorkflowRecord:
     snapshot = parse_snapshot_yaml(yaml_text)
     workflow_id = str(uuid.uuid4())
     resolved_workspace_dir, resolved_arch_repo_dir, resolved_raw_workspace_dir = _resolve_init_arch_paths(
         workspace_dir=workspace_dir or snapshot.workspace_dir,
         arch_repo_dir=arch_repo_dir or snapshot.arch_repo_dir,
-        workflow_id=workflow_id,
     )
     # Защита от параллельного/повторного restore того же arch_repo_dir: если в in-memory
     # registry уже есть активный (RUNNING/INTERRUPTED) workflow для того же arch_repo_dir,
@@ -1592,6 +1555,7 @@ async def resume_init_arch_workflow_from_snapshot(
         raw_workspace_dir=resolved_raw_workspace_dir,
         arch_repo_dir=resolved_arch_repo_dir,
         engine_name=engine_name or snapshot.engine_name,
+        provider_connection_id=provider_connection_id or snapshot.provider_connection_id,
         timeout_seconds=timeout_seconds or snapshot.timeout_seconds,
         progress_file_path=progress_file_path,
         last_llm_result=None,
@@ -1821,12 +1785,19 @@ async def continue_init_arch_workflow(workflow_id: str) -> WorkflowRecord:
 
 
 async def restart_init_arch_workflow(workflow_id: str) -> dict[str, typing.Any]:
-    """Wipe every artifact of a workflow run so the same conversation can start `init_arch` again.
+    """Wipe this workflow run's DB rows and LangGraph checkpoint so the conversation can restart.
 
-    Deletes files, DB rows, and the LangGraph checkpoint. Available from *any* status
+    Deletes DB rows and the LangGraph checkpoint. Available from *any* status
     (`RUNNING`/`PAUSED`/`INTERRUPTED`/`FAILED`/`SUCCESS`/`CANCELLED`) - unlike `pause`, this isn't a
     stop, it's "I don't want this run anymore." See spec section 8 in
     arch-docs/docs/spec/2026-07-22-realtime-workflow-observability.md.
+
+    Nothing on disk is deleted: `workspace_dir`/`arch_repo_dir` (accumulated documentation) and the
+    raw repository clones under `workspace_dir/.temp/` are all project-level artifacts shared by
+    every run of this conversation, not scratch owned by this one run -
+    `_clone_repositories()` (nodes.py) already deletes and re-clones on top of them fresh at the
+    start of the next run regardless of what this run left behind (see
+    arch-docs/docs/spec/2026-07-23-per-workflow-workspace-and-browser.md).
 
     Deliberately does *not* return a `WorkflowRecord` - there is no longer one. Returns the same
     shape `get_conversation_async()` already returns for a conversation with nothing running
@@ -1845,23 +1816,10 @@ async def restart_init_arch_workflow(workflow_id: str) -> dict[str, typing.Any]:
         task.cancel()
         # Must actually wait for the task to unwind (not just fire the cancel and move on, like
         # pause does) - run_cli_task()'s CancelledError cleanup (§7) needs to finish terminating any
-        # in-flight CLI subprocess *before* we start deleting the workspace/arch-repo directories
-        # that subprocess may still be writing into underneath it.
+        # in-flight CLI subprocess and its own DB/task-result writes *before* we start deleting the
+        # DB rows and checkpoint below, or the two race.
         with contextlib.suppress(asyncio.CancelledError, TimeoutError):
             await asyncio.wait_for(task, timeout=10.0)
-
-    # Re-derive the same run-owned raw workspace subdirectory `start_init_arch_workflow()` resolved
-    # at creation time (`workspace_dir/runs/<workflow_id>/`) - never touch `workspace_dir` itself
-    # (shared by the whole project) nor `arch_repo_dir`: the accumulated documentation is meant to
-    # survive restart/historical windows of the same conversation (see "Важный нюанс" and section 1
-    # in arch-docs/docs/spec/2026-07-23-per-workflow-workspace-and-browser.md) - only this run's own
-    # raw clones are scratch and safe to wipe.
-    _, _, resolved_raw_workspace_dir = _resolve_init_arch_paths(
-        workspace_dir=record.workspace_dir,
-        arch_repo_dir=record.arch_repo_dir,
-        workflow_id=workflow_id,
-    )
-    shutil.rmtree(resolved_raw_workspace_dir, ignore_errors=True)
 
     checkpointer = await get_checkpointer()
     await checkpointer.adelete_thread(workflow_id)

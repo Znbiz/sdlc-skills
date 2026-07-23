@@ -1,14 +1,21 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { Button } from "../../shared/ui/button";
+import { useLlmProviderConnections } from "../setup/hooks";
 import type { CliEngine, InitArchInput, PreviousInitInputResponse } from "../../shared/api/models";
 import styles from "./init-arch-form.module.css";
 
 const DEFAULT_TIMEOUT_SECONDS = 900;
 const ANALYSIS_SCOPE_CONSTANT = "full";
 
+// UI-only selection: "external" always runs under codex CLI, but wired to a saved
+// OpenAI-compatible connection instead of codex's own auth - see
+// arch-docs/docs/spec/2026-07-24-external-llm-provider.md, section 6.
+type EngineSelection = CliEngine | "external";
+
 interface FormState {
-  engineName: CliEngine;
+  engineSelection: EngineSelection;
+  providerConnectionId: string | null;
   timeoutSeconds: string;
   workspaceDir: string;
   archRepoDir: string;
@@ -16,7 +23,8 @@ interface FormState {
 
 function defaultState(defaultWorkspaceDir: string): FormState {
   return {
-    engineName: "claude",
+    engineSelection: "claude",
+    providerConnectionId: null,
     timeoutSeconds: String(DEFAULT_TIMEOUT_SECONDS),
     workspaceDir: defaultWorkspaceDir,
     archRepoDir: "",
@@ -29,7 +37,8 @@ function initialStateFrom(
 ): FormState {
   if (!previousInput) return defaultState(defaultWorkspaceDir);
   return {
-    engineName: "claude",
+    engineSelection: "claude",
+    providerConnectionId: null,
     timeoutSeconds: String(DEFAULT_TIMEOUT_SECONDS),
     workspaceDir: previousInput.workspace_dir || defaultWorkspaceDir,
     archRepoDir: previousInput.arch_repo_dir,
@@ -41,17 +50,22 @@ function validate(state: FormState, hasRepositories: boolean): string | null {
   const timeoutSeconds = Number(state.timeoutSeconds);
   if (!Number.isInteger(timeoutSeconds) || timeoutSeconds <= 0) return "Таймаут шага должен быть целым числом больше нуля.";
   if (!state.workspaceDir.trim()) return "Workspace dir не может быть пустым.";
+  if (state.engineSelection === "external" && !state.providerConnectionId) {
+    return "Выберите подключение к внешней LLM (или настройте его в Setup).";
+  }
   return null;
 }
 
 function buildInput(state: FormState, productName: string): InitArchInput {
+  const { engineSelection } = state;
   return {
     product_name: productName,
     analysis_scope: ANALYSIS_SCOPE_CONSTANT,
     workspace_dir: state.workspaceDir.trim(),
     arch_repo_dir: state.archRepoDir.trim(),
-    engine_name: state.engineName,
+    engine_name: engineSelection === "external" ? "codex" : engineSelection,
     timeout_seconds: Number(state.timeoutSeconds),
+    provider_connection_id: engineSelection === "external" ? state.providerConnectionId : undefined,
   };
 }
 
@@ -73,6 +87,7 @@ export function InitArchForm({
   const [state, setState] = useState<FormState>(() => initialStateFrom(previousInput, defaultWorkspaceDir));
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
+  const llmProviderConnections = useLlmProviderConnections();
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -105,11 +120,42 @@ export function InitArchForm({
 
       <label>
         Движок
-        <select value={state.engineName} onChange={(event) => setState((prev) => ({ ...prev, engineName: event.target.value as CliEngine }))}>
-          <option value="claude">claude</option>
-          <option value="codex">codex</option>
+        <select
+          value={state.engineSelection}
+          onChange={(event) =>
+            setState((prev) => ({ ...prev, engineSelection: event.target.value as EngineSelection }))
+          }
+        >
+          <option value="claude">Claude Code</option>
+          <option value="codex">Codex</option>
+          <option value="external">Внешняя LLM (через API-токен)</option>
         </select>
       </label>
+
+      {state.engineSelection === "external" && (
+        <label>
+          Подключение к внешней LLM
+          {llmProviderConnections.data && llmProviderConnections.data.length === 0 ? (
+            <p className={styles.validationError}>
+              Нет настроенных подключений — добавьте их в Setup перед запуском.
+            </p>
+          ) : (
+            <select
+              value={state.providerConnectionId ?? ""}
+              onChange={(event) => setState((prev) => ({ ...prev, providerConnectionId: event.target.value || null }))}
+            >
+              <option value="" disabled>
+                Выберите подключение…
+              </option>
+              {llmProviderConnections.data?.map((connection) => (
+                <option key={connection.connection_id} value={connection.connection_id}>
+                  {connection.name} ({connection.model})
+                </option>
+              ))}
+            </select>
+          )}
+        </label>
+      )}
 
       <label>
         Таймаут шага, сек

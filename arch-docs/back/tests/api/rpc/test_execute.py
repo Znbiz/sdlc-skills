@@ -132,6 +132,36 @@ class TestExecuteResponse:
         )
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
 
+    async def test_provider_connection_id_rejected_for_claude_engine(
+        self,
+        async_client: httpx.AsyncClient,
+        auth_headers: dict[str, str],
+    ) -> None:
+        response = await async_client.post(
+            "/api/rpc/execute/",
+            json={"engine": "claude", "prompt": "hello", "provider_connection_id": "conn-1"},
+            headers=auth_headers,
+        )
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
+    async def test_provider_connection_id_accepted_for_codex_engine(
+        self,
+        async_client: httpx.AsyncClient,
+        auth_headers: dict[str, str],
+    ) -> None:
+        mock_proc = _make_mock_process(returncode=0, stdout=b"ok", stderr=b"")
+
+        with unittest.mock.patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            response = await async_client.post(
+                "/api/rpc/execute/",
+                json={"engine": "codex", "prompt": "hello", "provider_connection_id": "conn-1"},
+                headers=auth_headers,
+            )
+
+        assert response.status_code == status.HTTP_202_ACCEPTED
+        task_id = response.json()["task_id"]
+        assert get_registry()[task_id].provider_connection_id == "conn-1"
+
     async def test_background_task_completes_success(
         self,
         async_client: httpx.AsyncClient,

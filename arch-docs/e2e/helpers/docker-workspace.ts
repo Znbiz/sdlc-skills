@@ -31,13 +31,12 @@ export async function seedRepositoriesIntoWorkspace(
 ): Promise<{ workspaceDir: string; archRepoDir: string; fixtureRepoUrls: Record<string, string> }> {
   const workspaceDir = `/workspace/e2e-${runId}`;
   const archRepoDir = `${workspaceDir}/arch-doc`;
-  // Raw clones now live under `<workspaceDir>/runs/<workflow_id>/` - a directory whose exact path
-  // is only known once the run (and its server-generated workflow_id) has actually started (see
-  // arch-docs/docs/spec/2026-07-23-per-workflow-workspace-and-browser.md section 1). So fixtures
-  // can no longer be pre-seeded directly into the clone target the way `.temp/<repoName>` used to
-  // be - instead, seed them at a fixed, run_id-scoped path and pass `file://` URLs as repo entries,
-  // so `_clone_repositories()` does a real (local, no-credentials-needed) `git clone` into whatever
-  // `runs/<workflow_id>/` turns out to be.
+  // Raw clones live under `<workspaceDir>/.temp/<repoName>` - project-level, shared by every run
+  // of the conversation (see arch-docs/docs/spec/2026-07-23-per-workflow-workspace-and-browser.md
+  // section 1), and always deleted + re-cloned fresh by `_clone_repositories()` regardless of
+  // what's already there. Fixtures are seeded at a separate scratch path and passed as `file://`
+  // URLs repo entries, so `_clone_repositories()` does a real (local, no-credentials-needed)
+  // `git clone` into `.temp/<repoName>` itself.
   const fixturesDir = `/tmp/e2e-fixtures-${runId}`;
 
   await dockerComposeExec(["mkdir", "-p", fixturesDir]);

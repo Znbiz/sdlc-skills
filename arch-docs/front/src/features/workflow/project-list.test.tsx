@@ -5,11 +5,10 @@ import { renderWithProviders } from "../../test/render";
 import type { ConversationResponse, ResponseStatusResponse } from "../../shared/api/models";
 import { ProjectList } from "./project-list";
 
-const { listConversationsMock, submitActionMock, deleteConversationMock, setLastResponseIdMock } = vi.hoisted(() => ({
+const { listConversationsMock, submitActionMock, deleteConversationMock } = vi.hoisted(() => ({
   listConversationsMock: vi.fn(),
   submitActionMock: vi.fn(),
   deleteConversationMock: vi.fn(),
-  setLastResponseIdMock: vi.fn(),
 }));
 
 vi.mock("../../shared/api/endpoints", () => ({
@@ -20,11 +19,6 @@ vi.mock("../../shared/api/endpoints", () => ({
   conversationsApi: {
     deleteConversation: deleteConversationMock,
   },
-}));
-
-vi.mock("../../shared/storage/recent-response", () => ({
-  setLastResponseId: setLastResponseIdMock,
-  getLastResponseId: vi.fn(() => null),
 }));
 
 const { setLastConversationIdMock } = vi.hoisted(() => ({ setLastConversationIdMock: vi.fn() }));
@@ -180,10 +174,10 @@ describe("ProjectList", () => {
     expect(screen.getByText("прогонов ещё не было")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Пауза" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Удалить" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Документация" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Документация" })).toBeInTheDocument();
   });
 
-  it("кнопка «Документация» ведёт на вкладку Docs с response_id последнего запуска", async () => {
+  it("кнопка «Документация» ведёт на вкладку Docs с id проекта", async () => {
     listConversationsMock.mockResolvedValue([makeConversation()]);
     const user = userEvent.setup();
     renderWithProviders(<ProjectList />);
@@ -191,6 +185,6 @@ describe("ProjectList", () => {
     await screen.findByText("Arch Docs Gateway");
     await user.click(screen.getByRole("button", { name: "Документация" }));
 
-    expect(setLastResponseIdMock).toHaveBeenCalledWith("wf-1");
+    expect(setLastConversationIdMock).toHaveBeenCalledWith("conv-1");
   });
 });

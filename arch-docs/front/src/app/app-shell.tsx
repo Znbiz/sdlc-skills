@@ -6,7 +6,7 @@ import styles from "./app-shell.module.css";
 const NAV_ITEMS = [
   { to: "/setup", label: "Setup" },
   { to: "/projects", label: "Проекты" },
-  { to: "/docs", label: "Docs" },
+  { to: "/docs", label: "Документация" },
 ];
 
 // Страница конкретного проекта (трёхколоночный layout с ресайзом) не должна быть зажата

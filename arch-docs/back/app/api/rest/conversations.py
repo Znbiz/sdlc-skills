@@ -18,6 +18,7 @@ from app.services.init_arch_workflow import (
     create_conversation_async,
     create_response_async,
     delete_conversation_async,
+    delete_conversation_workspace_path_async,
     get_conversation_async,
     get_conversation_repositories_async,
     get_response_async,
@@ -296,6 +297,18 @@ async def get_conversation_workspace_file(conversation_id: str, path: str) -> Do
     except DocsFileNotFoundError as exc:
         raise fastapi.HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return DocsFileResponse.model_validate(file_payload)
+
+
+@router.delete("/conversations/{conversation_id}/workspace/file/", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_conversation_workspace_file(conversation_id: str, path: str) -> None:
+    try:
+        await delete_conversation_workspace_path_async(conversation_id, path)
+    except WorkflowNotFoundError as exc:
+        raise _not_found(exc) from exc
+    except DocsPathForbiddenError as exc:
+        raise fastapi.HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except DocsFileNotFoundError as exc:
+        raise fastapi.HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 @router.get("/conversations/{conversation_id}/items/")

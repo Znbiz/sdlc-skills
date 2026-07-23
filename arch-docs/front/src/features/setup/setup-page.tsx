@@ -2,6 +2,7 @@ import { ErrorBanner } from "../../shared/ui/error-banner";
 import { Spinner } from "../../shared/ui/spinner";
 import { AuthEngineCard } from "./auth-engine-card";
 import { GitConnectionsCard } from "./git-connections-card";
+import { LlmProvidersCard } from "./llm-providers-card";
 import { useCliAuthStatus } from "./hooks";
 import styles from "./setup-page.module.css";
 
@@ -23,6 +24,7 @@ export function SetupPage() {
           </>
         )}
         <GitConnectionsCard />
+        <LlmProvidersCard />
       </div>
     </div>
   );

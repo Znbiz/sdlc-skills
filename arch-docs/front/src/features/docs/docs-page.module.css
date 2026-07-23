@@ -65,12 +65,12 @@
   color: #fff;
 }
 
-.responseIdForm {
+.conversationIdForm {
   display: flex;
   gap: 0.5rem;
 }
 
-.responseIdForm input {
+.conversationIdForm input {
   flex: 1;
   font: inherit;
   padding: 0.4rem 0.6rem;

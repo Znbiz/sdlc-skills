@@ -8,7 +8,6 @@ import { StatusBadge } from "../../shared/ui/status-badge";
 import type { ConversationResponse } from "../../shared/api/models";
 import { toneFromResponseStatus, responseStatusLabel } from "../../shared/status/status-mapping";
 import { setLastConversationId } from "../../shared/storage/recent-conversation";
-import { setLastResponseId } from "../../shared/storage/recent-response";
 import { useConversations, useDeleteConversation, useSubmitResponseAction } from "./hooks";
 import styles from "./project-list.module.css";
 
@@ -45,9 +44,8 @@ function ProjectListItem({ conversation }: { conversation: ConversationResponse 
   };
 
   const openDocs = () => {
-    if (!activeResponse) return;
-    setLastResponseId(activeResponse.response_id);
-    navigate(`/docs?responseId=${activeResponse.response_id}`);
+    setLastConversationId(conversation.conversation_id);
+    navigate(`/docs?conversationId=${conversation.conversation_id}`);
   };
 
   // onClick на всей строке - для мыши; explicit кнопка "Открыть" ниже остаётся основной точкой
@@ -114,11 +112,9 @@ function ProjectListItem({ conversation }: { conversation: ConversationResponse 
             Удалить
           </Button>
         )}
-        {activeResponse && (
-          <Button variant="secondary" onClick={openDocs}>
-            Документация
-          </Button>
-        )}
+        <Button variant="secondary" onClick={openDocs}>
+          Документация
+        </Button>
         <Button variant="secondary" onClick={open}>
           Открыть
         </Button>

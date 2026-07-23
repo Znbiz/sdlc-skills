@@ -15,7 +15,7 @@
 - `PATCH /api/rest/conversations/{conversation_id}/` обновляет `product_name` проекта;
 - `GET/PUT/POST /api/rest/conversations/{conversation_id}/repositories/`, `DELETE .../repositories/{repository_name}/` — CRUD над списком репозиториев **проекта** (не отдельного run, см. "Project workspace layout" ниже); `init_arch` читает этот список при старте вместо принятия `repo_list` в input;
 - `GET /api/rest/conversations/{conversation_id}/responses/` — список всех run проекта (не только последнего), отсортирован по `updated_at desc`;
-- `GET /api/rest/conversations/{conversation_id}/workspace/tree/`, `GET .../workspace/file/?path=...` — файловый браузер по всему `conversation_workspace_dir` (и `arch-doc/`, и `runs/<workflow_id>/` каждого run), переиспользует `docs_browser.py`;
+- `GET /api/rest/conversations/{conversation_id}/workspace/tree/`, `GET .../workspace/file/?path=...` — файловый браузер по всему `conversation_workspace_dir` (и `arch-doc/`, и `.temp/` с сырыми клонами репозиториев проекта), переиспользует `docs_browser.py`;
 - `GET /api/rest/conversations/{conversation_id}/items/` читает persisted timeline items;
 - `GET /api/rest/conversations/{conversation_id}/stream/` стримит active response через тот же SSE backend;
 - `POST /api/rest/responses/` запускает новый `response` внутри conversation, сейчас поддержан `workflow_type=init_arch`; возвращает `409` (`WorkflowConflictError`), если `WORKFLOW_TYPE_REGISTRY[workflow_type].max_concurrent_instances_per_conversation` уже достигнут для этого conversation (для `init_arch` — 1), и `422`, если у conversation ещё не настроено ни одного репозитория;
@@ -26,21 +26,23 @@
 
 Реализация: [rest/conversations.py](../../back/app/api/rest/conversations.py), [init_arch_workflow.py](../../back/app/services/init_arch_workflow.py)
 
-### Project workspace layout (conversation vs run)
+### Project workspace layout (conversation-level artifacts)
 
-Каждый conversation (проект) и каждый workflow run (`workflow_id`) внутри него владеют разными
-сегментами файловой системы — подробности и обоснование в
+Весь workspace на диске принадлежит conversation (проекту), не отдельному workflow run — подробности
+и обоснование в
 [spec/2026-07-23-per-workflow-workspace-and-browser.md](../spec/2026-07-23-per-workflow-workspace-and-browser.md):
 
 ```text
 <WORKSPACE_DIR>/<conversation_id>/          # conversation_workspace_dir - создаётся eagerly в create_conversation_async()
   arch-doc/                                 # arch_repo_dir по умолчанию - переживает restart/несколько run
-  runs/<workflow_id>/                       # run_workspace_dir - свой на каждый run, создаётся eagerly в start_init_arch_workflow()
-    <repository_name>/                      # сырые git-клоны именно этого run
     repo-initialization-progress.yaml
+  .temp/                                    # raw_workspace_dir - сырые git-клоны, общие на весь проект, не на run
+    <repository_name>/
 ```
 
-- `restart_init_arch_workflow()` удаляет только `runs/<workflow_id>/` перезапускаемого run — `arch-doc/` того же проекта не трогается, новый run после restart получает новый `workflow_id` (новую `runs/<workflow_id>/`), но продолжает писать в тот же `arch-doc/`;
+- репозитории под `.temp/` — артефакты проекта, не отдельного run: любой `workflow_id` этого conversation находит их по одному и тому же пути, ничего не привязано к тому, какой run их склонировал;
+- `_clone_repositories()` (`nodes.py`) на каждом run безусловно удаляет и заново клонирует `.temp/<repository_name>` для каждого репозитория с известным `repository_url` — переиспользуется "как есть" только чекаут без `repository_url` (взять свежие данные неоткуда). Так `refresh_main_branches()` (замороженные `origin/<branch>` со времени клона) всегда видит актуальный HEAD, а не то, что осталось от прошлого run;
+- `restart_init_arch_workflow()` ничего не удаляет на диске — `arch-doc/` и `.temp/` того же проекта не трогаются, следующий run получает новый `workflow_id`, но переиспользует те же файлы проекта;
 - список репозиториев — настройка conversation (`conversation.repositories`, REST выше), а не `InitArchInput.repo_list`; `start_init_arch_workflow()` принимает `repo_list` только как direct-call escape hatch (используется тестами/восстановлением из снепшота), REST-путь его не передаёт;
 - `WORKFLOW_TYPE_REGISTRY` (`app/services/init_arch_workflow.py`) — декларативный реестр лимитов конкурентности по `workflow_type`; тип, отсутствующий в реестре, трактуется как неограниченный (сегодня это `update_arch`/`query`, которые остаются одиночными `CliTask`, не привязанными к `conversation_workspace_dir`).
 
@@ -371,10 +373,10 @@ sequenceDiagram
 ### Workspace layout
 
 - `workspace_dir` по умолчанию — `conversation_workspace_dir` (`<WORKSPACE_DIR>/<conversation_id>/`), вычисляется автоматически по `conversation_id`; поле формы остаётся редактируемым (advanced override) для нестандартных путей;
-- raw-layer теперь свой на каждый run — `<workspace_dir>/runs/<workflow_id>/`, а не общий `.temp` на весь `workspace_dir` (см. "Project workspace layout" выше); настройка `WORKFLOWS__INIT__RAW_WORKSPACE_SUBDIR` удалена как часть этого изменения;
+- raw-layer — общий `<workspace_dir>/.temp/` на весь проект, не на отдельный run (см. "Project workspace layout" выше); настройка `WORKFLOWS__INIT__RAW_WORKSPACE_SUBDIR` удалена как часть этого изменения;
 - knowledge/synthesis layer по умолчанию находится в `WORKFLOWS__INIT__ARCH_REPO_DIRNAME=arch-doc`;
-- при старте `init_arch` backend валидирует layout и отклоняет конфигурацию, где `arch_repo_dir` попадает внутрь run-owned raw-layer;
-- prompt для worker явно разводит raw checkout layer и knowledge output layer: `runs/<workflow_id>/` разрешён только для чтения/checkout, `arch-doc` — только для synthesis-артефактов.
+- при старте `init_arch` backend валидирует layout и отклоняет конфигурацию, где `arch_repo_dir` попадает внутрь raw-layer;
+- prompt для worker явно разводит raw checkout layer и knowledge output layer: `.temp/` разрешён только для чтения/checkout, `arch-doc` — только для synthesis-артефактов.
 
 ### Audit retention и masking
 

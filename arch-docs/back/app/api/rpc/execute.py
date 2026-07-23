@@ -21,10 +21,11 @@ class ExecuteRequest(pydantic.BaseModel, frozen=True):
     prompt: str
     workspace: str = "/workspace"
     output_format: str = "stream-json"
-    sandbox: str = "workspace-write"
+    sandbox: str = "danger-full-access"
     allowed_tools: list[str] | None = None
     session_id: str | None = None
     timeout_seconds: int = 300
+    provider_connection_id: str | None = None
 
     @pydantic.field_validator("engine")
     @classmethod
@@ -33,6 +34,13 @@ class ExecuteRequest(pydantic.BaseModel, frozen=True):
             msg = "engine must be 'claude' or 'codex'"
             raise ValueError(msg)
         return engine_value
+
+    @pydantic.model_validator(mode="after")
+    def validate_provider_connection_requires_codex(self) -> "ExecuteRequest":
+        if self.provider_connection_id is not None and self.engine != "codex":
+            msg = "provider_connection_id is only supported with engine='codex'"
+            raise ValueError(msg)
+        return self
 
 
 class ExecuteResponse(pydantic.BaseModel, frozen=True):
@@ -46,6 +54,7 @@ async def execute(request: ExecuteRequest) -> ExecuteResponse:
     cli_task = CliTask(
         task_id=str(uuid.uuid4()),
         engine_name=request.engine,
+        provider_connection_id=request.provider_connection_id,
         prompt_text=request.prompt,
         workspace_dir=request.workspace,
         sandbox_mode=request.sandbox,

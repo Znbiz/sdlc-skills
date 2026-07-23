@@ -12,6 +12,7 @@ class InitArchState(typing.TypedDict):
     raw_workspace_dir: str
     arch_repo_dir: str
     engine_name: str
+    provider_connection_id: str | None
     timeout_seconds: int
     progress_file_path: str
     last_llm_result: LlmTaskResult | None

@@ -14,19 +14,39 @@
 }
 
 .item {
-  padding: 0.5rem 0.65rem;
   border-radius: 6px;
   background: var(--color-surface-muted);
+  font-size: 0.85rem;
+}
+
+.itemButton {
+  width: 100%;
   display: flex;
   flex-direction: column;
   gap: 0.15rem;
-  font-size: 0.85rem;
+  padding: 0.5rem 0.65rem;
+  background: none;
+  border: none;
+  font: inherit;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+}
+
+.itemButton:disabled {
+  cursor: default;
 }
 
 .itemHeader {
   display: flex;
   justify-content: space-between;
   font-weight: 600;
+}
+
+.disclosure {
+  display: inline-block;
+  width: 0.9em;
+  color: var(--color-text-muted);
 }
 
 .time {
@@ -37,4 +57,32 @@
 .step,
 .actor {
   color: var(--color-text-muted);
+}
+
+.details {
+  margin: 0 0.65rem 0.5rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: 6px;
+  background: var(--color-surface);
+  font-size: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.detailRow {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.detailKey {
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
+.detailValue {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
 }

@@ -36,6 +36,7 @@ services:
       - claude-auth:/home/appuser/.claude
       - git-credentials:/home/appuser/.config/git-credentials-store
       - git-ssh:/home/appuser/.ssh
+      - llm-provider-secrets:/home/appuser/.config/llm-provider-secrets
       - workspace:/workspace
       - ./back/skills:/app/skills:ro
     depends_on:
@@ -72,5 +73,6 @@ volumes:
   claude-auth:
   git-credentials:
   git-ssh:
+  llm-provider-secrets:
   workspace:
   postgres-data:

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import unittest.mock
 import uuid
 
@@ -7,6 +8,8 @@ import pytest
 
 from app.services import task_runner as task_runner_module
 from app.services.agent_pool import AgentPool
+from app.services.llm_provider_credentials import EXTERNAL_LLM_API_KEY_ENV_VAR
+from app.services.llm_providers import LlmProviderConnectionDetail, create_llm_provider_connection_async
 from app.services.task_registry import CliTask, TaskStatus
 from app.services.task_runner import (
     LlmCliService,
@@ -24,6 +27,11 @@ from app.workflows.init_arch.domain import AuditActor, EventType, LlmTaskKind, L
 
 
 @pytest.fixture(autouse=True)
+def _isolated_llm_provider_secrets_store(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.services.llm_provider_credentials._SECRETS_DIR", tmp_path / "llm-provider-secrets")
+
+
+@pytest.fixture(autouse=True)
 def _clean_workflow_event_bus():
     reset_workflow_event_bus()
     yield
@@ -36,10 +44,12 @@ def _make_task(
     task_status: TaskStatus = TaskStatus.PENDING,
     session_id: str | None = None,
     timeout_seconds: int = 30,
+    provider_connection_id: str | None = None,
 ) -> CliTask:
     return CliTask(
         task_id=str(uuid.uuid4()),
         engine_name=engine_name,
+        provider_connection_id=provider_connection_id,
         prompt_text=prompt_text,
         workspace_dir="/workspace",
         task_status=task_status,
@@ -130,6 +140,51 @@ class TestBuildCmd:
         cmd = _build_cmd(cli_task)
         assert "resume" not in cmd
         assert "--skip-git-repo-check" in cmd
+
+    def test_codex_cmd_without_provider_connection_has_no_overrides(self) -> None:
+        cli_task = _make_task(engine_name="codex")
+        cmd = _build_cmd(cli_task, None)
+        assert "-c" not in cmd
+
+    def test_codex_cmd_with_provider_connection_adds_overrides(self) -> None:
+        cli_task = _make_task(engine_name="codex")
+        connection = LlmProviderConnectionDetail(
+            connection_id=uuid.uuid4(),
+            name="external",
+            base_url="https://api.example.com/v1",
+            model="my-model",
+            wire_api="chat",
+            requires_openai_auth=False,
+            token="sk-abc",  # noqa: S106
+        )
+
+        cmd = _build_cmd(cli_task, connection)
+
+        assert "-c" in cmd
+        overrides = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "-c"]
+        assert "model_provider=external" in overrides
+        assert "model_providers.external.base_url=https://api.example.com/v1" in overrides
+        assert f"model_providers.external.env_key={EXTERNAL_LLM_API_KEY_ENV_VAR}" in overrides
+        assert "model_providers.external.wire_api=chat" in overrides
+        assert "model_providers.external.requires_openai_auth=false" in overrides
+        assert "model=my-model" in overrides
+
+    def test_codex_cmd_with_provider_connection_overrides_come_before_prompt(self) -> None:
+        cli_task = _make_task(engine_name="codex", prompt_text="do the thing")
+        connection = LlmProviderConnectionDetail(
+            connection_id=uuid.uuid4(),
+            name="external",
+            base_url="https://api.example.com/v1",
+            model="my-model",
+            wire_api="chat",
+            requires_openai_auth=True,
+            token="sk-abc",  # noqa: S106
+        )
+
+        cmd = _build_cmd(cli_task, connection)
+
+        assert cmd[-1] == "do the thing"
+        assert "model_providers.external.requires_openai_auth=true" in cmd
 
 
 class TestExtractResultText:
@@ -335,6 +390,36 @@ class TestRunCliTask:
         assert cli_task.task_status == TaskStatus.FAILED
         assert "not found" in cli_task.task_error
 
+    async def test_limit_overrun_error_sets_failed_status(self) -> None:
+        # Regression: codex --json can emit a single stdout line past the stream reader's limit
+        # (e.g. a tool-output line embedding a whole file's contents), which raises
+        # asyncio.LimitOverrunError from reader.readline(). Before this fix that error wasn't
+        # caught at all, so it escaped run_cli_task uncaught and left task_status stuck on RUNNING.
+        cli_task = _make_task(engine_name="codex")
+        pool = _make_pool()
+        mock_proc = _make_mock_process()
+
+        async def _raise_readline() -> bytes:
+            raise asyncio.LimitOverrunError("Separator is found, but chunk is longer than limit", 65536)
+
+        mock_proc.stdout.readline = _raise_readline
+
+        with unittest.mock.patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            await run_cli_task(cli_task, pool)
+
+        assert cli_task.task_status == TaskStatus.FAILED
+        assert "longer than limit" in cli_task.task_error
+
+    async def test_subprocess_created_with_raised_stream_limit(self) -> None:
+        cli_task = _make_task(engine_name="codex")
+        pool = _make_pool()
+        mock_proc = _make_mock_process()
+
+        with unittest.mock.patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            await run_cli_task(cli_task, pool)
+
+        assert mock_exec.call_args.kwargs["limit"] == task_runner_module._STDOUT_STREAM_LIMIT
+
     async def test_cancelled_task_skips_execution(self) -> None:
         cli_task = _make_task(task_status=TaskStatus.CANCELLED)
         pool = _make_pool()
@@ -407,6 +492,55 @@ class TestRunCliTask:
             await run_cli_task(cli_task, pool)
 
         assert get_workflow_event_bus()._subscribers == {}
+
+
+class TestRunCliTaskWithProviderConnection:
+    async def test_fails_task_without_spawning_subprocess_when_connection_missing(self) -> None:
+        cli_task = _make_task(engine_name="codex", provider_connection_id=str(uuid.uuid4()))
+        pool = _make_pool()
+
+        with unittest.mock.patch("asyncio.create_subprocess_exec") as mock_spawn:
+            await run_cli_task(cli_task, pool)
+
+        mock_spawn.assert_not_called()
+        assert cli_task.task_status == TaskStatus.FAILED
+        assert "LLM provider connection not found" in (cli_task.task_error or "")
+
+    async def test_injects_token_into_subprocess_env_without_mutating_os_environ(self) -> None:
+        connection = await create_llm_provider_connection_async(
+            name="external-test", base_url="https://api.example.com/v1", model="my-model", token="sk-secret"
+        )
+        cli_task = _make_task(engine_name="codex", provider_connection_id=str(connection.connection_id))
+        pool = _make_pool()
+        mock_proc = _make_mock_process(
+            returncode=0, stdout=b'{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}', stderr=b""
+        )
+
+        with unittest.mock.patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_spawn:
+            await run_cli_task(cli_task, pool)
+
+        assert cli_task.task_status == TaskStatus.SUCCESS
+        passed_env = mock_spawn.call_args.kwargs["env"]
+        assert passed_env[EXTERNAL_LLM_API_KEY_ENV_VAR] == "sk-secret"
+        # The one subprocess call gets the token in its own env dict - the test process's own
+        # os.environ must stay untouched (unlike git_credentials' GIT_CONFIG_GLOBAL mutation).
+        assert EXTERNAL_LLM_API_KEY_ENV_VAR not in os.environ
+
+    async def test_passes_provider_overrides_in_built_command(self) -> None:
+        connection = await create_llm_provider_connection_async(
+            name="external-test-2", base_url="https://api.example.com/v1", model="my-model", token="sk-secret"
+        )
+        cli_task = _make_task(engine_name="codex", provider_connection_id=str(connection.connection_id))
+        pool = _make_pool()
+        mock_proc = _make_mock_process(
+            returncode=0, stdout=b'{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}', stderr=b""
+        )
+
+        with unittest.mock.patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_spawn:
+            await run_cli_task(cli_task, pool)
+
+        passed_cmd = mock_spawn.call_args.args
+        assert "model_provider=external" in passed_cmd
 
 
 class TestClassifyLiveStreamLine:

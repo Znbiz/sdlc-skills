@@ -25,11 +25,13 @@ async def run_cli_subprocess(
     if engine_name == "claude":
         cmd = ["claude", "-p", prompt_text, "--output-format", "stream-json"]
     else:
+        # See task_runner._build_cmd() for why this is danger-full-access, not workspace-write:
+        # codex's own sandbox modes need a nested bwrap sandbox that Docker's seccomp profile blocks.
         cmd = [
             "codex",
             "exec",
             "--sandbox",
-            "workspace-write",
+            "danger-full-access",
             "--skip-git-repo-check",
             "--json",
             prompt_text,

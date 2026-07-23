@@ -5,6 +5,9 @@ export interface StreamLogEntry {
   actor: StreamActor;
   message: string;
   detail?: string;
+  // Backend SSE payloads carry no timestamp (see reduceStreamEvent) - this is receipt time, not
+  // server emit time, but for a live-tailing stream the two are close enough to treat as one.
+  receivedAt: number;
 }
 
 export interface StreamReducerState {
@@ -31,7 +34,7 @@ function resolveActor(raw: Record<string, unknown>): StreamActor {
   return "workflow";
 }
 
-function describeEvent(raw: Record<string, unknown>): StreamLogEntry {
+function describeEvent(raw: Record<string, unknown>): Omit<StreamLogEntry, "receivedAt"> {
   const eventType = String(raw.event_type ?? "unknown");
   const actor = resolveActor(raw);
   switch (eventType) {
@@ -95,7 +98,7 @@ function describeEvent(raw: Record<string, unknown>): StreamLogEntry {
 const TERMINAL_EVENT_TYPES = new Set(["workflow_done", "done", "workflow_failed", "workflow_cancelled", "error"]);
 
 export function reduceStreamEvent(state: StreamReducerState, rawPayload: Record<string, unknown>): StreamReducerState {
-  const entry = describeEvent(rawPayload);
+  const entry = { ...describeEvent(rawPayload), receivedAt: Date.now() };
   const entries = [...state.entries, entry].slice(-MAX_ENTRIES);
   const isTerminal = state.isTerminal || TERMINAL_EVENT_TYPES.has(entry.eventType);
 

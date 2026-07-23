@@ -88,7 +88,7 @@ async def test_llm_worker_service_fails_over_to_alternative_engine_on_limit_exha
 
     build_calls: list[str] = []
 
-    def _build_cli_task(_request, *, engine_name: str):
+    def _build_cli_task(_request, *, engine_name: str, provider_connection_id: str | None = None):
         build_calls.append(engine_name)
         return primary_task if engine_name == "claude" else fallback_task
 
@@ -126,7 +126,7 @@ async def test_llm_worker_service_stops_after_dual_limit_exhaustion() -> None:
 
     build_calls: list[str] = []
 
-    def _build_cli_task(_request, *, engine_name: str):
+    def _build_cli_task(_request, *, engine_name: str, provider_connection_id: str | None = None):
         build_calls.append(engine_name)
         return primary_task if engine_name == "claude" else fallback_task
 
@@ -163,6 +163,28 @@ async def test_llm_worker_service_does_not_failover_on_non_limit_error() -> None
                 await service.run_task(request, engine_name="claude")
 
     assert mock_build.call_count == 1
+
+
+async def test_llm_worker_service_does_not_failover_when_provider_connection_id_set() -> None:
+    # An external LLM connection was chosen explicitly - silently falling back to `claude` would
+    # ignore that choice instead of surfacing the external provider's own rate limit. See
+    # arch-docs/docs/spec/2026-07-24-external-llm-provider.md, section 5.
+    audit_service = unittest.mock.MagicMock()
+    service = LlmWorkerService(audit_service=audit_service)
+    request = _make_request()
+    cli_task = _make_cli_task()
+    cli_task.engine_name = "codex"
+    cli_task.task_status = TaskStatus.FAILED
+    cli_task.task_error = "limit_exhausted: insufficient_quota"
+
+    with unittest.mock.patch.object(service, "_build_cli_task", return_value=cli_task) as mock_build:
+        with unittest.mock.patch.object(service, "_run_cli_task", new=unittest.mock.AsyncMock()):
+            with pytest.raises(RuntimeError, match="limit_exhausted"):
+                await service.run_task(request, engine_name="codex", provider_connection_id="conn-1")
+
+    assert mock_build.call_count == 1
+    recorded_events = [call.args[0] for call in audit_service.record.call_args_list]
+    assert EventType.LLM_TASK_FAILOVER_TRIGGERED not in [event.event_type for event in recorded_events]
 
 
 def test_get_llm_worker_service_returns_singleton() -> None:

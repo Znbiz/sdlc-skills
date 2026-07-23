@@ -11,6 +11,13 @@ const TEMPORAL_WINDOW_OPTIONS: { value: string; label: string }[] = [
   { value: "finish_temporal_analysis", label: "Завершить исторический анализ" },
 ];
 
+const CARD_TITLES: Record<string, string> = {
+  user_question: "Вопрос",
+  user_input: "Нужны данные",
+  temporal_window_confirmation: "Подтверждение периода анализа",
+  step_failed: "Шаг завершился ошибкой",
+};
+
 export function RequiredActionCard({
   responseId,
   conversationId,
@@ -25,7 +32,8 @@ export function RequiredActionCard({
 
   const renderForm = () => {
     switch (action.action_type) {
-      case "user_question":
+      case "user_question": {
+        const remainingCount = Number(action.payload.remaining_count ?? 0);
         return (
           <form
             className={styles.form}
@@ -35,13 +43,17 @@ export function RequiredActionCard({
               submitAction.mutate({ responseId, actionType: "answer_question", questionId: action.question_id, answer: text.trim() });
             }}
           >
-            <p className={styles.question}>{String(action.payload.question ?? "")}</p>
-            <textarea value={text} onChange={(event) => setText(event.target.value)} rows={3} />
-            <Button type="submit" variant="primary" disabled={submitAction.isPending}>
+            <p className={styles.question}>{String(action.payload.question ?? action.payload.question_text ?? "")}</p>
+            {remainingCount > 0 && (
+              <p className={styles.stepMeta}>Останется вопросов после этого: {remainingCount}</p>
+            )}
+            <textarea value={text} onChange={(event) => setText(event.target.value)} rows={3} autoFocus />
+            <Button type="submit" variant="primary" disabled={submitAction.isPending || !text.trim()}>
               Ответить
             </Button>
           </form>
         );
+      }
       case "user_input":
         return (
           <form
@@ -58,8 +70,8 @@ export function RequiredActionCard({
             }}
           >
             <p className={styles.question}>{String(action.payload.question ?? "")}</p>
-            <input value={text} onChange={(event) => setText(event.target.value)} />
-            <Button type="submit" variant="primary" disabled={submitAction.isPending}>
+            <input value={text} onChange={(event) => setText(event.target.value)} autoFocus />
+            <Button type="submit" variant="primary" disabled={submitAction.isPending || !text.trim()}>
               Продолжить
             </Button>
           </form>
@@ -123,7 +135,7 @@ export function RequiredActionCard({
   };
 
   return (
-    <Card title="Требуется действие">
+    <Card title={CARD_TITLES[action.action_type] ?? "Требуется действие"}>
       {renderForm()}
       {submitAction.isError && <ErrorBanner error={submitAction.error} onRetry={() => {}} />}
     </Card>

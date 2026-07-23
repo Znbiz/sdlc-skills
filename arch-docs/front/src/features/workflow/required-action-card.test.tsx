@@ -28,6 +28,44 @@ function makeStepFailedAction(overrides: Partial<RequiredActionResponse["payload
   };
 }
 
+function makeUserQuestionAction(payload: RequiredActionResponse["payload"]): RequiredActionResponse {
+  return {
+    action_type: "user_question",
+    question_id: "q-1",
+    action_status: "open",
+    payload,
+  };
+}
+
+describe("RequiredActionCard user_question", () => {
+  it("активный вопрос (с payload.question) показывается с формой ответа", async () => {
+    submitActionMock.mockResolvedValue({});
+    const user = userEvent.setup();
+    renderWithProviders(
+      <RequiredActionCard
+        responseId="wf-1"
+        conversationId="conv-1"
+        action={makeUserQuestionAction({ question_id: "q-1", question: "Какой формат хранения данных используется?", remaining_count: 2 })}
+      />,
+    );
+
+    expect(screen.getByText("Вопрос")).toBeInTheDocument();
+    expect(screen.getByText("Какой формат хранения данных используется?")).toBeInTheDocument();
+    expect(screen.getByText(/Останется вопросов после этого: 2/)).toBeInTheDocument();
+
+    const submitButton = screen.getByRole("button", { name: "Ответить" });
+    expect(submitButton).toBeDisabled();
+
+    await user.type(screen.getByRole("textbox"), "JSON");
+    await user.click(submitButton);
+
+    expect(submitActionMock).toHaveBeenCalledWith(
+      "wf-1",
+      expect.objectContaining({ responseId: "wf-1", actionType: "answer_question", questionId: "q-1", answer: "JSON" }),
+    );
+  });
+});
+
 describe("RequiredActionCard step_failed", () => {
   it("показывает шаг, полный текст ошибки и число попыток", () => {
     renderWithProviders(

@@ -1,9 +1,33 @@
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { HttpResponse, http } from "msw";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { server } from "../../test/msw-server";
+import { renderWithProviders as render } from "../../test/render";
 import { InitArchForm } from "./init-arch-form";
 
+function mockLlmProviderConnections(
+  connections: { connection_id: string; name: string; model: string }[] = [],
+) {
+  return http.get("/api/rest/llm-providers/", () =>
+    HttpResponse.json(
+      connections.map((connection) => ({
+        connection_id: connection.connection_id,
+        name: connection.name,
+        base_url: "https://api.example.com/v1",
+        model: connection.model,
+        wire_api: "chat",
+        requires_openai_auth: false,
+      })),
+    ),
+  );
+}
+
 describe("InitArchForm", () => {
+  beforeEach(() => {
+    server.use(mockLlmProviderConnections());
+  });
+
   it("показывает название продукта из проекта как read-only, без поля ввода", () => {
     const onSubmit = vi.fn();
     render(
@@ -201,5 +225,58 @@ describe("InitArchForm", () => {
 
     await user.click(screen.getByText("Advanced"));
     expect(screen.getByLabelText("Workspace dir")).toHaveValue("/workspace/conv-1");
+  });
+
+  it("блокирует сабмит с внешней LLM без выбранного подключения", async () => {
+    server.use(mockLlmProviderConnections([]));
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    render(
+      <InitArchForm
+        isSubmitting={false}
+        onSubmit={onSubmit}
+        defaultWorkspaceDir="/workspace/conv-1"
+        productName="TestProduct"
+        repositoryNames={["svc-a"]}
+      />,
+    );
+
+    await user.selectOptions(screen.getByLabelText("Движок"), "external");
+    expect(await screen.findByText("Нет настроенных подключений — добавьте их в Setup перед запуском.")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Запустить init_arch" }));
+
+    expect(
+      await screen.findByText("Выберите подключение к внешней LLM (или настройте его в Setup)."),
+    ).toBeInTheDocument();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("отправляет engine_name='codex' и provider_connection_id при выборе внешней LLM", async () => {
+    server.use(mockLlmProviderConnections([{ connection_id: "conn-1", name: "my-provider", model: "my-model" }]));
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    render(
+      <InitArchForm
+        isSubmitting={false}
+        onSubmit={onSubmit}
+        defaultWorkspaceDir="/workspace/conv-1"
+        productName="TestProduct"
+        repositoryNames={["svc-a"]}
+      />,
+    );
+
+    await user.selectOptions(screen.getByLabelText("Движок"), "external");
+    await screen.findByText("my-provider (my-model)");
+    await user.selectOptions(screen.getByLabelText("Подключение к внешней LLM"), "conn-1");
+
+    await user.click(screen.getByRole("button", { name: "Запустить init_arch" }));
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        engine_name: "codex",
+        provider_connection_id: "conn-1",
+      }),
+    );
   });
 });

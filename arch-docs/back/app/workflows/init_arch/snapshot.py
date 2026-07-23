@@ -22,6 +22,7 @@ class WorkflowSnapshot(pydantic.BaseModel):
     workspace_dir: str
     arch_repo_dir: str
     engine_name: str
+    provider_connection_id: str | None = None
     timeout_seconds: int
     updated_at: datetime.datetime
     session: WorkflowSessionRecord
@@ -33,6 +34,7 @@ def build_snapshot(state: typing.Mapping[str, typing.Any]) -> WorkflowSnapshot:
         workspace_dir=state["workspace_dir"],
         arch_repo_dir=state["arch_repo_dir"],
         engine_name=state["engine_name"],
+        provider_connection_id=state.get("provider_connection_id"),
         timeout_seconds=state["timeout_seconds"],
         updated_at=datetime.datetime.now(datetime.timezone.utc),
         session=state["session"],

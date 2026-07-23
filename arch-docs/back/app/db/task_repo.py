@@ -32,6 +32,7 @@ async def upsert_cli_task(session: async_sa.AsyncSession, cli_task: CliTask) -> 
         record = CliTaskModel(
             task_id=task_uuid,
             engine_name=cli_task.engine_name,
+            provider_connection_id=cli_task.provider_connection_id,
             task_status=str(cli_task.task_status),
             prompt_text=prompt_text,
             workspace_dir=cli_task.workspace_dir,
@@ -55,6 +56,7 @@ async def upsert_cli_task(session: async_sa.AsyncSession, cli_task: CliTask) -> 
         session.add(record)
     else:
         existing.task_status = str(cli_task.task_status)
+        existing.provider_connection_id = cli_task.provider_connection_id
         existing.conversation_id = cli_task.conversation_id
         existing.response_type = cli_task.response_type
         existing.workflow_id = cli_task.workflow_id
@@ -78,6 +80,7 @@ def _task_from_model(model: CliTaskModel) -> CliTask:
     return CliTask(
         task_id=str(model.task_id),
         engine_name=model.engine_name,
+        provider_connection_id=model.provider_connection_id,
         prompt_text=model.prompt_text,
         workspace_dir=model.workspace_dir,
         session_id=model.session_id,
