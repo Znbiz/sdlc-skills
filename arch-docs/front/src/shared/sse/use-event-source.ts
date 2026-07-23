@@ -7,9 +7,11 @@ export interface UseEventSourceOptions {
   onMessage: (event: MessageEvent<string>) => void;
   onReconnect?: () => void;
   reconnectDelayMs?: number;
+  maxReconnectDelayMs?: number;
 }
 
 const DEFAULT_RECONNECT_DELAY_MS = 2000;
+const DEFAULT_MAX_RECONNECT_DELAY_MS = 30_000;
 
 export function useEventSource(url: string | null, options: UseEventSourceOptions): SseConnectionState {
   const [connectionState, setConnectionState] = useState<SseConnectionState>("connecting");
@@ -28,6 +30,10 @@ export function useEventSource(url: string | null, options: UseEventSourceOption
     let source: EventSource | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let hasOpenedOnce = false;
+    let consecutiveFailures = 0;
+
+    const baseDelay = options.reconnectDelayMs ?? DEFAULT_RECONNECT_DELAY_MS;
+    const maxDelay = options.maxReconnectDelayMs ?? DEFAULT_MAX_RECONNECT_DELAY_MS;
 
     const connect = () => {
       if (cancelled) return;
@@ -38,6 +44,7 @@ export function useEventSource(url: string | null, options: UseEventSourceOption
         if (cancelled) return;
         if (hasOpenedOnce) onReconnectRef.current?.();
         hasOpenedOnce = true;
+        consecutiveFailures = 0;
         setConnectionState("open");
       };
 
@@ -50,7 +57,12 @@ export function useEventSource(url: string | null, options: UseEventSourceOption
         if (cancelled) return;
         source?.close();
         setConnectionState("reconnecting");
-        reconnectTimer = setTimeout(connect, options.reconnectDelayMs ?? DEFAULT_RECONNECT_DELAY_MS);
+        // Экспоненциальный backoff: фиксированный интервал переподключения при 429 от nginx
+        // (например, из-за rate-limit'а) держит зону лимитера постоянно исчерпанной и
+        // блокирует остальные запросы приложения, а не только сам SSE.
+        const delay = Math.min(maxDelay, baseDelay * 2 ** consecutiveFailures);
+        consecutiveFailures += 1;
+        reconnectTimer = setTimeout(connect, delay);
       };
     };
 

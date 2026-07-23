@@ -4,7 +4,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-_OPEN_PATHS: frozenset[str] = frozenset({"/health", "/docs", "/openapi.json", "/redoc"})
+_OPEN_PATHS: frozenset[str] = frozenset({"/health", "/api-docs", "/openapi.json", "/api-redoc"})
 
 
 class BearerAuthMiddleware(BaseHTTPMiddleware):

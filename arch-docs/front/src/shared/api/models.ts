@@ -32,17 +32,24 @@ export interface InitAuthResponse {
   expires_at: string;
 }
 
-export interface GitCredentialsStatusResponse {
-  configured: boolean;
-  configured_hosts: string[];
+export type GitConnectionType = "token" | "ssh";
+
+export interface GitConnectionSummaryResponse {
+  connection_id: string;
+  host: string;
+  connection_type: GitConnectionType;
 }
 
-export interface CheckGitAccessResponse {
-  repository_url: string;
-  accessible: boolean;
-  access_status: string;
-  reason_code: string | null;
-  message: string;
+export interface GitConnectionDetailResponse {
+  connection_id: string;
+  host: string;
+  connection_type: GitConnectionType;
+  token: string | null;
+  username: string | null;
+}
+
+export interface GitSshPublicKeyResponse {
+  public_key: string;
 }
 
 // action_type здесь всегда равен backend-овскому interrupt_type. Известные значения:
@@ -59,9 +66,20 @@ export interface InitArchInput {
   analysis_scope: string;
   workspace_dir: string;
   arch_repo_dir: string;
-  repo_list: string[];
   engine_name: CliEngine;
   timeout_seconds: number;
+}
+
+export interface RepositoryStatusResponse {
+  repository_name: string;
+  repository_url: string;
+  main_branch: string;
+  remote_head_commit: string;
+  remote_head_commit_date: string | null;
+  analysis_target_commit: string;
+  analysis_target_commit_date: string | null;
+  analysis_status: string;
+  commit_range_status: string;
 }
 
 export interface ResponseStatusResponse {
@@ -75,6 +93,8 @@ export interface ResponseStatusResponse {
   arch_repo_dir: string;
   completed_steps: string[];
   required_actions: RequiredActionResponse[];
+  repositories: RepositoryStatusResponse[];
+  repository_list_editable: boolean;
   created_at: string;
   updated_at: string;
   error_message: string | null;
@@ -86,11 +106,18 @@ export interface PreviousInitInputResponse {
   analysis_scope: string;
   workspace_dir: string;
   arch_repo_dir: string;
-  repo_list: string[];
+}
+
+export interface ConversationRepositoryResponse {
+  repository_name: string;
+  repository_url: string;
 }
 
 export interface ConversationResponse {
   conversation_id: string;
+  product_name: string | null;
+  repositories: ConversationRepositoryResponse[];
+  workspace_dir: string;
   created_at: string;
   updated_at: string;
   active_response: ResponseStatusResponse | null;

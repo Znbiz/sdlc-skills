@@ -22,6 +22,12 @@
   background: var(--color-surface);
 }
 
+.productName {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--color-text-muted);
+}
+
 .repoList {
   display: flex;
   flex-direction: column;

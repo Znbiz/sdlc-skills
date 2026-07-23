@@ -1,13 +1,16 @@
 import { httpClient, sseUrl } from "./http-client";
 import type {
-  CheckGitAccessResponse,
   CliAuthStatusResponse,
   CliEngine,
   ConversationItemsResponse,
+  ConversationRepositoryResponse,
   ConversationResponse,
   DocsFileResponse,
   DocsTreeNode,
-  GitCredentialsStatusResponse,
+  GitConnectionDetailResponse,
+  GitConnectionSummaryResponse,
+  GitConnectionType,
+  GitSshPublicKeyResponse,
   InitAuthResponse,
   ResponseStatusResponse,
 } from "./models";
@@ -21,18 +24,37 @@ export const cliAuthApi = {
   authSessionStreamUrl: (authSessionId: string) => sseUrl(`/rest/cli-auth/auth-sessions/${authSessionId}/stream/`),
 };
 
-export const gitCredentialsApi = {
-  getStatus: () => httpClient.get<GitCredentialsStatusResponse>("/rest/git-credentials/"),
-  setToken: (params: { host: string; token: string; username?: string }) =>
-    httpClient.put<GitCredentialsStatusResponse>("/rest/git-credentials/personal-access-token/", params),
-  deleteToken: (host: string) =>
-    httpClient.delete<GitCredentialsStatusResponse>("/rest/git-credentials/personal-access-token/", { query: { host } }),
-  checkAccess: (repositoryUrl: string) =>
-    httpClient.post<CheckGitAccessResponse>("/rest/git-credentials/check-access/", { repository_url: repositoryUrl }),
+export const gitConnectionsApi = {
+  list: () => httpClient.get<GitConnectionSummaryResponse[]>("/rest/git-connections/"),
+  get: (connectionId: string) =>
+    httpClient.get<GitConnectionDetailResponse>(`/rest/git-connections/${encodeURIComponent(connectionId)}/`),
+  create: (params: { host: string; connectionType: GitConnectionType; token?: string; username?: string }) =>
+    httpClient.post<GitConnectionSummaryResponse>("/rest/git-connections/", {
+      host: params.host,
+      connection_type: params.connectionType,
+      token: params.token,
+      username: params.username,
+    }),
+  update: (
+    connectionId: string,
+    params: { host: string; connectionType: GitConnectionType; token?: string; username?: string },
+  ) =>
+    httpClient.put<GitConnectionSummaryResponse>(`/rest/git-connections/${encodeURIComponent(connectionId)}/`, {
+      host: params.host,
+      connection_type: params.connectionType,
+      token: params.token,
+      username: params.username,
+    }),
+  delete: (connectionId: string) => httpClient.delete<void>(`/rest/git-connections/${encodeURIComponent(connectionId)}/`),
+};
+
+export const gitSshApi = {
+  getPublicKey: () => httpClient.get<GitSshPublicKeyResponse>("/rest/git-ssh/public-key/"),
 };
 
 export const workflowApi = {
   createConversation: () => httpClient.post<ConversationResponse>("/rest/conversations/"),
+  listConversations: (limit?: number) => httpClient.get<ConversationResponse[]>("/rest/conversations/", { query: { limit } }),
   getConversation: (conversationId: string) => httpClient.get<ConversationResponse>(`/rest/conversations/${conversationId}/`),
   listItems: (conversationId: string) => httpClient.get<ConversationItemsResponse>(`/rest/conversations/${conversationId}/items/`),
   conversationStreamUrl: (conversationId: string) => sseUrl(`/rest/conversations/${conversationId}/stream/`),
@@ -47,6 +69,7 @@ export const workflowApi = {
       input: params.input ?? {},
     }),
   getResponse: (responseId: string) => httpClient.get<ResponseStatusResponse>(`/rest/responses/${responseId}/`),
+  listResponseItems: (responseId: string) => httpClient.get<ConversationItemsResponse>(`/rest/responses/${responseId}/items/`),
   submitAction: (
     responseId: string,
     params: { actionType: string; questionId?: string | null; answer?: string | null; field?: string | null; value?: unknown },
@@ -58,6 +81,30 @@ export const workflowApi = {
       field: params.field ?? null,
       value: params.value ?? null,
     }),
+};
+
+export const conversationsApi = {
+  deleteConversation: (conversationId: string) => httpClient.delete<void>(`/rest/conversations/${conversationId}/`),
+  getRepositories: (conversationId: string) =>
+    httpClient.get<ConversationRepositoryResponse[]>(`/rest/conversations/${conversationId}/repositories/`),
+  setRepositories: (conversationId: string, entries: string[]) =>
+    httpClient.put<ConversationRepositoryResponse[]>(`/rest/conversations/${conversationId}/repositories/`, { entries }),
+  addRepository: (conversationId: string, entry: string) =>
+    httpClient.post<ConversationRepositoryResponse[]>(`/rest/conversations/${conversationId}/repositories/`, { entry }),
+  removeRepository: (conversationId: string, repositoryName: string) =>
+    httpClient.delete<ConversationRepositoryResponse[]>(
+      `/rest/conversations/${conversationId}/repositories/${encodeURIComponent(repositoryName)}/`,
+    ),
+  updateProductName: (conversationId: string, productName: string) =>
+    httpClient.patch<ConversationResponse>(`/rest/conversations/${conversationId}/`, { product_name: productName }),
+  listResponses: (conversationId: string) =>
+    httpClient.get<ResponseStatusResponse[]>(`/rest/conversations/${conversationId}/responses/`),
+};
+
+export const workspaceApi = {
+  getTree: (conversationId: string) => httpClient.get<DocsTreeNode>(`/rest/conversations/${conversationId}/workspace/tree/`),
+  getFile: (conversationId: string, path: string) =>
+    httpClient.get<DocsFileResponse>(`/rest/conversations/${conversationId}/workspace/file/`, { query: { path } }),
 };
 
 export const docsApi = {

@@ -28,29 +28,41 @@ export async function seedRepositoriesIntoWorkspace(
   runId: string,
   fixtureDir: string,
   repoNames: string[],
-): Promise<{ workspaceDir: string; archRepoDir: string }> {
+): Promise<{ workspaceDir: string; archRepoDir: string; fixtureRepoUrls: Record<string, string> }> {
   const workspaceDir = `/workspace/e2e-${runId}`;
   const archRepoDir = `${workspaceDir}/arch-doc`;
-  const rawWorkspaceDir = `${workspaceDir}/.temp`;
+  // Raw clones now live under `<workspaceDir>/runs/<workflow_id>/` - a directory whose exact path
+  // is only known once the run (and its server-generated workflow_id) has actually started (see
+  // arch-docs/docs/spec/2026-07-23-per-workflow-workspace-and-browser.md section 1). So fixtures
+  // can no longer be pre-seeded directly into the clone target the way `.temp/<repoName>` used to
+  // be - instead, seed them at a fixed, run_id-scoped path and pass `file://` URLs as repo entries,
+  // so `_clone_repositories()` does a real (local, no-credentials-needed) `git clone` into whatever
+  // `runs/<workflow_id>/` turns out to be.
+  const fixturesDir = `/tmp/e2e-fixtures-${runId}`;
 
-  await dockerComposeExec(["mkdir", "-p", rawWorkspaceDir]);
+  await dockerComposeExec(["mkdir", "-p", fixturesDir]);
 
+  const fixtureRepoUrls: Record<string, string> = {};
   for (const repoName of repoNames) {
     const hostRepoPath = path.join(fixtureDir, repoName);
     // docker compose cp копирует относительно текущего контейнера сервиса.
     await execFileAsync(
       "docker",
-      ["compose", "--env-file", ".env.docker", "cp", hostRepoPath, `${COMPOSE_SERVICE}:${rawWorkspaceDir}/${repoName}`],
+      ["compose", "--env-file", ".env.docker", "cp", hostRepoPath, `${COMPOSE_SERVICE}:${fixturesDir}/${repoName}`],
       { cwd: COMPOSE_CWD },
     );
+    fixtureRepoUrls[repoName] = `file://${fixturesDir}/${repoName}`;
   }
 
-  // `docker compose exec` и `docker cp` создают каталоги/файлы от root, а backend в контейнере
-  // работает под непривилегированным пользователем и не сможет создать arch_repo_dir / писать
-  // снепшот внутри root-овного workspace. Делаем засеянное дерево доступным на запись backend-у.
+  // `docker compose exec`/`docker cp` создают файлы от root, а backend в контейнере работает под
+  // непривилегированным пользователем и не сможет ни прочитать фикстуры для `git clone`, ни
+  // создать/писать в conversation_workspace_dir (создаётся eagerly самим backend-ом). Делаем оба
+  // дерева доступными на запись/чтение backend-у.
+  await dockerComposeExec(["chmod", "-R", "0777", fixturesDir]);
+  await dockerComposeExec(["mkdir", "-p", workspaceDir]);
   await dockerComposeExec(["chmod", "-R", "0777", workspaceDir]);
 
-  return { workspaceDir, archRepoDir };
+  return { workspaceDir, archRepoDir, fixtureRepoUrls };
 }
 
 export async function readFileFromContainer(filePath: string): Promise<string> {
@@ -62,5 +74,5 @@ export async function readFileFromContainer(filePath: string): Promise<string> {
 }
 
 export async function cleanupWorkspace(runId: string): Promise<void> {
-  await dockerComposeExec(["rm", "-rf", `/workspace/e2e-${runId}`]);
+  await dockerComposeExec(["rm", "-rf", `/workspace/e2e-${runId}`, `/tmp/e2e-fixtures-${runId}`]);
 }

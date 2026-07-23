@@ -44,6 +44,7 @@ export const httpClient = {
   get: <TResponse>(path: string, options?: RequestOptions) => request<TResponse>("GET", path, undefined, options),
   post: <TResponse>(path: string, body?: unknown, options?: RequestOptions) => request<TResponse>("POST", path, body ?? {}, options),
   put: <TResponse>(path: string, body?: unknown, options?: RequestOptions) => request<TResponse>("PUT", path, body ?? {}, options),
+  patch: <TResponse>(path: string, body?: unknown, options?: RequestOptions) => request<TResponse>("PATCH", path, body ?? {}, options),
   delete: <TResponse>(path: string, options?: RequestOptions) => request<TResponse>("DELETE", path, undefined, options),
 };
 

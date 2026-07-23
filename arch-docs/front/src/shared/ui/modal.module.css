@@ -1,0 +1,58 @@
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgb(0 0 0 / 45%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  z-index: 100;
+}
+
+.dialog {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  padding: 1.25rem;
+  width: 100%;
+  max-width: 420px;
+  max-height: 90vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.closeButton {
+  font: inherit;
+  font-size: 1.1rem;
+  line-height: 1;
+  background: transparent;
+  border: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  padding: 0.15rem 0.4rem;
+}
+
+.closeButton:hover {
+  color: var(--color-text);
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}

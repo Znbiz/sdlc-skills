@@ -1,8 +1,7 @@
 import { ErrorBanner } from "../../shared/ui/error-banner";
 import { Spinner } from "../../shared/ui/spinner";
 import { AuthEngineCard } from "./auth-engine-card";
-import { GitTokenCard } from "./git-token-card";
-import { RepositoryAccessCard } from "./repository-access-card";
+import { GitConnectionsCard } from "./git-connections-card";
 import { useCliAuthStatus } from "./hooks";
 import styles from "./setup-page.module.css";
 
@@ -23,8 +22,7 @@ export function SetupPage() {
             <AuthEngineCard cliEngine="claude" authInfo={cliAuthStatus.data.claude} />
           </>
         )}
-        <GitTokenCard />
-        <RepositoryAccessCard />
+        <GitConnectionsCard />
       </div>
     </div>
   );

@@ -1,10 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { cliAuthApi, gitCredentialsApi } from "../../shared/api/endpoints";
-import type { CliEngine } from "../../shared/api/models";
+import { cliAuthApi, gitConnectionsApi, gitSshApi } from "../../shared/api/endpoints";
+import type { CliEngine, GitConnectionType } from "../../shared/api/models";
 
 export const setupQueryKeys = {
   cliAuthStatus: ["setup", "cli-auth-status"] as const,
-  gitStatus: ["setup", "git-status"] as const,
+  gitConnections: ["setup", "git-connections"] as const,
+  gitConnection: (connectionId: string) => ["setup", "git-connections", connectionId] as const,
+  gitSshPublicKey: ["setup", "git-ssh-public-key"] as const,
   authSession: (authSessionId: string) => ["setup", "auth-session", authSessionId] as const,
 };
 
@@ -16,10 +18,18 @@ export function useCliAuthStatus() {
   });
 }
 
-export function useGitCredentialsStatus() {
+export function useGitConnections() {
   return useQuery({
-    queryKey: setupQueryKeys.gitStatus,
-    queryFn: gitCredentialsApi.getStatus,
+    queryKey: setupQueryKeys.gitConnections,
+    queryFn: gitConnectionsApi.list,
+  });
+}
+
+export function useGitConnection(connectionId: string | null) {
+  return useQuery({
+    queryKey: setupQueryKeys.gitConnection(connectionId ?? "none"),
+    queryFn: () => gitConnectionsApi.get(connectionId!),
+    enabled: connectionId !== null,
   });
 }
 
@@ -47,24 +57,43 @@ export function useSubmitAuthCode() {
   });
 }
 
-export function useSetGitToken() {
+export function useCreateGitConnection() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: gitCredentialsApi.setToken,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: setupQueryKeys.gitStatus }),
+    mutationFn: (params: { host: string; connectionType: GitConnectionType; token?: string; username?: string }) =>
+      gitConnectionsApi.create(params),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: setupQueryKeys.gitConnections }),
   });
 }
 
-export function useDeleteGitToken() {
+export function useUpdateGitConnection() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: gitCredentialsApi.deleteToken,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: setupQueryKeys.gitStatus }),
+    mutationFn: (params: {
+      connectionId: string;
+      host: string;
+      connectionType: GitConnectionType;
+      token?: string;
+      username?: string;
+    }) => gitConnectionsApi.update(params.connectionId, params),
+    onSuccess: (_data, params) => {
+      queryClient.invalidateQueries({ queryKey: setupQueryKeys.gitConnections });
+      queryClient.invalidateQueries({ queryKey: setupQueryKeys.gitConnection(params.connectionId) });
+    },
   });
 }
 
-export function useCheckGitAccess() {
+export function useDeleteGitConnection() {
+  const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: gitCredentialsApi.checkAccess,
+    mutationFn: gitConnectionsApi.delete,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: setupQueryKeys.gitConnections }),
+  });
+}
+
+export function useGitSshPublicKey() {
+  return useQuery({
+    queryKey: setupQueryKeys.gitSshPublicKey,
+    queryFn: gitSshApi.getPublicKey,
   });
 }

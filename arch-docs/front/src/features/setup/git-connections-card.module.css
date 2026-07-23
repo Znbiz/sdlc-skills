@@ -1,0 +1,136 @@
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.empty {
+  padding: 0.4rem 0.6rem;
+  color: var(--color-text-muted);
+  font-size: 0.85rem;
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.4rem 0.6rem;
+  background: var(--color-surface-muted);
+  border-radius: 6px;
+}
+
+.host {
+  flex: 1;
+  font-weight: 600;
+}
+
+.typeBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+
+.token {
+  background: var(--color-info-bg);
+  color: var(--color-info-text);
+}
+
+.ssh {
+  background: var(--color-success-bg);
+  color: var(--color-success-text);
+}
+
+.itemActions {
+  display: flex;
+  gap: 0.3rem;
+}
+
+.iconButton {
+  font: inherit;
+  font-size: 0.95rem;
+  line-height: 1;
+  padding: 0.3rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.iconButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.iconButton:not(:disabled):hover {
+  opacity: 0.85;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+.form input {
+  font: inherit;
+  padding: 0.4rem 0.6rem;
+  border-radius: 6px;
+  border: 1px solid var(--color-border);
+  color: var(--color-text);
+  background: var(--color-surface);
+}
+
+.methodRow {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+.methodOption {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: pointer;
+}
+
+.keyBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.hint {
+  color: var(--color-text-muted);
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+.keyText {
+  font: inherit;
+  font-family: monospace;
+  font-size: 0.8rem;
+  padding: 0.5rem 0.6rem;
+  border-radius: 6px;
+  border: 1px solid var(--color-border);
+  color: var(--color-text);
+  background: var(--color-surface-muted);
+  resize: vertical;
+  word-break: break-all;
+}

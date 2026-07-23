@@ -319,6 +319,12 @@ async def delete_workflow_run(session: async_sa.AsyncSession, workflow_id: str) 
     return result.rowcount > 0
 
 
+async def delete_conversation(session: async_sa.AsyncSession, conversation_id: str) -> bool:
+    result = await session.execute(sa.delete(ConversationModel).where(ConversationModel.conversation_id == conversation_id))
+    await session.commit()
+    return result.rowcount > 0
+
+
 async def create_conversation(
     session: async_sa.AsyncSession,
     *,
@@ -345,6 +351,66 @@ async def get_conversation(
     conversation_id: str,
 ) -> ConversationModel | None:
     return await session.get(ConversationModel, conversation_id)
+
+
+async def update_conversation_repositories(
+    session: async_sa.AsyncSession,
+    *,
+    conversation_id: str,
+    repositories: list[dict],
+) -> ConversationModel:
+    conversation = await session.get(ConversationModel, conversation_id)
+    if conversation is None:
+        raise LookupError(f"Conversation {conversation_id!r} not found")
+    conversation.repositories = repositories
+    conversation.updated_at = datetime.datetime.now(datetime.timezone.utc)
+    await session.commit()
+    return conversation
+
+
+async def update_conversation_product_name(
+    session: async_sa.AsyncSession,
+    *,
+    conversation_id: str,
+    product_name: str,
+) -> ConversationModel:
+    conversation = await session.get(ConversationModel, conversation_id)
+    if conversation is None:
+        raise LookupError(f"Conversation {conversation_id!r} not found")
+    conversation.product_name = product_name
+    conversation.updated_at = datetime.datetime.now(datetime.timezone.utc)
+    await session.commit()
+    return conversation
+
+
+async def list_conversations(
+    session: async_sa.AsyncSession,
+    *,
+    limit: int = 50,
+) -> list[ConversationModel]:
+    """List conversations ordered by most recent activity.
+
+    `conversations.updated_at` is only ever set at creation (see `create_conversation()`), so
+    ordering by it alone would not reflect activity from the workflow runs underneath. Instead
+    order by the max `workflow_runs.updated_at` per conversation, falling back to
+    `conversations.updated_at` for conversations without any run yet.
+    """
+    latest_run_activity = (
+        sa.select(
+            WorkflowRunModel.conversation_id,
+            sa.func.max(WorkflowRunModel.updated_at).label("latest_updated_at"),
+        )
+        .group_by(WorkflowRunModel.conversation_id)
+        .subquery()
+    )
+    order_column = sa.func.coalesce(latest_run_activity.c.latest_updated_at, ConversationModel.updated_at)
+    result = await session.execute(
+        sa.select(ConversationModel)
+        .outerjoin(latest_run_activity, latest_run_activity.c.conversation_id == ConversationModel.conversation_id)
+        .order_by(order_column.desc())
+        .limit(limit)
+    )
+    return list(result.scalars())
 
 
 async def list_workflow_runs_for_conversation(

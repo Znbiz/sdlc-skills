@@ -322,6 +322,176 @@ async def test_submit_response_action_async_dispatches_retry_with_explicit_abort
     assert result == {"ok": True}
 
 
+def _make_repo_edit_session(*, current_step: StepId, repositories: list[RepositoryExecution]) -> WorkflowSessionRecord:
+    return WorkflowSessionRecord(
+        session_id="wf-repo-edit",
+        product_name="arch-docs",
+        analysis_scope="full",
+        current_step=current_step,
+        repositories=repositories,
+    )
+
+
+async def test_submit_response_action_async_dispatches_add_repository():
+    record = WorkflowRecord(workflow_id="wf-add-dispatch", workflow_status=WorkflowStatus.PAUSED)
+    workflow_module.get_workflow_registry()["wf-add-dispatch"] = record
+
+    with (
+        patch("app.services.init_arch_workflow.add_repository_to_workflow", new=AsyncMock()) as mock_add,
+        patch("app.services.init_arch_workflow.get_response_async", new=AsyncMock(return_value={"ok": True})),
+    ):
+        result = await workflow_module.submit_response_action_async(
+            "wf-add-dispatch", action_type="add_repository", value="https://example.com/org/svc.git"
+        )
+
+    mock_add.assert_awaited_once_with("wf-add-dispatch", repo_entry="https://example.com/org/svc.git")
+    assert result == {"ok": True}
+
+
+async def test_submit_response_action_async_requires_value_for_add_repository():
+    record = WorkflowRecord(workflow_id="wf-add-no-value", workflow_status=WorkflowStatus.PAUSED)
+    workflow_module.get_workflow_registry()["wf-add-no-value"] = record
+
+    with pytest.raises(workflow_module.WorkflowValidationError, match="add_repository requires"):
+        await workflow_module.submit_response_action_async("wf-add-no-value", action_type="add_repository")
+
+
+async def test_submit_response_action_async_dispatches_remove_repository():
+    record = WorkflowRecord(workflow_id="wf-remove-dispatch", workflow_status=WorkflowStatus.PAUSED)
+    workflow_module.get_workflow_registry()["wf-remove-dispatch"] = record
+
+    with (
+        patch("app.services.init_arch_workflow.remove_repository_from_workflow", new=AsyncMock()) as mock_remove,
+        patch("app.services.init_arch_workflow.get_response_async", new=AsyncMock(return_value={"ok": True})),
+    ):
+        result = await workflow_module.submit_response_action_async(
+            "wf-remove-dispatch", action_type="remove_repository", value="svc-a"
+        )
+
+    mock_remove.assert_awaited_once_with("wf-remove-dispatch", repository_name="svc-a")
+    assert result == {"ok": True}
+
+
+async def test_submit_response_action_async_requires_value_for_remove_repository():
+    record = WorkflowRecord(workflow_id="wf-remove-no-value", workflow_status=WorkflowStatus.PAUSED)
+    workflow_module.get_workflow_registry()["wf-remove-no-value"] = record
+
+    with pytest.raises(workflow_module.WorkflowValidationError, match="remove_repository requires"):
+        await workflow_module.submit_response_action_async("wf-remove-no-value", action_type="remove_repository")
+
+
+async def test_add_repository_to_workflow_appends_and_updates_checkpoint():
+    session = _make_repo_edit_session(
+        current_step=StepId.CLONE_REPOSITORIES,
+        repositories=[RepositoryExecution(repository_name="svc-a")],
+    )
+    record = WorkflowRecord(workflow_id="wf-add-repo", workflow_status=WorkflowStatus.PAUSED, session=session)
+    workflow_module.get_workflow_registry()["wf-add-repo"] = record
+
+    mock_graph = MagicMock()
+    mock_graph.aupdate_state = AsyncMock()
+
+    with (
+        patch("app.services.init_arch_workflow.get_checkpointer", new=AsyncMock(return_value="checkpointer")),
+        patch("app.services.init_arch_workflow.compile_graph", return_value=mock_graph) as mock_compile_graph,
+        patch("app.services.init_arch_workflow.persist_workflow_record", new=AsyncMock()) as mock_persist,
+    ):
+        resolved = await workflow_module.add_repository_to_workflow("wf-add-repo", repo_entry="svc-b")
+
+    assert [repository.repository_name for repository in resolved.session.repositories] == ["svc-a", "svc-b"]
+    mock_compile_graph.assert_called_once_with(checkpointer="checkpointer")
+    mock_graph.aupdate_state.assert_awaited_once()
+    call_args = mock_graph.aupdate_state.await_args
+    assert call_args.args[0] == {"configurable": {"thread_id": "wf-add-repo"}}
+    assert [repository.repository_name for repository in call_args.args[1]["session"].repositories] == [
+        "svc-a",
+        "svc-b",
+    ]
+    mock_persist.assert_awaited_once_with(record)
+
+
+async def test_add_repository_to_workflow_rejects_duplicate():
+    session = _make_repo_edit_session(
+        current_step=StepId.CLONE_REPOSITORIES,
+        repositories=[RepositoryExecution(repository_name="svc-a")],
+    )
+    record = WorkflowRecord(workflow_id="wf-add-dup", workflow_status=WorkflowStatus.PAUSED, session=session)
+    workflow_module.get_workflow_registry()["wf-add-dup"] = record
+
+    with pytest.raises(workflow_module.WorkflowValidationError, match="already tracked"):
+        await workflow_module.add_repository_to_workflow("wf-add-dup", repo_entry="svc-a")
+
+
+async def test_add_repository_to_workflow_rejects_when_not_paused_or_interrupted():
+    record = WorkflowRecord(workflow_id="wf-add-running", workflow_status=WorkflowStatus.RUNNING)
+    workflow_module.get_workflow_registry()["wf-add-running"] = record
+
+    with pytest.raises(workflow_module.WorkflowConflictError, match="only editable while"):
+        await workflow_module.add_repository_to_workflow("wf-add-running", repo_entry="svc-b")
+
+
+async def test_add_repository_to_workflow_rejects_after_repository_order_planned():
+    session = _make_repo_edit_session(
+        current_step=StepId.PLAN_REPOSITORY_ORDER,
+        repositories=[RepositoryExecution(repository_name="svc-a")],
+    )
+    record = WorkflowRecord(workflow_id="wf-add-late", workflow_status=WorkflowStatus.PAUSED, session=session)
+    workflow_module.get_workflow_registry()["wf-add-late"] = record
+
+    with pytest.raises(workflow_module.WorkflowConflictError, match="before repository order planning"):
+        await workflow_module.add_repository_to_workflow("wf-add-late", repo_entry="svc-b")
+
+
+async def test_remove_repository_from_workflow_filters_and_updates_checkpoint():
+    session = _make_repo_edit_session(
+        current_step=StepId.CLONE_REPOSITORIES,
+        repositories=[
+            RepositoryExecution(repository_name="svc-a"),
+            RepositoryExecution(repository_name="svc-b"),
+        ],
+    )
+    record = WorkflowRecord(workflow_id="wf-remove-repo", workflow_status=WorkflowStatus.INTERRUPTED, session=session)
+    workflow_module.get_workflow_registry()["wf-remove-repo"] = record
+
+    mock_graph = MagicMock()
+    mock_graph.aupdate_state = AsyncMock()
+
+    with (
+        patch("app.services.init_arch_workflow.get_checkpointer", new=AsyncMock(return_value="checkpointer")),
+        patch("app.services.init_arch_workflow.compile_graph", return_value=mock_graph),
+        patch("app.services.init_arch_workflow.persist_workflow_record", new=AsyncMock()) as mock_persist,
+    ):
+        resolved = await workflow_module.remove_repository_from_workflow("wf-remove-repo", repository_name="svc-b")
+
+    assert [repository.repository_name for repository in resolved.session.repositories] == ["svc-a"]
+    mock_graph.aupdate_state.assert_awaited_once()
+    mock_persist.assert_awaited_once_with(record)
+
+
+async def test_remove_repository_from_workflow_rejects_unknown_repository():
+    session = _make_repo_edit_session(
+        current_step=StepId.CLONE_REPOSITORIES,
+        repositories=[RepositoryExecution(repository_name="svc-a")],
+    )
+    record = WorkflowRecord(workflow_id="wf-remove-unknown", workflow_status=WorkflowStatus.PAUSED, session=session)
+    workflow_module.get_workflow_registry()["wf-remove-unknown"] = record
+
+    with pytest.raises(workflow_module.WorkflowValidationError, match="not tracked"):
+        await workflow_module.remove_repository_from_workflow("wf-remove-unknown", repository_name="svc-ghost")
+
+
+async def test_remove_repository_from_workflow_rejects_removing_last_repository():
+    session = _make_repo_edit_session(
+        current_step=StepId.CLONE_REPOSITORIES,
+        repositories=[RepositoryExecution(repository_name="svc-a")],
+    )
+    record = WorkflowRecord(workflow_id="wf-remove-last", workflow_status=WorkflowStatus.PAUSED, session=session)
+    workflow_module.get_workflow_registry()["wf-remove-last"] = record
+
+    with pytest.raises(workflow_module.WorkflowValidationError, match="last remaining repository"):
+        await workflow_module.remove_repository_from_workflow("wf-remove-last", repository_name="svc-a")
+
+
 async def test_list_workflow_events_async_reads_persisted_conversation_items():
     event = MagicMock()
     event.item_id = "evt-1"
@@ -677,8 +847,8 @@ async def test_start_init_arch_workflow_parses_urls_into_repository_name_and_url
     monkeypatch.setattr("app.services.init_arch_workflow.persist_workflow_record", AsyncMock())
     monkeypatch.setattr("app.services.init_arch_workflow.asyncio.create_task", _fake_create_task)
     monkeypatch.setattr("app.services.init_arch_workflow.run_workflow", AsyncMock())
-    # no host has a PAT configured here, so SSH-form URLs must be left untouched
-    monkeypatch.setattr("app.services.init_arch_workflow.list_configured_hosts", AsyncMock(return_value=[]))
+    # no host has a registered connection here, so both HTTPS and SSH-form URLs must be left untouched
+    monkeypatch.setattr("app.services.init_arch_workflow.get_connection_type_for_host", AsyncMock(return_value=None))
 
     record = await workflow_module.start_init_arch_workflow(
         product_name="svc",
@@ -705,9 +875,9 @@ async def test_start_init_arch_workflow_parses_urls_into_repository_name_and_url
         task.cancel()
 
 
-async def test_start_init_arch_workflow_rewrites_ssh_url_to_https_when_pat_configured(monkeypatch):
-    # A PAT only ever authenticates the HTTPS transport, so an SSH-form URL for a host that
-    # has a PAT (and no deploy key) must be rewritten, or cloning will always fail.
+async def test_start_init_arch_workflow_rewrites_ssh_url_to_https_when_token_configured(monkeypatch):
+    # A PAT only ever authenticates the HTTPS transport, so an SSH-form URL for a host whose
+    # registered connection_type is "token" must be rewritten, or cloning will always fail.
     created_tasks = []
     real_create_task = asyncio.create_task
 
@@ -720,7 +890,8 @@ async def test_start_init_arch_workflow_rewrites_ssh_url_to_https_when_pat_confi
     monkeypatch.setattr("app.services.init_arch_workflow.asyncio.create_task", _fake_create_task)
     monkeypatch.setattr("app.services.init_arch_workflow.run_workflow", AsyncMock())
     monkeypatch.setattr(
-        "app.services.init_arch_workflow.list_configured_hosts", AsyncMock(return_value=["gt.tropass.me"])
+        "app.services.init_arch_workflow.get_connection_type_for_host",
+        AsyncMock(return_value="token"),
     )
 
     record = await workflow_module.start_init_arch_workflow(
@@ -748,25 +919,58 @@ async def test_start_init_arch_workflow_rewrites_ssh_url_to_https_when_pat_confi
         task.cancel()
 
 
-async def test_start_init_arch_workflow_rejects_arch_repo_inside_raw_workspace(monkeypatch):
+async def test_start_init_arch_workflow_rewrites_https_url_to_ssh_when_ssh_configured(monkeypatch):
+    # A deploy key only ever authenticates the SSH transport, so an HTTPS-form URL for a host
+    # whose registered connection_type is "ssh" must be rewritten to the SCP-like SSH form,
+    # or cloning fails with "could not read Username" (no PAT is stored for that host).
+    created_tasks = []
+    real_create_task = asyncio.create_task
+
+    def _fake_create_task(coro):
+        task = real_create_task(coro)
+        created_tasks.append(task)
+        return task
+
+    monkeypatch.setattr("app.services.init_arch_workflow.persist_workflow_record", AsyncMock())
+    monkeypatch.setattr("app.services.init_arch_workflow.asyncio.create_task", _fake_create_task)
+    monkeypatch.setattr("app.services.init_arch_workflow.run_workflow", AsyncMock())
     monkeypatch.setattr(
-        "app.services.init_arch_workflow.get_gateway_settings",
-        lambda: workflow_module.GatewaySettings(
-            auth_secret="secret",
-            workflows={"init": {"raw_workspace_subdir": ".raw"}},
-        ),
+        "app.services.init_arch_workflow.get_connection_type_for_host",
+        AsyncMock(return_value="ssh"),
     )
 
+    record = await workflow_module.start_init_arch_workflow(
+        product_name="svc",
+        analysis_scope="full",
+        workspace_dir="/workspace",
+        arch_repo_dir="/workspace/arch",
+        repo_list=[
+            "https://github.com/Forkway-io/mobile-app.git",
+            "git@github.com:Forkway-io/backend.git",
+        ],
+        engine_name="claude",
+        timeout_seconds=30,
+        conversation_id="conv-start-ssh",
+    )
+
+    repos = {repo.repository_name: repo.repository_url for repo in record.session.repositories}
+    assert repos == {
+        "mobile-app": "git@github.com:Forkway-io/mobile-app.git",
+        "backend": "git@github.com:Forkway-io/backend.git",
+    }
+    for task in created_tasks:
+        task.cancel()
+
+
+def test_resolve_init_arch_paths_rejects_arch_repo_inside_raw_workspace():
+    # arch_repo_dir must not live inside the per-run raw workspace (workspace_dir/runs/<workflow_id>/) -
+    # that directory is wiped wholesale on restart (see restart_init_arch_workflow()), and the
+    # accumulated documentation must survive it.
     with pytest.raises(workflow_module.WorkflowValidationError, match="must not live inside raw workspace"):
-        await workflow_module.start_init_arch_workflow(
-            product_name="svc",
-            analysis_scope="full",
+        workflow_module._resolve_init_arch_paths(
             workspace_dir="/workspace",
-            arch_repo_dir="/workspace/.raw/arch-doc",
-            repo_list=["repo-a"],
-            engine_name="claude",
-            timeout_seconds=30,
-            conversation_id="conv-start",
+            arch_repo_dir="/workspace/runs/wf-1/arch-doc",
+            workflow_id="wf-1",
         )
 
 
@@ -1321,7 +1525,7 @@ async def test_restart_init_arch_workflow_deletes_files_db_checkpoint_and_regist
     from app.db.workflow_repo import get_workflow_run, upsert_workflow_run
 
     workspace_dir = tmp_path / "workspace"
-    raw_dir = workspace_dir / ".temp" / "svc-a"
+    raw_dir = workspace_dir / "runs" / "wf-restart" / "svc-a"
     arch_repo_dir = workspace_dir / "arch-doc"
     raw_dir.mkdir(parents=True)
     (raw_dir / "README.md").write_text("hello")
@@ -1353,8 +1557,10 @@ async def test_restart_init_arch_workflow_deletes_files_db_checkpoint_and_regist
 
     result = await workflow_module.restart_init_arch_workflow("wf-restart")
 
-    assert not raw_dir.parent.exists()  # .temp itself is gone, not just its content
-    assert not arch_repo_dir.exists()
+    assert not raw_dir.parent.exists()  # runs/wf-restart itself is gone, not just its content
+    # arch_repo_dir survives restart - it's the accumulated documentation, shared by the whole
+    # conversation, not scratch owned by this one run (see spec section 1 "Важный нюанс").
+    assert arch_repo_dir.exists()
     fake_checkpointer.adelete_thread.assert_awaited_once_with("wf-restart")
     assert "wf-restart" not in workflow_module.get_workflow_registry()
     assert cli_task.task_id not in workflow_module.get_task_registry()
@@ -1366,7 +1572,7 @@ async def test_restart_init_arch_workflow_deletes_files_db_checkpoint_and_regist
 
 async def test_restart_init_arch_workflow_waits_for_live_task_before_deleting(tmp_path, monkeypatch):
     workspace_dir = tmp_path / "workspace"
-    (workspace_dir / ".temp").mkdir(parents=True)
+    (workspace_dir / "runs" / "wf-restart-running").mkdir(parents=True)
     arch_repo_dir = workspace_dir / "arch-doc"
     arch_repo_dir.mkdir(parents=True)
 
@@ -1388,8 +1594,8 @@ async def test_restart_init_arch_workflow_waits_for_live_task_before_deleting(tm
     result = await workflow_module.restart_init_arch_workflow("wf-restart-running")
 
     assert task.cancelled()
-    assert not (workspace_dir / ".temp").exists()
-    assert not arch_repo_dir.exists()
+    assert not (workspace_dir / "runs" / "wf-restart-running").exists()
+    assert arch_repo_dir.exists()
     assert result["active_response"] is None
 
 
@@ -1397,7 +1603,7 @@ async def test_restart_init_arch_workflow_returns_previous_init_input_for_prefil
     from app.db.workflow_repo import upsert_workflow_run
 
     workspace_dir = tmp_path / "workspace"
-    (workspace_dir / ".temp").mkdir(parents=True)
+    (workspace_dir / "runs" / "wf-restart-prefill").mkdir(parents=True)
     arch_repo_dir = workspace_dir / "arch-doc"
     arch_repo_dir.mkdir(parents=True)
 
@@ -1431,10 +1637,11 @@ async def test_restart_init_arch_workflow_returns_previous_init_input_for_prefil
         "analysis_scope": "full",
         "workspace_dir": str(workspace_dir),
         "arch_repo_dir": str(arch_repo_dir),
-        "repo_list": ["https://github.com/org/repo-a.git", "repo-b"],
     }
-    # деструктивная часть restart всё ещё должна отработать - previous_init_input не подменяет её
-    assert not arch_repo_dir.exists()
+    # деструктивная часть restart всё ещё должна отработать для run_workspace_dir, но arch_repo_dir -
+    # накопленная документация проекта - restart больше не трогает (см. spec section 1).
+    assert not (workspace_dir / "runs" / "wf-restart-prefill").exists()
+    assert arch_repo_dir.exists()
 
 
 async def test_restart_init_arch_workflow_previous_init_input_is_none_without_session(tmp_path, monkeypatch):
@@ -1606,7 +1813,7 @@ async def test_resume_init_arch_workflow_from_snapshot_raises_when_active_workfl
         completed_steps=[StepId.DEFINE_SCOPE, StepId.REQUEST_REPOSITORY_LIST, StepId.PREPARE_TEMP_WORKSPACE],
     )
     _, resolved_arch_repo_dir, _ = workflow_module._resolve_init_arch_paths(
-        workspace_dir="/new/workspace", arch_repo_dir="/new/workspace/arch-doc"
+        workspace_dir="/new/workspace", arch_repo_dir="/new/workspace/arch-doc", workflow_id="wf-probe"
     )
     workflow_module.get_workflow_registry()["wf-active"] = WorkflowRecord(
         workflow_id="wf-active",

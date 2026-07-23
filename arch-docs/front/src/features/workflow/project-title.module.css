@@ -1,0 +1,46 @@
+.title {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  background: none;
+  border: none;
+  padding: 0.15rem 0.35rem;
+  margin: -0.15rem -0.35rem;
+  border-radius: 6px;
+  cursor: text;
+  font: inherit;
+  text-align: left;
+}
+
+.title:hover {
+  background: var(--color-surface-hover, rgba(99, 102, 241, 0.08));
+}
+
+.heading {
+  margin: 0;
+}
+
+.saving {
+  font-size: 0.8rem;
+  font-weight: normal;
+  color: var(--color-text-muted);
+}
+
+.editWrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.input {
+  font: inherit;
+  font-size: 1.5rem;
+  font-weight: 600;
+  padding: 0.1rem 0.35rem;
+  margin: -0.15rem -0.35rem;
+  border-radius: 6px;
+  border: 1px solid var(--color-primary, #6366f1);
+  background: var(--color-surface);
+  color: var(--color-text);
+  min-width: 12rem;
+}

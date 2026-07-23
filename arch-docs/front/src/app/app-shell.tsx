@@ -1,13 +1,17 @@
 import type { PropsWithChildren } from "react";
-import { NavLink, Outlet } from "react-router-dom";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { env } from "../shared/config/env";
 import styles from "./app-shell.module.css";
 
 const NAV_ITEMS = [
   { to: "/setup", label: "Setup" },
-  { to: "/workflows/init", label: "Init Workflow" },
+  { to: "/projects", label: "Проекты" },
   { to: "/docs", label: "Docs" },
 ];
+
+// Страница конкретного проекта (трёхколоночный layout с ресайзом) не должна быть зажата
+// общим max-width контейнера - ей нужна вся доступная ширина экрана.
+const FULL_WIDTH_ROUTE = /^\/projects\/[^/]+/;
 
 export function AppShell() {
   return (
@@ -18,6 +22,9 @@ export function AppShell() {
 }
 
 export function AppShellLayout({ children }: PropsWithChildren) {
+  const location = useLocation();
+  const isFullWidth = FULL_WIDTH_ROUTE.test(location.pathname);
+
   return (
     <div className={styles.shell}>
       <header className={styles.header}>
@@ -34,7 +41,7 @@ export function AppShellLayout({ children }: PropsWithChildren) {
           ))}
         </nav>
       </header>
-      <main className={styles.main}>{children}</main>
+      <main className={isFullWidth ? `${styles.main} ${styles.mainFullWidth}` : styles.main}>{children}</main>
     </div>
   );
 }

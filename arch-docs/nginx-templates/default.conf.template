@@ -2,7 +2,12 @@
 # ${AUTH_SECRET} инжектится сюда через envsubst при старте контейнера, поэтому браузер
 # никогда не видит Bearer-токен backend'а — SPA не требует собственного runtime-секрета.
 
-limit_req_zone $binary_remote_addr zone=api_limit:10m rate=30r/m;
+# api_limit по 30r/m (0.5 req/s) душил обычное интерактивное использование SPA:
+# ProjectPage на маунте параллельно дёргает 4+ GET, плюс фоновый polling списка
+# проектов каждые 4-10с - для одного реального пользователя этого достаточно, чтобы
+# постоянно ловить 429. Подняли до значения с запасом под нормальную работу SPA,
+# оставив защиту от реального шторма запросов (retry-loop, скрипт).
+limit_req_zone $binary_remote_addr zone=api_limit:10m rate=300r/m;
 limit_req_zone $binary_remote_addr zone=execute_limit:10m rate=10r/m;
 
 upstream arch_docs {
@@ -35,7 +40,7 @@ server {
 
     # SSE эндпоинты — длинные соединения, без буферизации
     location ~ /stream/ {
-        limit_req zone=api_limit burst=10 nodelay;
+        limit_req zone=api_limit burst=30 nodelay;
         limit_req_status 429;
 
         proxy_pass http://arch_docs;
@@ -64,7 +69,7 @@ server {
 
     # Остальные /api/* эндпоинты
     location /api/ {
-        limit_req zone=api_limit burst=20 nodelay;
+        limit_req zone=api_limit burst=60 nodelay;
         limit_req_status 429;
 
         proxy_pass http://arch_docs;
@@ -79,7 +84,7 @@ server {
     # Ответы могут быть SSE (stream=true) без "/stream/" в пути, поэтому буферизация
     # выключена так же, как для location ~ /stream/ выше.
     location /v1/ {
-        limit_req zone=api_limit burst=20 nodelay;
+        limit_req zone=api_limit burst=60 nodelay;
         limit_req_status 429;
 
         proxy_pass http://arch_docs;
@@ -94,8 +99,10 @@ server {
         proxy_send_timeout 600s;
     }
 
-    # Backend OpenAPI/Swagger — открытые пути (см. BearerAuthMiddleware._OPEN_PATHS)
-    location ~ ^/(docs|redoc|openapi\.json)$ {
+    # Backend OpenAPI/Swagger — открытые пути (см. BearerAuthMiddleware._OPEN_PATHS).
+    # `/docs` намеренно НЕ входит сюда — это путь SPA-фичи "Docs" (front/src/features/docs),
+    # Swagger/ReDoc живут под /api-docs и /api-redoc, чтобы не конфликтовать с ним.
+    location ~ ^/(api-docs|api-redoc|openapi\.json)$ {
         proxy_pass http://arch_docs;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;

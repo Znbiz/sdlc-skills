@@ -203,9 +203,7 @@ class HistoricalPrepService:
                 commit_log_summary = ""
                 temporal_note = baseline_note or range_note
                 final_range_status = (
-                    range_status
-                    if baseline_status is not CommitRangeStatus.BASELINE_MISSING
-                    else baseline_status
+                    range_status if baseline_status is not CommitRangeStatus.BASELINE_MISSING else baseline_status
                 )
 
                 if final_range_status in {
@@ -216,9 +214,7 @@ class HistoricalPrepService:
                     changed_paths, renamed_paths, deleted_paths = self.collect_changed_paths(repo_path, commit_range)
                     commit_log_summary = self.collect_commit_log_summary(repo_path, commit_range)
                     final_range_status = (
-                        CommitRangeStatus.DIFF_COLLECTED
-                        if commit_range
-                        else CommitRangeStatus.NO_CHANGES
+                        CommitRangeStatus.DIFF_COLLECTED if commit_range else CommitRangeStatus.NO_CHANGES
                     )
 
                 if checkout:
@@ -341,7 +337,7 @@ class HistoricalPrepService:
 
         try:
             first_commit = self._read_first_commit(repository, workspace_dir=workspace_dir)
-        except (ValueError, FileNotFoundError):
+        except ValueError, FileNotFoundError:
             return "", CommitRangeStatus.BASELINE_MISSING, "First repository commit is unavailable for this repository."
         if not first_commit:
             return "", CommitRangeStatus.BASELINE_MISSING, "First repository commit is unavailable for this repository."
@@ -513,6 +509,42 @@ class HistoricalPrepService:
             repository_name=repository_name,
             commit_range_status=commit_range_status.value,
         )
+
+    def get_commit_dates(
+        self,
+        session: WorkflowSessionRecord,
+        *,
+        workspace_dir: str,
+    ) -> dict[str, dict[str, dt.date | None]]:
+        """Best-effort commit dates for the repositories panel - display only, never mutates `session`.
+
+        Unlike the rest of this service, callers here (the REST layer, on every status poll) don't
+        want a `ValueError` for a not-yet-cloned repo or a hash that's no longer reachable - so
+        lookups that fail are swallowed and reported as `None` rather than propagated.
+        """
+        return {
+            repository.repository_name: {
+                "remote_head_commit_date": self._try_read_commit_date(
+                    repository.repository_name, repository.remote_head_commit, workspace_dir=workspace_dir
+                ),
+                "analysis_target_commit_date": self._try_read_commit_date(
+                    repository.repository_name, repository.analysis_target_commit, workspace_dir=workspace_dir
+                ),
+            }
+            for repository in session.repositories
+        }
+
+    def _try_read_commit_date(self, repository_name: str, commit_sha: str, *, workspace_dir: str) -> dt.date | None:
+        if not commit_sha:
+            return None
+        repo_path = self._repository_path(repository_name, workspace_dir=workspace_dir)
+        if not repo_path.exists():
+            return None
+        try:
+            raw = self._run_git_command(repo_path, ["git", "log", "-1", "--date=short", "--format=%cd", commit_sha])
+            return dt.date.fromisoformat(raw)
+        except ValueError:
+            return None
 
     def _record_event(self, session: WorkflowSessionRecord, event_type: EventType, **payload: str) -> None:
         self._audit_service.record(

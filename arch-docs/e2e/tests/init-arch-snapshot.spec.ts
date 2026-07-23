@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
 import { cleanupWorkspace, readFileFromContainer, seedRepositoriesIntoWorkspace } from "../helpers/docker-workspace";
 import { parseSnapshotYaml } from "../helpers/snapshot-assertions";
+import { purgeTestProjectsBestEffort, renameProjectCreatedInUi } from "../helpers/test-projects";
 
 const execFileAsync = promisify(execFile);
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -30,6 +31,7 @@ test.describe("init_arch: progress-снепшот через реальный do
   let runId: string;
   let workspaceDir: string;
   let archRepoDir: string;
+  let fixtureRepoUrls: Record<string, string>;
 
   test.beforeAll(async () => {
     await execFileAsync(path.join(FIXTURES_DIR, "generate-fixture-repos.sh"), [GENERATED_DIR]);
@@ -40,33 +42,44 @@ test.describe("init_arch: progress-снепшот через реальный do
     const seeded = await seedRepositoriesIntoWorkspace(runId, GENERATED_DIR, REPO_NAMES);
     workspaceDir = seeded.workspaceDir;
     archRepoDir = seeded.archRepoDir;
+    fixtureRepoUrls = seeded.fixtureRepoUrls;
   });
 
   test.afterEach(async () => {
     await cleanupWorkspace(runId);
   });
 
-  test("снепшот отражает реальный прогресс до interrupt на clone_repositories", async ({ page }) => {
+  test.afterEach(async ({ request }) => {
+    await purgeTestProjectsBestEffort(request);
+  });
+
+  test("снепшот отражает реальный прогресс до interrupt на clone_repositories", async ({ page, request }) => {
     // Шаг 3: реальная навигация SPA + заполнение формы.
-    // /workflows/init → создать conversation → редирект на /workflows/init/:conversationId,
-    // где InitWorkflowPage рендерит InitArchForm (пока нет active_response).
-    await page.goto("/workflows/init");
-    await page.getByRole("button", { name: "Создать conversation" }).click();
-    await page.waitForURL(/\/workflows\/init\/.+/);
+    // /projects → создать проект → редирект на /projects/:conversationId, где ProjectPage
+    // рендерит три колонки: репозитории проекта (левая), файлы (левая), запуски (правая).
+    await page.goto("/projects");
+    await page.getByRole("button", { name: "Создать проект" }).click();
 
-    // Название продукта (input с placeholder "Arch Docs Gateway").
-    await page.getByPlaceholder("Arch Docs Gateway").fill("E2E Snapshot Check");
+    // Название продукта init_arch больше не поле формы запуска - оно берётся из названия проекта
+    // (PATCH /conversations/{id}/ + page.reload(), см. helpers/test-projects.ts).
+    const { productName } = await renameProjectCreatedInUi(page, request, "E2E Snapshot Check");
 
-    // Репозитории: одна строка по умолчанию, добавляем ещё две и заполняем все три
-    // именами (без URL) — репозитории уже засеяны в raw_workspace_dir (.temp).
-    const addRepoButton = page.getByRole("button", { name: "Добавить репозиторий" });
-    await addRepoButton.click();
-    await addRepoButton.click();
-    const repoInputs = page.getByPlaceholder("https://github.com/org/repo.git");
-    await expect(repoInputs).toHaveCount(REPO_NAMES.length);
-    for (let index = 0; index < REPO_NAMES.length; index += 1) {
-      await repoInputs.nth(index).fill(REPO_NAMES[index]);
+    // Репозитории теперь настройка проекта (левая колонка), а не поле формы запуска - добавляем
+    // все три по одному через file:// URL на засеянные внутри контейнера фикстуры (см.
+    // seedRepositoriesIntoWorkspace) - реальный `git clone` локально, без авторизации.
+    const repoInput = page.getByPlaceholder("URL или имя репозитория");
+    const addRepoButton = page.getByRole("button", { name: "Добавить" });
+    for (const repoName of REPO_NAMES) {
+      await repoInput.fill(fixtureRepoUrls[repoName]);
+      await addRepoButton.click();
+      await expect(page.getByText(repoName, { exact: true })).toBeVisible();
     }
+
+    // Правая колонка: разворачиваем форму запуска нового прогона init_arch. Название продукта в
+    // форме - read-only <strong> (см. InitArchForm), заголовок страницы (h1) содержит тот же текст,
+    // поэтому уточняем локатор, чтобы не словить strict-mode violation на два совпадения.
+    await page.getByRole("button", { name: "Запустить" }).click();
+    await expect(page.locator("strong", { hasText: productName })).toBeVisible();
 
     // Движок: claude (дефолт формы). Живой вызов всё равно не пройдёт без авторизации.
     await page.getByLabel("Движок").selectOption("claude");
@@ -124,7 +137,7 @@ test.describe("init_arch: progress-снепшот через реальный do
     expect(snapshot.timeout_seconds).toBe(STEP_TIMEOUT_SECONDS);
 
     // Сессия: продукт и текущий шаг.
-    expect(snapshot.session.product_name).toBe("E2E Snapshot Check");
+    expect(snapshot.session.product_name).toBe(productName);
     expect(snapshot.session.current_step).toBe("clone_repositories");
 
     // Детерминированные шаги реально завершились до первого LLM-шага (append-only список).

@@ -244,7 +244,8 @@ async def test_resolve_target_commits_emits_temporal_audit_events() -> None:
     diff_missing_events = [event for event in recorded_events if event.event_type is EventType.TEMPORAL_DIFF_MISSING]
     assert {event.payload["repository_name"] for event in diff_missing_events} == {"svc-a", "svc-b"}
     assert all(
-        event.payload["commit_range_status"] == CommitRangeStatus.BASELINE_MISSING.value for event in diff_missing_events
+        event.payload["commit_range_status"] == CommitRangeStatus.BASELINE_MISSING.value
+        for event in diff_missing_events
     )
 
 
@@ -579,6 +580,70 @@ async def test_refresh_main_branches_applies_repository_facts() -> None:
 
     assert result.session.repositories[0].main_branch == "main"
     assert result.session.repositories[0].remote_head_commit == "abc123"
+
+
+def test_get_commit_dates_reads_dates_from_real_git_repo(tmp_path: Path) -> None:
+    repo_path = tmp_path / "svc-a"
+    _init_real_git_repo(repo_path)
+    (repo_path / "file.py").write_text("a = 1\n", encoding="utf-8")
+    _git(repo_path, "add", "file.py")
+    _git(repo_path, "commit", "-m", "commit-1")
+    commit_sha = _git(repo_path, "rev-parse", "HEAD")
+
+    service = HistoricalPrepService()
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="arch-docs",
+        analysis_scope="full",
+        repositories=[
+            RepositoryExecution(
+                repository_name="svc-a",
+                remote_head_commit=commit_sha,
+                analysis_target_commit=commit_sha,
+            )
+        ],
+    )
+
+    dates = service.get_commit_dates(session, workspace_dir=str(tmp_path))
+    # `git log --date=short` renders in the commit's recorded (local system) timezone, not UTC.
+    today = dt.datetime.now().astimezone().date()
+
+    assert dates["svc-a"]["remote_head_commit_date"] == today
+    assert dates["svc-a"]["analysis_target_commit_date"] == today
+
+
+def test_get_commit_dates_returns_none_for_repo_without_hashes(tmp_path: Path) -> None:
+    service = HistoricalPrepService()
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="arch-docs",
+        analysis_scope="full",
+        repositories=[RepositoryExecution(repository_name="svc-missing")],
+    )
+
+    dates = service.get_commit_dates(session, workspace_dir=str(tmp_path))
+
+    assert dates["svc-missing"] == {"remote_head_commit_date": None, "analysis_target_commit_date": None}
+
+
+def test_get_commit_dates_returns_none_for_unreachable_hash(tmp_path: Path) -> None:
+    repo_path = tmp_path / "svc-a"
+    _init_real_git_repo(repo_path)
+    (repo_path / "file.py").write_text("a = 1\n", encoding="utf-8")
+    _git(repo_path, "add", "file.py")
+    _git(repo_path, "commit", "-m", "commit-1")
+
+    service = HistoricalPrepService()
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="arch-docs",
+        analysis_scope="full",
+        repositories=[RepositoryExecution(repository_name="svc-a", remote_head_commit="deadbeef")],
+    )
+
+    dates = service.get_commit_dates(session, workspace_dir=str(tmp_path))
+
+    assert dates["svc-a"]["remote_head_commit_date"] is None
 
 
 async def test_plan_repository_order_requires_created_at_for_anchor() -> None:

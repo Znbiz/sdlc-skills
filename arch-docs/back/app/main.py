@@ -70,6 +70,12 @@ def create_app() -> fastapi.FastAPI:
         version="1.0.0",
         description="HTTP API поверх CLI-инструментов codex и claude",
         lifespan=lifespan,
+        # `/docs` and `/redoc` are FastAPI's defaults, but `/docs` collides with the SPA's own
+        # "Docs" feature route (front/src/features/docs) - the reverse proxy (nginx-templates/
+        # default.conf.template) must route the two differently, so Swagger/ReDoc live under a
+        # distinct, non-colliding path here.
+        docs_url="/api-docs",
+        redoc_url="/api-redoc",
     )
 
     application.add_middleware(BearerAuthMiddleware, auth_secret=settings.auth_secret)

@@ -2,7 +2,7 @@ import { HttpResponse, http } from "msw";
 import { describe, expect, it } from "vitest";
 import { server } from "../../test/msw-server";
 import { ApiError } from "../errors/api-error";
-import { cliAuthApi, docsApi, gitCredentialsApi } from "./endpoints";
+import { cliAuthApi, docsApi, gitConnectionsApi } from "./endpoints";
 
 describe("cliAuthApi.getStatus", () => {
   it("парсит успешный ответ backend в типизированную модель", async () => {
@@ -24,14 +24,14 @@ describe("cliAuthApi.getStatus", () => {
 describe("маппинг ошибок backend", () => {
   it("превращает 404 с detail-строкой в ApiError с kind=not_found", async () => {
     server.use(
-      http.post("/api/rest/git-credentials/check-access/", () =>
-        HttpResponse.json({ detail: "repository not found" }, { status: 404 }),
+      http.get("/api/rest/git-connections/11111111-1111-1111-1111-111111111111/", () =>
+        HttpResponse.json({ detail: "not found" }, { status: 404 }),
       ),
     );
 
-    await expect(gitCredentialsApi.checkAccess("https://example.com/repo.git")).rejects.toMatchObject({
+    await expect(gitConnectionsApi.get("11111111-1111-1111-1111-111111111111")).rejects.toMatchObject({
       kind: "not_found",
-      message: "repository not found",
+      message: "not found",
     });
   });
 

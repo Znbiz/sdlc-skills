@@ -1,6 +1,4 @@
 import asyncio
-import enum
-import os
 import pathlib
 import typing
 
@@ -12,7 +10,6 @@ _KNOWN_HOSTS_PATH: typing.Final = _SSH_DIR / "known_hosts"
 
 _KEY_COMMENT: typing.Final[str] = "arch-docs-service"
 _KEYGEN_TIMEOUT: typing.Final[float] = 15.0
-_GIT_ACCESS_TIMEOUT: typing.Final[float] = 20.0
 
 _SSH_CONFIG_CONTENT: typing.Final[str] = (
     "Host *\n"
@@ -20,27 +17,6 @@ _SSH_CONFIG_CONTENT: typing.Final[str] = (
     f"    UserKnownHostsFile {_KNOWN_HOSTS_PATH}\n"
     f"    IdentityFile {_PRIVATE_KEY_PATH}\n"
     "    IdentitiesOnly yes\n"
-)
-
-
-class GitAccessStatus(enum.StrEnum):
-    OK = enum.auto()
-    AUTH_FAILED = enum.auto()
-    TIMEOUT = enum.auto()
-    ERROR = enum.auto()
-
-
-class GitAccessResult(typing.TypedDict):
-    accessible: bool
-    access_status: str
-    message: str
-
-
-_AUTH_FAILURE_PHRASES: typing.Final[tuple[str, ...]] = (
-    "permission denied",
-    "authentication failed",
-    "could not read from remote repository",
-    "access denied",
 )
 
 
@@ -52,22 +28,6 @@ async def _run_keygen(cmd: list[str]) -> tuple[int, str]:
     )
     try:
         _, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=_KEYGEN_TIMEOUT)
-    except TimeoutError:
-        proc.kill()
-        await proc.wait()
-        return -1, "timeout"
-    return proc.returncode or 0, stderr_bytes.decode(errors="replace")
-
-
-async def _run_git_access_check(cmd: list[str], *, env: dict[str, str]) -> tuple[int, str]:
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=env,
-    )
-    try:
-        _, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=_GIT_ACCESS_TIMEOUT)
     except TimeoutError:
         proc.kill()
         await proc.wait()
@@ -109,36 +69,3 @@ async def ensure_ssh_key() -> str:
 
 async def get_public_key() -> str:
     return await ensure_ssh_key()
-
-
-def _classify_git_access_failure(stderr_text: str) -> GitAccessStatus:
-    lowered = stderr_text.lower()
-    if "timeout" in lowered:
-        return GitAccessStatus.TIMEOUT
-    if any(phrase in lowered for phrase in _AUTH_FAILURE_PHRASES):
-        return GitAccessStatus.AUTH_FAILED
-    return GitAccessStatus.ERROR
-
-
-async def check_git_access(repository_url: str) -> GitAccessResult:
-    await ensure_ssh_key()
-
-    env = {
-        **os.environ,
-        "GIT_TERMINAL_PROMPT": "0",
-        "GIT_SSH_COMMAND": f"ssh -F {_SSH_CONFIG_PATH}",
-    }
-    exit_code, stderr_text = await _run_git_access_check(
-        ["git", "ls-remote", "--exit-code", repository_url, "HEAD"],
-        env=env,
-    )
-
-    if exit_code == 0:
-        return GitAccessResult(accessible=True, access_status=GitAccessStatus.OK, message="ok")
-
-    access_status = _classify_git_access_failure(stderr_text)
-    return GitAccessResult(
-        accessible=False,
-        access_status=access_status,
-        message=stderr_text.strip() or f"git ls-remote exited with code {exit_code}",
-    )

@@ -9,7 +9,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class InitWorkflowSettings(pydantic.BaseModel):
     historical_window_months: int = 3
     max_step_timeout_seconds: int = 900
-    raw_workspace_subdir: str = ".temp"
     arch_repo_dirname: str = "arch-doc"
 
 

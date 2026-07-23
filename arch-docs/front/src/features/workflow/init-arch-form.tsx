@@ -4,56 +4,52 @@ import { Button } from "../../shared/ui/button";
 import type { CliEngine, InitArchInput, PreviousInitInputResponse } from "../../shared/api/models";
 import styles from "./init-arch-form.module.css";
 
-const DEFAULT_WORKSPACE_DIR = "/workspace";
 const DEFAULT_TIMEOUT_SECONDS = 900;
 const ANALYSIS_SCOPE_CONSTANT = "full";
 
 interface FormState {
-  productName: string;
-  repoList: string[];
   engineName: CliEngine;
   timeoutSeconds: string;
   workspaceDir: string;
   archRepoDir: string;
 }
 
-const INITIAL_STATE: FormState = {
-  productName: "",
-  repoList: [""],
-  engineName: "claude",
-  timeoutSeconds: String(DEFAULT_TIMEOUT_SECONDS),
-  workspaceDir: DEFAULT_WORKSPACE_DIR,
-  archRepoDir: "",
-};
-
-function initialStateFrom(previousInput: PreviousInitInputResponse | null | undefined): FormState {
-  if (!previousInput) return INITIAL_STATE;
+function defaultState(defaultWorkspaceDir: string): FormState {
   return {
-    productName: previousInput.product_name,
-    repoList: previousInput.repo_list.length > 0 ? previousInput.repo_list : [""],
-    engineName: INITIAL_STATE.engineName,
-    timeoutSeconds: INITIAL_STATE.timeoutSeconds,
-    workspaceDir: previousInput.workspace_dir || DEFAULT_WORKSPACE_DIR,
+    engineName: "claude",
+    timeoutSeconds: String(DEFAULT_TIMEOUT_SECONDS),
+    workspaceDir: defaultWorkspaceDir,
+    archRepoDir: "",
+  };
+}
+
+function initialStateFrom(
+  previousInput: PreviousInitInputResponse | null | undefined,
+  defaultWorkspaceDir: string,
+): FormState {
+  if (!previousInput) return defaultState(defaultWorkspaceDir);
+  return {
+    engineName: "claude",
+    timeoutSeconds: String(DEFAULT_TIMEOUT_SECONDS),
+    workspaceDir: previousInput.workspace_dir || defaultWorkspaceDir,
     archRepoDir: previousInput.arch_repo_dir,
   };
 }
 
-function validate(state: FormState): string | null {
-  if (!state.productName.trim()) return "Укажите название продукта.";
-  if (!state.repoList.some((entry) => entry.trim())) return "Добавьте хотя бы один репозиторий.";
+function validate(state: FormState, hasRepositories: boolean): string | null {
+  if (!hasRepositories) return "Добавьте хотя бы один репозиторий проекта в колонке слева.";
   const timeoutSeconds = Number(state.timeoutSeconds);
   if (!Number.isInteger(timeoutSeconds) || timeoutSeconds <= 0) return "Таймаут шага должен быть целым числом больше нуля.";
   if (!state.workspaceDir.trim()) return "Workspace dir не может быть пустым.";
   return null;
 }
 
-function buildInput(state: FormState): InitArchInput {
+function buildInput(state: FormState, productName: string): InitArchInput {
   return {
-    product_name: state.productName.trim(),
+    product_name: productName,
     analysis_scope: ANALYSIS_SCOPE_CONSTANT,
     workspace_dir: state.workspaceDir.trim(),
     arch_repo_dir: state.archRepoDir.trim(),
-    repo_list: state.repoList.map((entry) => entry.trim()).filter((entry) => entry.length > 0),
     engine_name: state.engineName,
     timeout_seconds: Number(state.timeoutSeconds),
   };
@@ -63,56 +59,48 @@ export function InitArchForm({
   onSubmit,
   isSubmitting,
   previousInput,
+  defaultWorkspaceDir,
+  productName,
+  repositoryNames,
 }: {
   onSubmit: (input: InitArchInput) => void;
   isSubmitting: boolean;
   previousInput?: PreviousInitInputResponse | null;
+  defaultWorkspaceDir: string;
+  productName: string;
+  repositoryNames: string[];
 }) {
-  const [state, setState] = useState<FormState>(() => initialStateFrom(previousInput));
+  const [state, setState] = useState<FormState>(() => initialStateFrom(previousInput, defaultWorkspaceDir));
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
 
-  const updateRepo = (index: number, value: string) => {
-    setState((prev) => ({ ...prev, repoList: prev.repoList.map((entry, entryIndex) => (entryIndex === index ? value : entry)) }));
-  };
-
-  const addRepo = () => setState((prev) => ({ ...prev, repoList: [...prev.repoList, ""] }));
-
-  const removeRepo = (index: number) =>
-    setState((prev) => ({ ...prev, repoList: prev.repoList.length > 1 ? prev.repoList.filter((_, entryIndex) => entryIndex !== index) : prev.repoList }));
-
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const error = validate(state);
+    const error = validate(state, repositoryNames.length > 0);
     setValidationError(error);
     if (error) return;
-    onSubmit(buildInput(state));
+    onSubmit(buildInput(state, productName));
   };
 
   return (
     <form className={styles.form} onSubmit={handleSubmit}>
-      <label>
-        Название продукта
-        <input
-          value={state.productName}
-          onChange={(event) => setState((prev) => ({ ...prev, productName: event.target.value }))}
-          placeholder="Arch Docs Gateway"
-        />
-      </label>
+      <p className={styles.productName}>
+        Продукт: <strong>{productName}</strong>
+      </p>
 
       <fieldset className={styles.repoList}>
-        <legend>Репозитории</legend>
-        {state.repoList.map((repo, index) => (
-          <div key={index} className={styles.repoRow}>
-            <input value={repo} onChange={(event) => updateRepo(index, event.target.value)} placeholder="https://github.com/org/repo.git" />
-            <Button type="button" variant="danger" onClick={() => removeRepo(index)} disabled={state.repoList.length === 1}>
-              Убрать
-            </Button>
-          </div>
-        ))}
-        <Button type="button" variant="secondary" onClick={addRepo}>
-          Добавить репозиторий
-        </Button>
+        <legend>Репозитории проекта</legend>
+        {repositoryNames.length === 0 ? (
+          <p className={styles.validationError}>
+            Список репозиториев пуст — добавьте репозитории в колонке слева перед запуском.
+          </p>
+        ) : (
+          <ul>
+            {repositoryNames.map((repositoryName) => (
+              <li key={repositoryName}>{repositoryName}</li>
+            ))}
+          </ul>
+        )}
       </fieldset>
 
       <label>

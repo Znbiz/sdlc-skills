@@ -133,6 +133,12 @@ async def delete_cli_tasks_for_workflow(session: async_sa.AsyncSession, workflow
     return result.rowcount
 
 
+async def delete_cli_tasks_for_conversation(session: async_sa.AsyncSession, conversation_id: str) -> int:
+    result = await session.execute(sa.delete(CliTaskModel).where(CliTaskModel.conversation_id == conversation_id))
+    await session.commit()
+    return result.rowcount
+
+
 async def mark_running_tasks_failed(session: async_sa.AsyncSession) -> int:
     result = await session.execute(
         sa.update(CliTaskModel)

@@ -42,15 +42,15 @@ export function DashboardPage() {
           />
         )}
         {lastConversationId && (
-          <Link className={styles.link} to={`/workflows/init/${lastConversationId}`}>
-            Открыть workflow
+          <Link className={styles.link} to={`/projects/${lastConversationId}`}>
+            Открыть проект
           </Link>
         )}
       </Card>
 
       <div className={styles.quickActions}>
-        <Link className={styles.actionButton} to="/workflows/init">
-          Start init
+        <Link className={styles.actionButton} to="/projects">
+          Проекты
         </Link>
         <Link className={styles.actionButton} to="/docs">
           Open docs

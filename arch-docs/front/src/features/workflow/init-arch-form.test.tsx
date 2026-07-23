@@ -4,37 +4,70 @@ import { describe, expect, it, vi } from "vitest";
 import { InitArchForm } from "./init-arch-form";
 
 describe("InitArchForm", () => {
-  it("блокирует сабмит и показывает ошибку, если не указано название продукта", async () => {
+  it("показывает название продукта из проекта как read-only, без поля ввода", () => {
+    const onSubmit = vi.fn();
+    render(
+      <InitArchForm
+        isSubmitting={false}
+        onSubmit={onSubmit}
+        defaultWorkspaceDir="/workspace/conv-1"
+        productName="Arch Docs Gateway"
+        repositoryNames={["svc-a"]}
+      />,
+    );
+
+    expect(screen.getByText("Arch Docs Gateway")).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: /название продукта/i })).not.toBeInTheDocument();
+  });
+
+  it("блокирует сабмит, если у проекта нет репозиториев", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn();
-    render(<InitArchForm isSubmitting={false} onSubmit={onSubmit} />);
+    render(
+      <InitArchForm
+        isSubmitting={false}
+        onSubmit={onSubmit}
+        defaultWorkspaceDir="/workspace/conv-1"
+        productName="TestProduct"
+        repositoryNames={[]}
+      />,
+    );
 
-    await user.type(screen.getByPlaceholderText("https://github.com/org/repo.git"), "org/repo");
     await user.click(screen.getByRole("button", { name: "Запустить init_arch" }));
 
-    expect(await screen.findByText("Укажите название продукта.")).toBeInTheDocument();
+    expect(await screen.findByText("Добавьте хотя бы один репозиторий проекта в колонке слева.")).toBeInTheDocument();
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
-  it("блокирует сабмит, если ни один репозиторий не заполнен", async () => {
-    const user = userEvent.setup();
+  it("показывает список репозиториев проекта как read-only превью", () => {
     const onSubmit = vi.fn();
-    render(<InitArchForm isSubmitting={false} onSubmit={onSubmit} />);
+    render(
+      <InitArchForm
+        isSubmitting={false}
+        onSubmit={onSubmit}
+        defaultWorkspaceDir="/workspace/conv-1"
+        productName="TestProduct"
+        repositoryNames={["svc-a", "svc-b"]}
+      />,
+    );
 
-    await user.type(screen.getByPlaceholderText("Arch Docs Gateway"), "TestProduct");
-    await user.click(screen.getByRole("button", { name: "Запустить init_arch" }));
-
-    expect(await screen.findByText("Добавьте хотя бы один репозиторий.")).toBeInTheDocument();
-    expect(onSubmit).not.toHaveBeenCalled();
+    expect(screen.getByText("svc-a")).toBeInTheDocument();
+    expect(screen.getByText("svc-b")).toBeInTheDocument();
   });
 
   it("блокирует сабмит при некорректном таймауте", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn();
-    render(<InitArchForm isSubmitting={false} onSubmit={onSubmit} />);
+    render(
+      <InitArchForm
+        isSubmitting={false}
+        onSubmit={onSubmit}
+        defaultWorkspaceDir="/workspace/conv-1"
+        productName="TestProduct"
+        repositoryNames={["svc-a"]}
+      />,
+    );
 
-    await user.type(screen.getByPlaceholderText("Arch Docs Gateway"), "TestProduct");
-    await user.type(screen.getByPlaceholderText("https://github.com/org/repo.git"), "org/repo");
     const timeoutInput = screen.getByLabelText("Таймаут шага, сек");
     await user.clear(timeoutInput);
     await user.type(timeoutInput, "0");
@@ -44,55 +77,46 @@ describe("InitArchForm", () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
-  it("отправляет валидный input с analysis_scope='full' без участия пользователя и с дефолтами", async () => {
+  it("отправляет валидный input с product_name проекта, analysis_scope='full' и дефолтным workspace_dir", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn();
-    render(<InitArchForm isSubmitting={false} onSubmit={onSubmit} />);
+    render(
+      <InitArchForm
+        isSubmitting={false}
+        onSubmit={onSubmit}
+        defaultWorkspaceDir="/workspace/conv-1"
+        productName="TestProduct"
+        repositoryNames={["svc-a"]}
+      />,
+    );
 
-    await user.type(screen.getByPlaceholderText("Arch Docs Gateway"), "TestProduct");
-    await user.type(screen.getByPlaceholderText("https://github.com/org/repo.git"), "https://github.com/org/repo.git");
     await user.click(screen.getByRole("button", { name: "Запустить init_arch" }));
 
     expect(onSubmit).toHaveBeenCalledWith({
       product_name: "TestProduct",
       analysis_scope: "full",
-      workspace_dir: "/workspace",
+      workspace_dir: "/workspace/conv-1",
       arch_repo_dir: "",
-      repo_list: ["https://github.com/org/repo.git"],
       engine_name: "claude",
       timeout_seconds: 900,
     });
     expect(screen.queryByText(/analysis_scope/i)).not.toBeInTheDocument();
   });
 
-  it("позволяет добавить и убрать строку репозитория", async () => {
-    const user = userEvent.setup();
-    const onSubmit = vi.fn();
-    render(<InitArchForm isSubmitting={false} onSubmit={onSubmit} />);
-
-    await user.click(screen.getByRole("button", { name: "Добавить репозиторий" }));
-    const repoInputs = screen.getAllByPlaceholderText("https://github.com/org/repo.git");
-    expect(repoInputs).toHaveLength(2);
-
-    await user.click(screen.getAllByRole("button", { name: "Убрать" })[1]);
-    expect(screen.getAllByPlaceholderText("https://github.com/org/repo.git")).toHaveLength(1);
-  });
-
-  it("не даёт убрать последнюю строку репозитория", () => {
-    const onSubmit = vi.fn();
-    render(<InitArchForm isSubmitting={false} onSubmit={onSubmit} />);
-
-    expect(screen.getByRole("button", { name: "Убрать" })).toBeDisabled();
-  });
-
   it("отправляет значения из Advanced-секции, если они изменены", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn();
-    render(<InitArchForm isSubmitting={false} onSubmit={onSubmit} />);
+    render(
+      <InitArchForm
+        isSubmitting={false}
+        onSubmit={onSubmit}
+        defaultWorkspaceDir="/workspace/conv-1"
+        productName="TestProduct"
+        repositoryNames={["svc-a"]}
+      />,
+    );
 
     await user.click(screen.getByText("Advanced"));
-    await user.type(screen.getByPlaceholderText("Arch Docs Gateway"), "TestProduct");
-    await user.type(screen.getByPlaceholderText("https://github.com/org/repo.git"), "org/repo");
 
     const workspaceDirInput = screen.getByLabelText("Workspace dir");
     await user.clear(workspaceDirInput);
@@ -116,50 +140,66 @@ describe("InitArchForm", () => {
 
   it("блокирует кнопку сабмита во время отправки", () => {
     const onSubmit = vi.fn();
-    render(<InitArchForm isSubmitting={true} onSubmit={onSubmit} />);
+    render(
+      <InitArchForm
+        isSubmitting={true}
+        onSubmit={onSubmit}
+        defaultWorkspaceDir="/workspace/conv-1"
+        productName="TestProduct"
+        repositoryNames={["svc-a"]}
+      />,
+    );
 
     expect(screen.getByRole("button", { name: "Запустить init_arch" })).toBeDisabled();
   });
 
-  it("предзаполняет поля из previousInput (после restart) и отправляет их как есть", async () => {
+  it("предзаполняет пути из previousInput (после restart), но product_name берёт из проекта", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn();
     render(
       <InitArchForm
         isSubmitting={false}
         onSubmit={onSubmit}
+        defaultWorkspaceDir="/workspace/conv-1"
+        productName="Renamed Project"
+        repositoryNames={["svc-a"]}
         previousInput={{
           product_name: "RestartedProduct",
           analysis_scope: "full",
           workspace_dir: "/workspace/restarted",
           arch_repo_dir: "/workspace/restarted/arch-doc",
-          repo_list: ["https://github.com/org/repo-a.git", "https://github.com/org/repo-b.git"],
         }}
       />,
     );
 
-    expect(screen.getByPlaceholderText("Arch Docs Gateway")).toHaveValue("RestartedProduct");
-    expect(screen.getAllByPlaceholderText("https://github.com/org/repo.git").map((input) => (input as HTMLInputElement).value)).toEqual([
-      "https://github.com/org/repo-a.git",
-      "https://github.com/org/repo-b.git",
-    ]);
+    expect(screen.getByText("Renamed Project")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Запустить init_arch" }));
 
     expect(onSubmit).toHaveBeenCalledWith(
       expect.objectContaining({
-        product_name: "RestartedProduct",
-        repo_list: ["https://github.com/org/repo-a.git", "https://github.com/org/repo-b.git"],
+        product_name: "Renamed Project",
         workspace_dir: "/workspace/restarted",
         arch_repo_dir: "/workspace/restarted/arch-doc",
       }),
     );
   });
 
-  it("без previousInput ведёт себя как раньше (пустая форма)", () => {
+  it("без previousInput использует дефолтный workspace_dir проекта", async () => {
     const onSubmit = vi.fn();
-    render(<InitArchForm isSubmitting={false} onSubmit={onSubmit} previousInput={null} />);
+    const user = userEvent.setup();
+    render(
+      <InitArchForm
+        isSubmitting={false}
+        onSubmit={onSubmit}
+        previousInput={null}
+        defaultWorkspaceDir="/workspace/conv-1"
+        productName="TestProduct"
+        repositoryNames={[]}
+      />,
+    );
 
-    expect(screen.getByPlaceholderText("Arch Docs Gateway")).toHaveValue("");
+    await user.click(screen.getByText("Advanced"));
+    expect(screen.getByLabelText("Workspace dir")).toHaveValue("/workspace/conv-1");
   });
 });

@@ -54,7 +54,52 @@ describe("DocsPage", () => {
   });
 
   it("предлагает ввести response_id, если он не передан и не сохранён", async () => {
+    server.use(http.get("/api/rest/conversations/", () => HttpResponse.json([])));
     renderWithProviders(<DocsPage />);
     expect(await screen.findByText(/укажите response_id/i)).toBeInTheDocument();
+  });
+
+  it("предлагает выбрать проект из picker и открывает его последний run", async () => {
+    server.use(
+      http.get("/api/rest/conversations/", () =>
+        HttpResponse.json([
+          {
+            conversation_id: "conv-1",
+            product_name: "Arch Docs Gateway",
+            repositories: [],
+            workspace_dir: "/workspace/conv-1",
+            created_at: "2026-07-01T00:00:00Z",
+            updated_at: "2026-07-01T00:00:00Z",
+            active_response: {
+              response_id: "resp-1",
+              conversation_id: "conv-1",
+              workflow_type: "init_arch",
+              response_status: "success",
+              current_step_id: "done",
+              current_repo_name: "",
+              workspace_dir: "/workspace/conv-1",
+              arch_repo_dir: "/workspace/conv-1/arch-doc",
+              completed_steps: [],
+              required_actions: [],
+              repositories: [],
+              repository_list_editable: false,
+              created_at: "2026-07-01T00:00:00Z",
+              updated_at: "2026-07-01T00:00:00Z",
+              error_message: null,
+              terminal_result: null,
+            },
+            previous_init_input: null,
+          },
+        ]),
+      ),
+      http.get("/api/rest/responses/resp-1/docs/tree/", () => HttpResponse.json(TREE_RESPONSE)),
+    );
+
+    renderWithProviders(<DocsPage />);
+
+    const projectButton = await screen.findByRole("tab", { name: "Arch Docs Gateway" });
+    await userEvent.click(projectButton);
+
+    expect(await screen.findByRole("button", { name: /README\.md/ })).toBeInTheDocument();
   });
 });

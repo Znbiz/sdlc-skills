@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import datetime
 import json
 import pathlib
@@ -13,19 +14,29 @@ import uuid
 import structlog
 
 from app.db.session import get_session
-from app.db.task_repo import delete_cli_tasks_for_workflow, get_cli_task, list_cli_tasks_for_conversation
+from app.db.task_repo import (
+    delete_cli_tasks_for_conversation,
+    delete_cli_tasks_for_workflow,
+    get_cli_task,
+    list_cli_tasks_for_conversation,
+)
 from app.db.workflow_repo import (
     create_conversation,
+    delete_conversation,
     delete_workflow_run,
     get_conversation,
     get_workflow_run,
     list_conversation_items,
+    list_conversations,
     list_required_actions,
     list_workflow_runs_for_conversation,
+    update_conversation_product_name,
+    update_conversation_repositories,
     upsert_workflow_run,
 )
 from app.services.agent_pool import get_agent_pool
-from app.services.git_credentials import list_configured_hosts
+from app.services.docs_browser import build_docs_tree, read_docs_file
+from app.services.git_connections import get_connection_type_for_host
 from app.services.task_registry import CliTask, TaskStatus
 from app.services.task_registry import get_registry as get_task_registry
 from app.services.task_runner import cancel_cli_task, run_cli_task
@@ -35,6 +46,7 @@ from app.settings import GatewaySettings, get_gateway_settings
 from app.workflows.init_arch.checkpointer import get_checkpointer
 from app.workflows.init_arch.domain import RepositoryExecution, StepId, WorkflowSessionRecord, step_label_ru
 from app.workflows.init_arch.graph import compile_graph
+from app.workflows.init_arch.historical import get_historical_prep_service
 from app.workflows.init_arch.snapshot import parse_snapshot_yaml, write_snapshot_file
 from app.workflows.init_arch.state import InitArchState
 
@@ -64,7 +76,6 @@ _INIT_ARCH_REQUIRED_FIELDS: typing.Final = frozenset(
         "analysis_scope",
         "workspace_dir",
         "arch_repo_dir",
-        "repo_list",
         "engine_name",
         "timeout_seconds",
     }
@@ -75,8 +86,54 @@ class ArchRepoNotAvailableError(RuntimeError):
     pass
 
 
+@dataclasses.dataclass(frozen=True)
+class WorkflowTypeConfig:
+    # None = не ограничено. Для init_arch — 1: общая на весь conversation arch_repo_dir
+    # (см. раздел 1 в arch-docs/docs/spec/2026-07-23-per-workflow-workspace-and-browser.md)
+    # безопасна только при максимум одном активном run одновременно.
+    max_concurrent_instances_per_conversation: int | None
+    # Читает ли этот тип workflow список репозиториев conversation при старте.
+    uses_conversation_repositories: bool
+
+
+WORKFLOW_TYPE_REGISTRY: typing.Final[dict[str, WorkflowTypeConfig]] = {
+    "init_arch": WorkflowTypeConfig(
+        max_concurrent_instances_per_conversation=1,
+        uses_conversation_repositories=True,
+    ),
+}
+
+# Тип, отсутствующий в реестре (все существующие CliTask-типы — update_arch/query), трактуется
+# как неограниченный: они не привязаны к conversation_workspace_dir/arch_repo_dir, поэтому общий
+# инвариант "максимум 1" на них не распространяется (см. "Что не входит" в спеке раздела 1).
+_DEFAULT_WORKFLOW_TYPE_CONFIG: typing.Final = WorkflowTypeConfig(
+    max_concurrent_instances_per_conversation=None,
+    uses_conversation_repositories=False,
+)
+
+
+def _workflow_type_config(workflow_type: str) -> WorkflowTypeConfig:
+    return WORKFLOW_TYPE_REGISTRY.get(workflow_type, _DEFAULT_WORKFLOW_TYPE_CONFIG)
+
+
 def utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
+
+
+def _ensure_directory(path: str) -> None:
+    """Best-effort eager `mkdir -p`.
+
+    Mirrors the file's existing "log and continue" convention for filesystem/DB side effects that
+    aren't strictly required for the in-memory/DB state change to succeed (see
+    `persist_workflow_record()`) - a workspace root that doesn't exist yet (e.g. a non-container
+    dev/test environment, or a transient permissions issue) shouldn't block conversation/run
+    creation; the directory gets created lazily anyway the first time a node actually writes into it
+    (`_prepare_workspace_directories()` in nodes.py).
+    """
+    try:
+        pathlib.Path(path).mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.warning("workspace.mkdir_failed", path=path, error=str(exc))
 
 
 def apply_node_output(record: WorkflowRecord, node_output: dict[str, typing.Any]) -> None:
@@ -247,6 +304,38 @@ def _fallback_required_actions(record: WorkflowRecord) -> list[dict[str, typing.
     ]
 
 
+def _iso_date(value: datetime.date | None) -> str | None:
+    return value.isoformat() if value is not None else None
+
+
+def _build_repository_statuses(record: WorkflowRecord) -> list[dict[str, typing.Any]]:
+    session = record.session
+    if session is None or not session.repositories:
+        return []
+    # Best-effort only (see `HistoricalPrepService.get_commit_dates()`) - a repo that isn't
+    # cloned yet, or whose stored hash no longer resolves, just reports `None` dates rather than
+    # failing the whole status response.
+    commit_dates = get_historical_prep_service().get_commit_dates(session, workspace_dir=record.workspace_dir)
+    return [
+        {
+            "repository_name": repository.repository_name,
+            "repository_url": repository.repository_url,
+            "main_branch": repository.main_branch,
+            "remote_head_commit": repository.remote_head_commit,
+            "remote_head_commit_date": _iso_date(
+                commit_dates.get(repository.repository_name, {}).get("remote_head_commit_date")
+            ),
+            "analysis_target_commit": repository.analysis_target_commit,
+            "analysis_target_commit_date": _iso_date(
+                commit_dates.get(repository.repository_name, {}).get("analysis_target_commit_date")
+            ),
+            "analysis_status": repository.analysis_status,
+            "commit_range_status": str(repository.commit_range_status.value),
+        }
+        for repository in session.repositories
+    ]
+
+
 def _workflow_response_payload(
     record: WorkflowRecord,
     required_actions: list[dict[str, typing.Any]],
@@ -262,6 +351,12 @@ def _workflow_response_payload(
         "arch_repo_dir": record.arch_repo_dir,
         "completed_steps": list(record.completed_steps),
         "required_actions": _serialize_required_actions(required_actions),
+        "repositories": _build_repository_statuses(record),
+        "repository_list_editable": (
+            record.workflow_status in {WorkflowStatus.PAUSED, WorkflowStatus.INTERRUPTED}
+            and record.session is not None
+            and record.session.current_step in _REPOSITORY_LIST_EDITABLE_STEPS
+        ),
         "created_at": record.created_at.isoformat(),
         "updated_at": record.updated_at.isoformat(),
         "error_message": record.error_message,
@@ -342,11 +437,22 @@ async def create_conversation_async(conversation_id: str | None = None) -> dict[
             conversation = await create_conversation(session, conversation_id=resolved_conversation_id, created_at=now)
             created_at = conversation.created_at
             updated_at = conversation.updated_at
+            product_name = conversation.product_name
+            repositories = list(conversation.repositories or [])
     except Exception:  # noqa: BLE001
         created_at = now
         updated_at = now
+        product_name = None
+        repositories = []
+
+    conversation_workspace_dir = _resolve_conversation_workspace_dir(resolved_conversation_id)
+    _ensure_directory(conversation_workspace_dir)
+
     return {
         "conversation_id": resolved_conversation_id,
+        "product_name": product_name,
+        "repositories": repositories,
+        "workspace_dir": conversation_workspace_dir,
         "created_at": created_at.isoformat(),
         "updated_at": updated_at.isoformat(),
         "active_response": None,
@@ -358,30 +464,40 @@ async def get_conversation_async(conversation_id: str) -> dict[str, typing.Any]:
     active_task = _active_conversation_task(conversation_id)
     created_at: datetime.datetime | None = None
     updated_at: datetime.datetime | None = None
+    product_name: str | None = None
+    repositories: list[dict[str, typing.Any]] = []
+    conversation_found = False
 
-    if active_record is None and active_task is None:
-        try:
-            async with get_session() as session:
-                conversation = await get_conversation(session, conversation_id)
-                if conversation is not None:
-                    created_at = conversation.created_at
-                    updated_at = conversation.updated_at
+    try:
+        async with get_session() as session:
+            conversation = await get_conversation(session, conversation_id)
+            if conversation is not None:
+                conversation_found = True
+                created_at = conversation.created_at
+                updated_at = conversation.updated_at
+                product_name = conversation.product_name
+                repositories = list(conversation.repositories or [])
+            if active_record is None and active_task is None:
                 runs = await list_workflow_runs_for_conversation(session, conversation_id=conversation_id)
                 tasks = await list_cli_tasks_for_conversation(session, conversation_id=conversation_id)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("conversation.load_failed", conversation_id=conversation_id, error=str(exc))
-            runs = []
-            tasks = []
-        if runs:
-            active_record = runs[0]
-            created_at = created_at or active_record.created_at
-            updated_at = updated_at or active_record.updated_at
-        if tasks:
-            active_task = tasks[0]
-            created_at = created_at or active_task.created_at
-            updated_at = updated_at or _task_updated_at(active_task)
+            else:
+                runs = []
+                tasks = []
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("conversation.load_failed", conversation_id=conversation_id, error=str(exc))
+        runs = []
+        tasks = []
 
-    if active_record is None and active_task is None and created_at is None:
+    if active_record is None and runs:
+        active_record = runs[0]
+        created_at = created_at or active_record.created_at
+        updated_at = updated_at or active_record.updated_at
+    if active_task is None and tasks:
+        active_task = tasks[0]
+        created_at = created_at or active_task.created_at
+        updated_at = updated_at or _task_updated_at(active_task)
+
+    if not conversation_found and active_record is None and active_task is None:
         raise WorkflowNotFoundError(f"Conversation {conversation_id!r} not found")
 
     if active_record is not None and (active_task is None or active_record.updated_at >= _task_updated_at(active_task)):
@@ -397,10 +513,197 @@ async def get_conversation_async(conversation_id: str) -> dict[str, typing.Any]:
 
     return {
         "conversation_id": conversation_id,
+        "product_name": product_name,
+        "repositories": repositories,
+        "workspace_dir": _resolve_conversation_workspace_dir(conversation_id),
         "created_at": (created_at or utcnow()).isoformat(),
         "updated_at": (updated_at or utcnow()).isoformat(),
         "active_response": active_response,
     }
+
+
+async def list_conversations_async(*, limit: int = 20) -> list[dict[str, typing.Any]]:
+    try:
+        async with get_session() as session:
+            conversations = await list_conversations(session, limit=limit)
+            conversation_ids = [conversation.conversation_id for conversation in conversations]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("conversations.list_failed", error=str(exc))
+        conversation_ids = []
+
+    # Merge in conversations only present in the in-memory registry (a workflow currently
+    # running/paused whose `conversations` row was written but not yet reflected in `conversation_ids`
+    # above due to a race, or - defensively - not written at all) so an active run is never dropped
+    # from the list.
+    registry_conversation_ids = {
+        record.conversation_id for record in get_workflow_registry().values() if record.conversation_id is not None
+    }
+    ordered_conversation_ids = list(dict.fromkeys([*conversation_ids, *registry_conversation_ids]))
+
+    payloads: list[dict[str, typing.Any]] = []
+    for conversation_id in ordered_conversation_ids:
+        try:
+            payloads.append(await get_conversation_async(conversation_id))
+        except WorkflowNotFoundError:
+            continue
+
+    payloads.sort(key=lambda payload: payload["updated_at"], reverse=True)
+    return payloads[:limit]
+
+
+class ConversationNotFoundError(WorkflowNotFoundError):
+    pass
+
+
+async def _require_conversation(conversation_id: str) -> None:
+    async with get_session() as session:
+        conversation = await get_conversation(session, conversation_id)
+    if conversation is None:
+        raise ConversationNotFoundError(f"Conversation {conversation_id!r} not found")
+
+
+def _repository_entry_payload(repository: RepositoryExecution) -> dict[str, str]:
+    return {"repository_name": repository.repository_name, "repository_url": repository.repository_url}
+
+
+async def get_conversation_repositories_async(conversation_id: str) -> list[dict[str, str]]:
+    await _require_conversation(conversation_id)
+    repositories = await _load_conversation_repositories(conversation_id)
+    return [_repository_entry_payload(repository) for repository in repositories]
+
+
+async def set_conversation_repositories_async(conversation_id: str, entries: list[str]) -> list[dict[str, str]]:
+    await _require_conversation(conversation_id)
+    repositories = [await _parse_repo_list_entry(entry) for entry in entries]
+    async with get_session() as session:
+        await update_conversation_repositories(
+            session,
+            conversation_id=conversation_id,
+            repositories=[_repository_entry_payload(repository) for repository in repositories],
+        )
+    return [_repository_entry_payload(repository) for repository in repositories]
+
+
+async def add_conversation_repository_async(conversation_id: str, entry: str) -> list[dict[str, str]]:
+    await _require_conversation(conversation_id)
+    repositories = await _load_conversation_repositories(conversation_id)
+    new_repository = await _parse_repo_list_entry(entry)
+    if any(repository.repository_name == new_repository.repository_name for repository in repositories):
+        raise WorkflowValidationError(f"Repository {new_repository.repository_name!r} is already tracked")
+    return await set_conversation_repositories_async(
+        conversation_id, [repo.repository_url or repo.repository_name for repo in [*repositories, new_repository]]
+    )
+
+
+async def remove_conversation_repository_async(conversation_id: str, repository_name: str) -> list[dict[str, str]]:
+    await _require_conversation(conversation_id)
+    repositories = await _load_conversation_repositories(conversation_id)
+    remaining = [repository for repository in repositories if repository.repository_name != repository_name]
+    if len(remaining) == len(repositories):
+        raise WorkflowValidationError(f"Repository {repository_name!r} is not tracked")
+    return await set_conversation_repositories_async(
+        conversation_id, [repo.repository_url or repo.repository_name for repo in remaining]
+    )
+
+
+async def update_conversation_product_name_async(conversation_id: str, product_name: str) -> dict[str, typing.Any]:
+    await _require_conversation(conversation_id)
+    async with get_session() as session:
+        await update_conversation_product_name(session, conversation_id=conversation_id, product_name=product_name)
+    return await get_conversation_async(conversation_id)
+
+
+async def delete_conversation_async(conversation_id: str) -> None:
+    await _require_conversation(conversation_id)
+
+    workflow_registry = get_workflow_registry()
+    registry_records = [
+        record
+        for record in workflow_registry.values()
+        if (record.conversation_id or record.workflow_id) == conversation_id
+    ]
+    for record in registry_records:
+        task = record.asyncio_task
+        if task is None or task.done():
+            continue
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+            await asyncio.wait_for(task, timeout=10.0)
+
+    task_registry = get_task_registry()
+    registry_task_ids = [task_id for task_id, task in task_registry.items() if task.conversation_id == conversation_id]
+    for task_id in registry_task_ids:
+        await cancel_cli_task(task_id, task_registry)
+
+    async with get_session() as session:
+        db_records = await list_workflow_runs_for_conversation(session, conversation_id=conversation_id)
+        workflow_ids = {record.workflow_id for record in db_records}
+        workflow_ids.update(record.workflow_id for record in registry_records)
+
+        if workflow_ids:
+            checkpointer = await get_checkpointer()
+            for workflow_id in workflow_ids:
+                await checkpointer.adelete_thread(workflow_id)
+
+        await delete_cli_tasks_for_conversation(session, conversation_id)
+        await delete_conversation(session, conversation_id)
+
+    for record in registry_records:
+        workflow_registry.pop(record.workflow_id, None)
+    for task_id in registry_task_ids:
+        task_registry.pop(task_id, None)
+
+    shutil.rmtree(_resolve_conversation_workspace_dir(conversation_id), ignore_errors=True)
+    logger.info("conversation.deleted", conversation_id=conversation_id)
+
+
+async def list_conversation_responses_async(conversation_id: str) -> list[dict[str, typing.Any]]:
+    """List every run (`workflow_id`) of this conversation, most recently updated first.
+
+    Merges the DB (`workflow_runs`, authoritative for anything not currently active) with the
+    in-memory registry (authoritative for a run's live status while this process holds it) the same
+    way `get_response_async()`/`_active_conversation_record()` already do for a single run - a
+    registry hit always wins over its DB snapshot.
+    """
+    await _require_conversation(conversation_id)
+    try:
+        async with get_session() as session:
+            db_records = await list_workflow_runs_for_conversation(session, conversation_id=conversation_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("conversation.responses_list_failed", conversation_id=conversation_id, error=str(exc))
+        db_records = []
+
+    registry = get_workflow_registry()
+    records_by_id = {record.workflow_id: record for record in db_records}
+    for record in registry.values():
+        if (record.conversation_id or record.workflow_id) == conversation_id:
+            records_by_id[record.workflow_id] = record
+
+    ordered_records = sorted(records_by_id.values(), key=lambda record: record.updated_at, reverse=True)
+    payloads: list[dict[str, typing.Any]] = []
+    for record in ordered_records:
+        required_actions = await list_workflow_required_actions_async(record.workflow_id)
+        if not required_actions:
+            required_actions = _fallback_required_actions(record)
+        payloads.append(_workflow_response_payload(record, required_actions))
+    return payloads
+
+
+async def build_conversation_workspace_tree_async(conversation_id: str) -> dict[str, typing.Any]:
+    await _require_conversation(conversation_id)
+    workspace_dir = _resolve_conversation_workspace_dir(conversation_id)
+    # Self-heal for conversations created before eager directory creation was introduced
+    # (see create_conversation_async()) - without this, build_docs_tree() raises an unhandled
+    # FileNotFoundError instead of returning an empty tree for a pre-existing conversation.
+    _ensure_directory(workspace_dir)
+    return build_docs_tree(workspace_dir)
+
+
+async def read_conversation_workspace_file_async(conversation_id: str, path: str) -> dict[str, typing.Any]:
+    await _require_conversation(conversation_id)
+    workspace_dir = _resolve_conversation_workspace_dir(conversation_id)
+    _ensure_directory(workspace_dir)
+    return read_docs_file(workspace_dir, path)
 
 
 async def list_conversation_items_async(conversation_id: str) -> list[dict[str, typing.Any]]:
@@ -509,6 +812,33 @@ def _validate_engine_name(engine_name: str) -> str:
     return engine_name
 
 
+_ACTIVE_WORKFLOW_STATUSES: typing.Final = {WorkflowStatus.RUNNING, WorkflowStatus.PAUSED, WorkflowStatus.INTERRUPTED}
+
+
+def _count_active_conversation_workflows(conversation_id: str) -> int:
+    # Same in-process-only limitation as the existing guard in
+    # `resume_init_arch_workflow_from_snapshot()` - this only sees workflows tracked by this
+    # process's in-memory registry, not other processes/instances.
+    return sum(
+        1
+        for record in get_workflow_registry().values()
+        if (record.conversation_id or record.workflow_id) == conversation_id
+        and record.workflow_status in _ACTIVE_WORKFLOW_STATUSES
+    )
+
+
+async def _sync_forward_product_name_if_empty(conversation_id: str, product_name: str) -> None:
+    try:
+        async with get_session() as session:
+            conversation = await get_conversation(session, conversation_id)
+            if conversation is not None and not conversation.product_name:
+                await update_conversation_product_name(
+                    session, conversation_id=conversation_id, product_name=product_name
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("conversation.product_name_sync_failed", conversation_id=conversation_id, error=str(exc))
+
+
 async def create_response_async(
     *,
     conversation_id: str,
@@ -516,10 +846,31 @@ async def create_response_async(
     input_payload: dict[str, typing.Any],
 ) -> dict[str, typing.Any]:
     await create_conversation_async(conversation_id)
+
+    type_config = _workflow_type_config(workflow_type)
+    if type_config.max_concurrent_instances_per_conversation is not None:
+        active_count = _count_active_conversation_workflows(conversation_id)
+        if active_count >= type_config.max_concurrent_instances_per_conversation:
+            raise WorkflowConflictError(
+                f"conversation {conversation_id!r} already has {active_count} active {workflow_type!r} "
+                f"run(s); max_concurrent_instances_per_conversation="
+                f"{type_config.max_concurrent_instances_per_conversation}"
+            )
+
     if workflow_type == "init_arch":
         missing_fields = sorted(_INIT_ARCH_REQUIRED_FIELDS - input_payload.keys())
         if missing_fields:
             raise WorkflowValidationError(f"init_arch requires fields: {', '.join(missing_fields)}")
+        if type_config.uses_conversation_repositories:
+            repositories = await _load_conversation_repositories(conversation_id)
+            if not repositories:
+                raise WorkflowValidationError(
+                    "conversation has no repositories configured; add at least one repository "
+                    "(POST /conversations/{id}/repositories/) before starting init_arch"
+                )
+        product_name = str(input_payload.get("product_name") or "").strip()
+        if product_name:
+            await _sync_forward_product_name_if_empty(conversation_id, product_name)
         record = await start_init_arch_workflow(conversation_id=conversation_id, **input_payload)
         return await get_response_async(record.workflow_id)
 
@@ -587,6 +938,27 @@ async def submit_response_action_async(
         # the conversation payload (active_response: None) instead of falling through below.
         return await restart_init_arch_workflow(response_id)
 
+    await _dispatch_workflow_action(
+        response_id, action_type=action_type, question_id=question_id, answer=answer, field=field, value=value
+    )
+    return await get_response_async(response_id)
+
+
+def _require_string_value(action_type: str, value: typing.Any) -> str:
+    if not value or not str(value).strip():
+        raise WorkflowValidationError(f"{action_type} requires a non-empty value")
+    return str(value)
+
+
+async def _dispatch_workflow_action(
+    response_id: str,
+    *,
+    action_type: str,
+    question_id: str | None,
+    answer: str | None,
+    field: str | None,
+    value: typing.Any,
+) -> None:
     if action_type == "pause":
         await pause_init_arch_workflow(response_id)
     elif action_type == "continue":
@@ -603,9 +975,12 @@ async def submit_response_action_async(
         await confirm_init_arch_temporal_window(response_id, action=str(value))
     elif action_type == "retry":
         await retry_init_arch_workflow(response_id, action=str(value) if value is not None else "retry")
+    elif action_type == "add_repository":
+        await add_repository_to_workflow(response_id, repo_entry=_require_string_value(action_type, value))
+    elif action_type == "remove_repository":
+        await remove_repository_from_workflow(response_id, repository_name=_require_string_value(action_type, value))
     else:
         raise WorkflowValidationError(f"Unsupported action_type: {action_type}")
-    return await get_response_async(response_id)
 
 
 def _sse(payload: dict[str, typing.Any]) -> str:
@@ -965,15 +1340,24 @@ def build_resume_value(*, interrupt_type: str, field: str | None, value: typing.
     raise WorkflowValidationError("Invalid resume payload for interrupt type")
 
 
+def _resolve_conversation_workspace_dir(conversation_id: str, *, settings: GatewaySettings | None = None) -> str:
+    resolved_settings = settings or get_gateway_settings()
+    return str((pathlib.Path(resolved_settings.workspace_dir) / conversation_id).resolve())
+
+
 def _resolve_init_arch_paths(
     *,
     workspace_dir: str,
     arch_repo_dir: str,
+    workflow_id: str,
     settings: GatewaySettings | None = None,
 ) -> tuple[str, str, str]:
     resolved_settings = settings or get_gateway_settings()
     workspace_path = pathlib.Path(workspace_dir).expanduser().resolve()
-    raw_workspace_path = (workspace_path / resolved_settings.workflows.init.raw_workspace_subdir).resolve()
+    # `run_workspace_dir` — свой на каждый workflow_id (не общий `.temp` на весь workspace_dir),
+    # чтобы два run одного и того же проекта (напр. после restart) не задевали клоны друг друга.
+    # См. раздел 1 в arch-docs/docs/spec/2026-07-23-per-workflow-workspace-and-browser.md.
+    raw_workspace_path = (workspace_path / "runs" / workflow_id).resolve()
     arch_repo_path = (
         pathlib.Path(arch_repo_dir).expanduser().resolve()
         if arch_repo_dir
@@ -993,39 +1377,54 @@ def _resolve_init_arch_paths(
 
 
 _SCP_LIKE_SSH_URL_PATTERN: typing.Final[re.Pattern[str]] = re.compile(r"^git@(?P<host>[^:/]+):(?P<path>.+)$")
+_HTTP_URL_PATTERN: typing.Final[re.Pattern[str]] = re.compile(r"^(?P<scheme>https?)://(?P<host>[^/]+)/(?P<path>.+)$")
 
 
 def _canonicalize_repo_path(path: str) -> str:
     return path.strip().rstrip("/").removesuffix(".git")
 
 
-async def _normalize_repository_url(raw_url: str) -> str:
-    """Bring a user-submitted repository URL to a canonical clone URL.
+def _extract_repo_host_and_path(url: str) -> tuple[str, str, str] | None:
+    """Parse `url` into `(scheme, host, path)`, where `scheme` is `"ssh"`, `"http"` or `"https"`."""
+    scp_match = _SCP_LIKE_SSH_URL_PATTERN.match(url)
+    if scp_match:
+        return "ssh", scp_match.group("host"), _canonicalize_repo_path(scp_match.group("path"))
 
-    Users paste this in two error-prone shapes: the SCP-like SSH form (`git@host:path.git`)
-    and a bare web address-bar copy (`https://host/path`, no `.git`, maybe a trailing slash).
-    A PAT is HTTPS-only — git's credential helper never applies to the SSH transport — so an
-    SSH-form URL for a host that only has a PAT configured (no deploy key) can never
-    authenticate. Rewrite it to HTTPS in that case; leave other SSH hosts alone since SSH
-    deploy-key auth (see app/services/git_ssh.py) is presumably what's intended there.
+    http_match = _HTTP_URL_PATTERN.match(url)
+    if http_match:
+        return http_match.group("scheme"), http_match.group("host"), _canonicalize_repo_path(http_match.group("path"))
+
+    return None
+
+
+async def _normalize_repository_url(raw_url: str) -> str:
+    """Bring a user-submitted repository URL to a canonical clone URL for `host`'s transport.
+
+    Users paste this in error-prone shapes: the SCP-like SSH form (`git@host:path.git`) and a
+    bare web address-bar copy (`https://host/path`, no `.git`, maybe a trailing slash). The
+    transport that actually works is decided by how `host` is registered in "Git-подключения"
+    (see app/services/git_connections.py) — an https:// URL for a host with only a deploy key
+    (no PAT) can never authenticate over HTTPS ("could not read Username"), and a PAT is
+    HTTPS-only (git's credential helper never applies to the SSH transport), so this rewrites
+    the URL to whichever scheme matches the host's actual connection_type, regardless of which
+    form the user happened to paste. Unregistered hosts are left on their original scheme.
     """
     stripped = raw_url.strip()
 
-    scp_match = _SCP_LIKE_SSH_URL_PATTERN.match(stripped)
-    if scp_match:
-        host = scp_match.group("host")
-        configured_hosts = await list_configured_hosts()
-        if host not in configured_hosts:
-            return stripped
-        path = _canonicalize_repo_path(scp_match.group("path"))
+    parsed = _extract_repo_host_and_path(stripped)
+    if parsed is None:
+        return stripped
+    original_scheme, host, path = parsed
+
+    connection_type = await get_connection_type_for_host(host)
+    if connection_type == "ssh":
+        return f"git@{host}:{path}.git"
+    if connection_type == "token":
         return f"https://{host}/{path}.git"
 
-    if stripped.startswith(("http://", "https://")):
-        scheme, _, rest = stripped.partition("://")
-        path = _canonicalize_repo_path(rest)
-        return f"{scheme}://{path}.git"
-
-    return stripped
+    if original_scheme == "ssh":
+        return f"git@{host}:{path}.git"
+    return f"{original_scheme}://{host}/{path}.git"
 
 
 async def _parse_repo_list_entry(entry: str) -> RepositoryExecution:
@@ -1037,24 +1436,53 @@ async def _parse_repo_list_entry(entry: str) -> RepositoryExecution:
     return RepositoryExecution(repository_name=stripped)
 
 
+async def _load_conversation_repositories(conversation_id: str) -> list[RepositoryExecution]:
+    """Read the conversation-level repository list (see `set_conversation_repositories_async()`).
+
+    Entries are already normalized (canonical clone URL, derived name) at the point they were
+    added to the conversation, so this just deserializes - no re-parsing needed.
+    """
+    try:
+        async with get_session() as session:
+            conversation = await get_conversation(session, conversation_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("conversation.repositories_load_failed", conversation_id=conversation_id, error=str(exc))
+        return []
+    if conversation is None:
+        return []
+    return [RepositoryExecution.model_validate(entry) for entry in conversation.repositories or []]
+
+
 async def start_init_arch_workflow(
     *,
     product_name: str,
     analysis_scope: str,
     workspace_dir: str,
     arch_repo_dir: str,
-    repo_list: list[str],
     engine_name: str,
     timeout_seconds: int,
     conversation_id: str | None = None,
+    repo_list: list[str] | None = None,
 ) -> WorkflowRecord:
+    """Start a fresh `init_arch` run.
+
+    `repo_list` is a direct-call escape hatch (used by tests and `resume_init_arch_workflow_from_snapshot()`-
+    adjacent tooling) - the REST-facing path (`create_response_async()`) never passes it and this
+    reads `conversation.repositories` instead (raise "список репозиториев — настройка conversation",
+    see arch-docs/docs/spec/2026-07-23-per-workflow-workspace-and-browser.md section 2).
+    """
+    workflow_id = str(uuid.uuid4())
     resolved_workspace_dir, resolved_arch_repo_dir, resolved_raw_workspace_dir = _resolve_init_arch_paths(
         workspace_dir=workspace_dir,
         arch_repo_dir=arch_repo_dir,
+        workflow_id=workflow_id,
     )
-    workflow_id = str(uuid.uuid4())
     progress_file_path = f"{resolved_arch_repo_dir}/repo-initialization-progress.yaml"
-    repositories = [await _parse_repo_list_entry(repo_entry) for repo_entry in repo_list]
+    if repo_list is not None:
+        repositories = [await _parse_repo_list_entry(repo_entry) for repo_entry in repo_list]
+    else:
+        repositories = await _load_conversation_repositories(conversation_id or workflow_id)
+    _ensure_directory(resolved_raw_workspace_dir)
     session = WorkflowSessionRecord(
         session_id=workflow_id,
         product_name=product_name,
@@ -1107,9 +1535,11 @@ async def resume_init_arch_workflow_from_snapshot(
     conversation_id: str | None = None,
 ) -> WorkflowRecord:
     snapshot = parse_snapshot_yaml(yaml_text)
+    workflow_id = str(uuid.uuid4())
     resolved_workspace_dir, resolved_arch_repo_dir, resolved_raw_workspace_dir = _resolve_init_arch_paths(
         workspace_dir=workspace_dir or snapshot.workspace_dir,
         arch_repo_dir=arch_repo_dir or snapshot.arch_repo_dir,
+        workflow_id=workflow_id,
     )
     # Защита от параллельного/повторного restore того же arch_repo_dir: если в in-memory
     # registry уже есть активный (RUNNING/INTERRUPTED) workflow для того же arch_repo_dir,
@@ -1129,8 +1559,8 @@ async def resume_init_arch_workflow_from_snapshot(
             "by this process's in-memory registry, not other processes/instances."
         )
 
-    workflow_id = str(uuid.uuid4())
     progress_file_path = f"{resolved_arch_repo_dir}/repo-initialization-progress.yaml"
+    _ensure_directory(resolved_raw_workspace_dir)
     session = snapshot.session.model_copy(update={"session_id": workflow_id})
 
     record = WorkflowRecord(
@@ -1258,6 +1688,85 @@ async def retry_init_arch_workflow(workflow_id: str, *, action: str = "retry") -
     return record
 
 
+# Editing the repository list is only safe before `plan_repository_order` has run - that step
+# (and `resolve_target_commits` after it) computes `historical_analysis.ordered_repository_names`,
+# `analysis_target_date`/`analysis_target_commit` etc. for the *whole* repository set in one pass
+# (see historical.py). A repo added/removed after that point would leave those derived fields
+# inconsistent for the rest of the run. Restricting edits to this window keeps `session.repositories`
+# always freshly (re)computed downstream, so no special-casing is needed there.
+_REPOSITORY_LIST_EDITABLE_STEPS: typing.Final[frozenset[StepId]] = frozenset(
+    {StepId.REQUEST_REPOSITORY_LIST, StepId.PREPARE_TEMP_WORKSPACE, StepId.CLONE_REPOSITORIES}
+)
+
+
+def _ensure_repository_list_editable(record: WorkflowRecord) -> WorkflowSessionRecord:
+    if record.workflow_status not in {WorkflowStatus.PAUSED, WorkflowStatus.INTERRUPTED}:
+        raise WorkflowConflictError(
+            "Repository list is only editable while the workflow is paused or interrupted "
+            f"(status: {record.workflow_status})"
+        )
+    if record.session is None:
+        raise WorkflowValidationError("Workflow session is not initialized yet")
+    if record.session.current_step not in _REPOSITORY_LIST_EDITABLE_STEPS:
+        raise WorkflowConflictError(
+            "Repository list can only be edited before repository order planning "
+            f"(current step: {record.session.current_step.value})"
+        )
+    return record.session
+
+
+async def _update_workflow_session_checkpoint(record: WorkflowRecord, session: WorkflowSessionRecord) -> None:
+    """Patch the paused/interrupted LangGraph checkpoint's `session` key so a resume picks up the edit.
+
+    `record.session` is a projection kept in sync via `apply_node_output()` - it is not what
+    `continue_init_arch_workflow()`/`retry_init_arch_workflow()` actually resume from. Those replay
+    from the LangGraph checkpoint keyed by `thread_id=workflow_id`, so an edit that only touches
+    `record.session` would be silently discarded on resume. `aupdate_state()` is the same mechanism
+    LangGraph's human-in-the-loop pattern uses to let a caller edit state while a thread is
+    interrupted, before resuming it.
+    """
+    checkpointer = await get_checkpointer()
+    graph = compile_graph(checkpointer=checkpointer)
+    config = {"configurable": {"thread_id": record.workflow_id}}
+    await graph.aupdate_state(config, {"session": session})
+
+
+async def add_repository_to_workflow(workflow_id: str, *, repo_entry: str) -> WorkflowRecord:
+    record = await get_workflow_record_async(workflow_id)
+    session = _ensure_repository_list_editable(record)
+
+    new_repository = await _parse_repo_list_entry(repo_entry)
+    if any(repository.repository_name == new_repository.repository_name for repository in session.repositories):
+        raise WorkflowValidationError(f"Repository {new_repository.repository_name!r} is already tracked")
+
+    updated_session = session.model_copy(update={"repositories": [*session.repositories, new_repository]})
+    await _update_workflow_session_checkpoint(record, updated_session)
+    record.session = updated_session
+    record.updated_at = utcnow()
+    await persist_workflow_record(record)
+    logger.info("workflow.repository.added", workflow_id=workflow_id, repository_name=new_repository.repository_name)
+    return record
+
+
+async def remove_repository_from_workflow(workflow_id: str, *, repository_name: str) -> WorkflowRecord:
+    record = await get_workflow_record_async(workflow_id)
+    session = _ensure_repository_list_editable(record)
+
+    remaining = [repository for repository in session.repositories if repository.repository_name != repository_name]
+    if len(remaining) == len(session.repositories):
+        raise WorkflowValidationError(f"Repository {repository_name!r} is not tracked")
+    if not remaining:
+        raise WorkflowValidationError("Cannot remove the last remaining repository")
+
+    updated_session = session.model_copy(update={"repositories": remaining})
+    await _update_workflow_session_checkpoint(record, updated_session)
+    record.session = updated_session
+    record.updated_at = utcnow()
+    await persist_workflow_record(record)
+    logger.info("workflow.repository.removed", workflow_id=workflow_id, repository_name=repository_name)
+    return record
+
+
 async def pause_init_arch_workflow(workflow_id: str) -> WorkflowRecord:
     """Stop a running workflow at the next node boundary without discarding progress.
 
@@ -1341,14 +1850,18 @@ async def restart_init_arch_workflow(workflow_id: str) -> dict[str, typing.Any]:
         with contextlib.suppress(asyncio.CancelledError, TimeoutError):
             await asyncio.wait_for(task, timeout=10.0)
 
-    # Re-derive the same two workflow-owned subdirectories `start_init_arch_workflow()` resolved at
-    # creation time - never touch `workspace_dir` itself, it's user-supplied and may be shared.
-    _, resolved_arch_repo_dir, resolved_raw_workspace_dir = _resolve_init_arch_paths(
+    # Re-derive the same run-owned raw workspace subdirectory `start_init_arch_workflow()` resolved
+    # at creation time (`workspace_dir/runs/<workflow_id>/`) - never touch `workspace_dir` itself
+    # (shared by the whole project) nor `arch_repo_dir`: the accumulated documentation is meant to
+    # survive restart/historical windows of the same conversation (see "Важный нюанс" and section 1
+    # in arch-docs/docs/spec/2026-07-23-per-workflow-workspace-and-browser.md) - only this run's own
+    # raw clones are scratch and safe to wipe.
+    _, _, resolved_raw_workspace_dir = _resolve_init_arch_paths(
         workspace_dir=record.workspace_dir,
         arch_repo_dir=record.arch_repo_dir,
+        workflow_id=workflow_id,
     )
     shutil.rmtree(resolved_raw_workspace_dir, ignore_errors=True)
-    shutil.rmtree(resolved_arch_repo_dir, ignore_errors=True)
 
     checkpointer = await get_checkpointer()
     await checkpointer.adelete_thread(workflow_id)
@@ -1372,13 +1885,14 @@ def _capture_init_input_for_restart(record: WorkflowRecord) -> dict[str, typing.
     session = record.session
     if session is None:
         return None
-    repo_list = [repo.repository_url or repo.repository_name for repo in session.repositories]
+    # `repo_list` is deliberately absent - repositories are now a conversation-level setting
+    # (`conversation.repositories`, see section 2 of the spec) that survives restart on its own;
+    # there is no longer a per-run copy to recover here.
     return {
         "product_name": session.product_name,
         "analysis_scope": session.analysis_scope,
         "workspace_dir": record.workspace_dir,
         "arch_repo_dir": record.arch_repo_dir,
-        "repo_list": repo_list,
         # engine_name/timeout_seconds are only ever kept in the transient InitArchState passed to
         # `run_workflow()`, never persisted on WorkflowRecord/WorkflowSessionRecord - there is no
         # value to recover here, so these are left for the form's own defaults.

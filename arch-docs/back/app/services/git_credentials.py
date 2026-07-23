@@ -4,14 +4,11 @@ import os
 import pathlib
 import typing
 
-from app.services.status_taxonomy import ReasonCode
-
 _CREDENTIALS_DIR: typing.Final = pathlib.Path("~/.config/git-credentials-store").expanduser()
 _CREDENTIALS_FILE: typing.Final = _CREDENTIALS_DIR / "credentials"
 _GIT_CONFIG_GLOBAL_PATH: typing.Final = _CREDENTIALS_DIR / "gitconfig"
 
 _GIT_CONFIG_TIMEOUT: typing.Final[float] = 10.0
-_GIT_ACCESS_TIMEOUT: typing.Final[float] = 20.0
 
 # git-credential-store's `get` verb only returns an entry that has both a username and a
 # password component (`user:pass@host`). A bare `token@host` line (no colon) is stored fine
@@ -25,13 +22,6 @@ class GitAccessStatus(enum.StrEnum):
     AUTH_FAILED = enum.auto()
     TIMEOUT = enum.auto()
     ERROR = enum.auto()
-
-
-class GitAccessResult(typing.TypedDict):
-    accessible: bool
-    access_status: str
-    reason_code: str | None
-    message: str
 
 
 _AUTH_FAILURE_PHRASES: typing.Final[tuple[str, ...]] = (
@@ -55,22 +45,6 @@ async def _run_git_config(args: list[str]) -> tuple[int, str]:
     )
     try:
         _, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=_GIT_CONFIG_TIMEOUT)
-    except TimeoutError:
-        proc.kill()
-        await proc.wait()
-        return -1, "timeout"
-    return proc.returncode or 0, stderr_bytes.decode(errors="replace")
-
-
-async def _run_git_access_check(cmd: list[str], *, env: dict[str, str]) -> tuple[int, str]:
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=env,
-    )
-    try:
-        _, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=_GIT_ACCESS_TIMEOUT)
     except TimeoutError:
         proc.kill()
         await proc.wait()
@@ -119,10 +93,17 @@ async def set_git_token(*, host: str, token: str, username: str | None = None) -
     _CREDENTIALS_FILE.chmod(0o600)
 
 
-async def list_configured_hosts() -> list[str]:
+async def get_stored_token(host: str) -> tuple[str, str] | None:
+    """Return `(username, token)` for `host`, or `None` if no token is stored for it."""
     if not _CREDENTIALS_FILE.exists():
-        return []
-    return [_host_of_credentials_line(line) for line in _CREDENTIALS_FILE.read_text().splitlines() if line]
+        return None
+    for line in _CREDENTIALS_FILE.read_text().splitlines():
+        if not line or _host_of_credentials_line(line) != host:
+            continue
+        auth_part = line.split("://", 1)[-1].rsplit("@", 1)[0]
+        username, _, token = auth_part.partition(":")
+        return username, token
+    return None
 
 
 async def delete_git_token(host: str) -> bool:
@@ -145,47 +126,3 @@ def classify_git_access_failure(stderr_text: str) -> GitAccessStatus:
     if any(phrase in lowered for phrase in _AUTH_FAILURE_PHRASES):
         return GitAccessStatus.AUTH_FAILED
     return GitAccessStatus.ERROR
-
-
-_ACCESS_STATUS_REASON_CODES: typing.Final[dict[GitAccessStatus, ReasonCode]] = {
-    GitAccessStatus.AUTH_FAILED: ReasonCode.GIT_ACCESS_AUTH_FAILED,
-    GitAccessStatus.TIMEOUT: ReasonCode.GIT_ACCESS_TIMEOUT,
-    GitAccessStatus.ERROR: ReasonCode.GIT_ACCESS_ERROR,
-}
-
-
-async def check_git_access(repository_url: str) -> GitAccessResult:
-    if not await list_configured_hosts():
-        return GitAccessResult(
-            accessible=False,
-            access_status=GitAccessStatus.AUTH_FAILED,
-            reason_code=ReasonCode.GIT_PAT_MISSING,
-            message="No Git personal access token is configured",
-        )
-
-    await ensure_git_credentials_store()
-
-    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
-    try:
-        exit_code, stderr_text = await _run_git_access_check(
-            ["git", "ls-remote", "--exit-code", repository_url, "HEAD"],
-            env=env,
-        )
-    except FileNotFoundError:
-        return GitAccessResult(
-            accessible=False,
-            access_status=GitAccessStatus.ERROR,
-            reason_code=ReasonCode.GIT_BINARY_MISSING,
-            message="git binary is not available in this container",
-        )
-
-    if exit_code == 0:
-        return GitAccessResult(accessible=True, access_status=GitAccessStatus.OK, reason_code=None, message="ok")
-
-    access_status = classify_git_access_failure(stderr_text)
-    return GitAccessResult(
-        accessible=False,
-        access_status=access_status,
-        reason_code=_ACCESS_STATUS_REASON_CODES[access_status],
-        message=stderr_text.strip() or f"git ls-remote exited with code {exit_code}",
-    )

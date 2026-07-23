@@ -1,7 +1,19 @@
-.page {
+.selectorRow {
   display: flex;
-  flex-direction: column;
-  gap: 1rem;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.selector {
+  flex: 1;
+  min-width: 10rem;
+  font: inherit;
+  padding: 0.35rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid var(--color-border, #e5e7eb);
+  background: var(--color-surface);
+  color: var(--color-text);
 }
 
 .statusRow {

@@ -4,11 +4,9 @@ import unittest.mock
 import pytest
 
 from app.services.git_credentials import (
-    GitAccessStatus,
-    check_git_access,
     delete_git_token,
     ensure_git_credentials_store,
-    list_configured_hosts,
+    get_stored_token,
     set_git_token,
 )
 
@@ -51,8 +49,7 @@ class TestSetGitToken:
     async def test_adds_new_host_entry(self):
         await set_git_token(host="github.com", token="ghp_abc123")
 
-        hosts = await list_configured_hosts()
-        assert hosts == ["github.com"]
+        assert await get_stored_token("github.com") is not None
 
     async def test_includes_username_when_provided(self, isolated_git_credentials_store):
         await set_git_token(host="gitlab.com", token="glpat-xyz", username="custom-user")
@@ -70,20 +67,14 @@ class TestSetGitToken:
         await set_git_token(host="github.com", token="old-token")
         await set_git_token(host="github.com", token="new-token")
 
-        hosts = await list_configured_hosts()
-        assert hosts == ["github.com"]
+        assert await get_stored_token("github.com") == ("oauth2", "new-token")
 
     async def test_keeps_entries_for_different_hosts(self):
         await set_git_token(host="github.com", token="tok-a")
         await set_git_token(host="gitlab.com", token="tok-b")
 
-        hosts = await list_configured_hosts()
-        assert set(hosts) == {"github.com", "gitlab.com"}
-
-
-class TestListConfiguredHosts:
-    async def test_returns_empty_list_when_no_credentials_file(self):
-        assert await list_configured_hosts() == []
+        assert await get_stored_token("github.com") is not None
+        assert await get_stored_token("gitlab.com") is not None
 
 
 class TestDeleteGitToken:
@@ -94,102 +85,34 @@ class TestDeleteGitToken:
         removed = await delete_git_token("github.com")
 
         assert removed is True
-        assert await list_configured_hosts() == ["gitlab.com"]
+        assert await get_stored_token("github.com") is None
+        assert await get_stored_token("gitlab.com") is not None
 
     async def test_returns_false_when_host_not_configured(self):
         assert await delete_git_token("github.com") is False
 
 
-class TestCheckGitAccess:
-    @pytest.fixture(autouse=True)
-    async def _store_already_configured(self):
-        await ensure_git_credentials_store()
+class TestGetStoredToken:
+    async def test_returns_none_when_no_credentials_file(self):
+        assert await get_stored_token("github.com") is None
+
+    async def test_returns_none_when_host_not_configured(self):
         await set_git_token(host="github.com", token="tok-a")
 
-    async def test_accessible_when_ls_remote_succeeds(self):
-        mock_proc = unittest.mock.AsyncMock()
-        mock_proc.communicate = unittest.mock.AsyncMock(return_value=(b"", b""))
-        mock_proc.returncode = 0
+        assert await get_stored_token("gitlab.com") is None
 
-        with unittest.mock.patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-            result = await check_git_access("https://github.com/org/repo.git")
+    async def test_returns_username_and_token_for_placeholder_username(self):
+        await set_git_token(host="github.com", token="ghp_abc123")
 
-        assert result["accessible"] is True
-        assert result["access_status"] == GitAccessStatus.OK
+        assert await get_stored_token("github.com") == ("oauth2", "ghp_abc123")
 
-    async def test_auth_failed_on_permission_denied(self):
-        mock_proc = unittest.mock.AsyncMock()
-        mock_proc.communicate = unittest.mock.AsyncMock(
-            return_value=(b"", b"remote: Invalid username or password.\nfatal: Authentication failed")
-        )
-        mock_proc.returncode = 128
+    async def test_returns_username_and_token_for_custom_username(self):
+        await set_git_token(host="gitlab.com", token="glpat-xyz", username="custom-user")
 
-        with unittest.mock.patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-            result = await check_git_access("https://github.com/org/private.git")
+        assert await get_stored_token("gitlab.com") == ("custom-user", "glpat-xyz")
 
-        assert result["accessible"] is False
-        assert result["access_status"] == GitAccessStatus.AUTH_FAILED
+    async def test_reflects_most_recent_token_for_host(self):
+        await set_git_token(host="github.com", token="old-token")
+        await set_git_token(host="github.com", token="new-token")
 
-    async def test_timeout_classified_as_timeout(self):
-        mock_proc = unittest.mock.AsyncMock()
-        mock_proc.communicate = unittest.mock.AsyncMock(side_effect=TimeoutError)
-        mock_proc.kill = unittest.mock.MagicMock()
-        mock_proc.wait = unittest.mock.AsyncMock()
-
-        with unittest.mock.patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-            result = await check_git_access("https://example.com/org/repo.git")
-
-        assert result["accessible"] is False
-        assert result["access_status"] == GitAccessStatus.TIMEOUT
-
-    async def test_unknown_failure_classified_as_error(self):
-        mock_proc = unittest.mock.AsyncMock()
-        mock_proc.communicate = unittest.mock.AsyncMock(return_value=(b"", b"fatal: repository not found"))
-        mock_proc.returncode = 128
-
-        with unittest.mock.patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-            result = await check_git_access("https://github.com/org/missing.git")
-
-        assert result["accessible"] is False
-        assert result["access_status"] == GitAccessStatus.ERROR
-
-
-class TestCheckGitAccessReasonCodes:
-    async def test_missing_pat_short_circuits_before_subprocess(self):
-        with unittest.mock.patch("asyncio.create_subprocess_exec") as mock_exec:
-            result = await check_git_access("https://github.com/org/repo.git")
-
-        mock_exec.assert_not_called()
-        assert result["accessible"] is False
-        assert result["reason_code"] == "git_pat_missing"
-
-    async def test_git_binary_missing_maps_to_reason_code(self):
-        await set_git_token(host="github.com", token="tok-a")
-
-        with unittest.mock.patch("asyncio.create_subprocess_exec", side_effect=FileNotFoundError):
-            result = await check_git_access("https://github.com/org/repo.git")
-
-        assert result["accessible"] is False
-        assert result["reason_code"] == "git_binary_missing"
-
-    async def test_auth_failed_maps_to_reason_code(self):
-        await set_git_token(host="github.com", token="tok-a")
-        mock_proc = unittest.mock.AsyncMock()
-        mock_proc.communicate = unittest.mock.AsyncMock(return_value=(b"", b"fatal: Authentication failed"))
-        mock_proc.returncode = 128
-
-        with unittest.mock.patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-            result = await check_git_access("https://github.com/org/repo.git")
-
-        assert result["reason_code"] == "git_access_auth_failed"
-
-    async def test_ok_result_has_no_reason_code(self):
-        await set_git_token(host="github.com", token="tok-a")
-        mock_proc = unittest.mock.AsyncMock()
-        mock_proc.communicate = unittest.mock.AsyncMock(return_value=(b"", b""))
-        mock_proc.returncode = 0
-
-        with unittest.mock.patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-            result = await check_git_access("https://github.com/org/repo.git")
-
-        assert result["reason_code"] is None
+        assert await get_stored_token("github.com") == ("oauth2", "new-token")

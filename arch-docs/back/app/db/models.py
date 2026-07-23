@@ -49,6 +49,8 @@ class ConversationModel(Base):
     __tablename__ = "conversations"
 
     conversation_id: orm.Mapped[str] = orm.mapped_column(sa.Text, primary_key=True)
+    product_name: orm.Mapped[str | None] = orm.mapped_column(sa.Text, nullable=True)
+    repositories: orm.Mapped[list[dict]] = orm.mapped_column(sa.JSON, nullable=False, default=list)
     created_at: orm.Mapped[datetime.datetime] = orm.mapped_column(
         sa.DateTime(timezone=True),
         nullable=False,
@@ -169,6 +171,28 @@ class WorkflowStepTransitionModel(Base):
         nullable=False,
         server_default=sa.func.now(),
         index=True,
+    )
+
+
+class GitHostConnectionModel(Base):
+    __tablename__ = "git_host_connections"
+
+    connection_id: orm.Mapped[uuid.UUID] = orm.mapped_column(
+        sa.Uuid,
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    host: orm.Mapped[str] = orm.mapped_column(sa.Text, nullable=False, unique=True)
+    connection_type: orm.Mapped[str] = orm.mapped_column(sa.Text, nullable=False)
+    created_at: orm.Mapped[datetime.datetime] = orm.mapped_column(
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+    )
+    updated_at: orm.Mapped[datetime.datetime] = orm.mapped_column(
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
     )
 
 
