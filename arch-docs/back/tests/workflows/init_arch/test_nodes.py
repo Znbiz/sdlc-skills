@@ -53,6 +53,19 @@ def _make_state(**kwargs) -> InitArchState:
     return base
 
 
+def test_build_task_request_includes_arch_repo_dir_in_extra_allowed_roots() -> None:
+    # A LangGraph tool-agent has no free filesystem access the way codex/claude do, so
+    # arch_repo_dir (a separate directory from workspace_dir, see _prepare_workspace_directories)
+    # must be explicitly widened into the request's allowed roots - see
+    # arch-docs/docs/spec/2026-07-25-langgraph-api-agent-runner.md, section 3.
+    state = _make_state()
+
+    request = nodes_module._build_task_request(state, StepId.DEFINE_SCOPE, task_kind=LlmTaskKind.STEP_EXECUTION)
+
+    assert request.extra_allowed_roots == ["/workspace/repo/arch-doc"]
+    assert request.workspace_dir == "/workspace/repo"
+
+
 async def test_node_define_scope_uses_guard_service_without_llm() -> None:
     state = _make_state()
     guard_service = MagicMock()
@@ -957,6 +970,7 @@ async def test_node_analyze_repositories_item_processes_next_pending_item() -> N
     audit_service = MagicMock()
 
     first_item_id = next(iter(nodes_module.CHECKLIST_ITEM_TO_REFERENCE))
+    all_item_ids = list(nodes_module.CHECKLIST_ITEM_TO_REFERENCE)
     item_completed_session = session.model_copy(
         update={
             "repositories": [repository.model_copy(update={"checklist_items_completed": [first_item_id]})],
@@ -966,7 +980,13 @@ async def test_node_analyze_repositories_item_processes_next_pending_item() -> N
         return_value=GuardOperationResult(session=item_completed_session, bridge_output="done")
     )
     llm_service.run_task = AsyncMock(
-        return_value=LlmTaskResult(task_kind=LlmTaskKind.REPOSITORY_CHECKLIST_ITEM, step_id=StepId.ANALYZE_REPOSITORIES)
+        return_value=LlmTaskResult(
+            task_kind=LlmTaskKind.REPOSITORY_CHECKLIST_ITEM,
+            step_id=StepId.ANALYZE_REPOSITORIES,
+            # The model only self-reports the first item as actually completed, even though every
+            # pending item was routed into this one merged call - only what it claims gets marked done.
+            completed_checklist_items=[first_item_id],
+        )
     )
 
     with (
@@ -987,7 +1007,102 @@ async def test_node_analyze_repositories_item_processes_next_pending_item() -> N
         if call.args[0].event_type is EventType.DIFF_SIGNAL_ROUTED
     ]
     assert len(routed_events) == 1
-    assert routed_events[0].payload["routed_items"] == "1"
+    assert routed_events[0].payload["routed_items"] == str(len(all_item_ids))
+
+
+async def test_node_analyze_repositories_item_reports_step_error_when_llm_completes_no_items() -> None:
+    repository = RepositoryExecution(
+        repository_name="svc-a",
+        analysis_target_commit_status=AnalysisTargetCommitStatus.PENDING,
+        analysis_status="in_progress",
+    )
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="Prod",
+        analysis_scope="full",
+        current_step=StepId.ANALYZE_REPOSITORIES,
+        repositories=[repository],
+    )
+    state = _make_state(session=session)
+    guard_service = MagicMock()
+    llm_service = MagicMock()
+    guard_service.complete_repository_item = AsyncMock()
+    llm_service.run_task = AsyncMock(
+        return_value=LlmTaskResult(
+            task_kind=LlmTaskKind.REPOSITORY_CHECKLIST_ITEM,
+            step_id=StepId.ANALYZE_REPOSITORIES,
+            # Model reported nothing completed, even though items were requested - must surface as a
+            # step failure (retried by the graph's own _MAX_RETRY), not a silent no-progress success.
+            completed_checklist_items=[],
+        )
+    )
+
+    with (
+        patch("app.workflows.init_arch.nodes.get_guard_service", return_value=guard_service),
+        patch("app.workflows.init_arch.nodes.get_llm_worker_service", return_value=llm_service),
+    ):
+        result = await nodes_module.node_analyze_repositories_item(state)
+
+    guard_service.complete_repository_item.assert_not_awaited()
+    assert result["session"] is session
+    assert "reported no completed checklist items" in result["step_error"]
+    assert result["retry_count"] == 1
+
+
+async def test_node_analyze_repositories_item_registers_created_artifacts_via_knowledge_service() -> None:
+    repository = RepositoryExecution(
+        repository_name="svc-a",
+        analysis_target_commit_status=AnalysisTargetCommitStatus.PENDING,
+        analysis_status="in_progress",
+    )
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="Prod",
+        analysis_scope="full",
+        current_step=StepId.ANALYZE_REPOSITORIES,
+        repositories=[repository],
+    )
+    state = _make_state(session=session)
+    guard_service = MagicMock()
+    llm_service = MagicMock()
+    knowledge_service = MagicMock()
+
+    first_item_id = next(iter(nodes_module.CHECKLIST_ITEM_TO_REFERENCE))
+    item_completed_session = session.model_copy(
+        update={
+            "repositories": [repository.model_copy(update={"checklist_items_completed": [first_item_id]})],
+        }
+    )
+    artifact_registered_session = item_completed_session.model_copy(update={"product_name": "Prod (artifacts logged)"})
+    guard_service.complete_repository_item = AsyncMock(
+        return_value=GuardOperationResult(session=item_completed_session)
+    )
+    knowledge_service.collect_worker_artifacts = AsyncMock(
+        return_value=KnowledgeArtifactResult(session=artifact_registered_session, summary="registered 1 artifact")
+    )
+    llm_service.run_task = AsyncMock(
+        return_value=LlmTaskResult(
+            task_kind=LlmTaskKind.REPOSITORY_CHECKLIST_ITEM,
+            step_id=StepId.ANALYZE_REPOSITORIES,
+            completed_checklist_items=[first_item_id],
+            created_artifacts=["architecture/tech-stack.md"],
+        )
+    )
+
+    with (
+        patch("app.workflows.init_arch.nodes.get_guard_service", return_value=guard_service),
+        patch("app.workflows.init_arch.nodes.get_llm_worker_service", return_value=llm_service),
+        patch("app.workflows.init_arch.nodes.get_knowledge_artifact_service", return_value=knowledge_service),
+    ):
+        result = await nodes_module.node_analyze_repositories_item(state)
+
+    knowledge_service.collect_worker_artifacts.assert_awaited_once_with(
+        item_completed_session,
+        step_id=StepId.ANALYZE_REPOSITORIES,
+        created_artifacts=["architecture/tech-stack.md"],
+        arch_repo_dir=state["arch_repo_dir"],
+    )
+    assert result["session"] is artifact_registered_session
 
 
 async def test_node_analyze_repositories_item_registers_open_questions_from_llm_result() -> None:
@@ -1025,6 +1140,7 @@ async def test_node_analyze_repositories_item_registers_open_questions_from_llm_
             task_kind=LlmTaskKind.REPOSITORY_CHECKLIST_ITEM,
             step_id=StepId.ANALYZE_REPOSITORIES,
             open_questions_found=["What protocol is exposed?"],
+            completed_checklist_items=[first_item_id],
         )
     )
 
@@ -1069,7 +1185,11 @@ async def test_node_analyze_repositories_item_routes_reduced_checklist_for_no_ch
         return_value=GuardOperationResult(session=item_completed_session)
     )
     llm_service.run_task = AsyncMock(
-        return_value=LlmTaskResult(task_kind=LlmTaskKind.REPOSITORY_CHECKLIST_ITEM, step_id=StepId.ANALYZE_REPOSITORIES)
+        return_value=LlmTaskResult(
+            task_kind=LlmTaskKind.REPOSITORY_CHECKLIST_ITEM,
+            step_id=StepId.ANALYZE_REPOSITORIES,
+            completed_checklist_items=["repository_consistency_review"],
+        )
     )
 
     with (

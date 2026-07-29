@@ -27,8 +27,8 @@ from app.workflows.init_arch.domain import (
     WorkflowSessionRecord,
     classify_diff_severity,
     domain_assessment_is_complete,
-    next_pending_checklist_item,
     next_pending_repository,
+    pending_checklist_items,
 )
 from app.workflows.init_arch.domain.operations import StepFailureRecoveryAction, TemporalWindowConfirmationAction
 from app.workflows.init_arch.domain.steps import STEP_DEFINITION_BY_ID
@@ -76,6 +76,7 @@ def _build_task_request(  # noqa: PLR0913
     *,
     task_kind: LlmTaskKind,
     checklist_item_id: str = "",
+    checklist_item_ids: list[str] | None = None,
     repository_name: str = "",
     autofix_findings: list[str] | None = None,
 ) -> LlmTaskRequest:
@@ -84,9 +85,15 @@ def _build_task_request(  # noqa: PLR0913
         task_kind=task_kind,
         step_id=step_id,
         prompt_text=build_step_prompt(
-            step_id, state, checklist_item_id=checklist_item_id, autofix_findings=autofix_findings
+            step_id,
+            state,
+            checklist_item_id=checklist_item_id,
+            checklist_item_ids=checklist_item_ids,
+            repository_name=repository_name,
+            autofix_findings=autofix_findings,
         ),
         workspace_dir=state["workspace_dir"],
+        extra_allowed_roots=[state["arch_repo_dir"]],
         timeout_seconds=state["timeout_seconds"],
         expected_schema_name="init_arch_v1",
         repository_name=repository_name,
@@ -99,6 +106,7 @@ async def _run_step_worker(  # noqa: PLR0913
     *,
     task_kind: LlmTaskKind = LlmTaskKind.STEP_EXECUTION,
     checklist_item_id: str = "",
+    checklist_item_ids: list[str] | None = None,
     repository_name: str = "",
     autofix_findings: list[str] | None = None,
 ):
@@ -108,6 +116,7 @@ async def _run_step_worker(  # noqa: PLR0913
         step_id,
         task_kind=task_kind,
         checklist_item_id=checklist_item_id,
+        checklist_item_ids=checklist_item_ids,
         repository_name=repository_name,
         autofix_findings=autofix_findings,
     )
@@ -640,20 +649,49 @@ def _require_in_progress_repository(session: WorkflowSessionRecord) -> Repositor
     return repository
 
 
-async def node_analyze_repositories_item(state: InitArchState) -> dict[str, typing.Any]:
-    """Process exactly one checklist item of the current in-progress repository.
+def _require_checklist_progress(
+    repository: RepositoryExecution, *, requested_item_ids: list[str], completed_item_ids: list[str]
+) -> None:
+    if not completed_item_ids:
+        msg = (
+            f"analyze_repositories: LLM call for {repository.repository_name!r} reported no completed "
+            f"checklist items out of {len(requested_item_ids)} requested ({requested_item_ids})"
+        )
+        raise DomainOperationError(msg)
 
-    One LLM-agent call per node execution so that graph-level persist (Postgres checkpoint + YAML progress
-    snapshot, written after every node by `_drive_graph_stream()`) captures progress at item granularity.
+
+async def node_analyze_repositories_item(state: InitArchState) -> dict[str, typing.Any]:
+    """Process every pending checklist item of the current in-progress repository in one LLM call.
+
+    Historically (see 2026-07-21-analyze-repositories-per-item-nodes.md) this issued one LLM-agent call
+    per checklist item, so the Postgres checkpoint written after every node by `_drive_graph_stream()`
+    captured progress at item granularity. Merged into one call per repository on 2026-07-26 (see
+    2026-07-26-analyze-repositories-merge-checklist-items.md): the per-item design paid for a full
+    repository re-exploration (list_directory/read_file from scratch, no memory carried between calls)
+    on every single item - for a ~20-item checklist that is ~20x the exploration cost for one
+    repository, and was the dominant cost of a slow `analyze_repositories` step. Accepted trade-off:
+    a crash/failure inside this one call now costs the whole repository's remaining items, not just
+    one - the same `_MAX_RETRY` bound retries the whole batch instead of a single item.
+
+    `completed_checklist_items` in the LLM's own JSON report is what keeps this honest despite the
+    merge: only items the model itself claims to have addressed get marked complete via
+    `complete_repository_item` below - a call is never blindly trusted to have finished everything it
+    was asked for. If it reports none, that's treated as a step failure (not a silent no-op), so the
+    existing retry/interrupt path catches it instead of looping forever with no progress and no error.
+    `created_artifacts` still goes through `collect_worker_artifacts()` (structure/diff verification),
+    which analyze_repositories never called until this change - it works from the same self-reported
+    list, not an independent filesystem scan, so it verifies what the model says it wrote, not whether
+    every checklist item's expected artifact actually exists.
     """
     guard_service = get_guard_service()
+    knowledge_service = get_knowledge_artifact_service()
     session = state["session"]
     llm_result = None
-    item_result = None
+    bridge_output = ""
     try:
         repository = _require_in_progress_repository(session)
-        item_id = next_pending_checklist_item(repository, all_checklist_item_ids=list(CHECKLIST_ITEM_TO_REFERENCE))
-        if item_id is None:
+        item_ids = pending_checklist_items(repository, all_checklist_item_ids=list(CHECKLIST_ITEM_TO_REFERENCE))
+        if not item_ids:
             complete_result = await guard_service.complete_repository(
                 session,
                 repository_name=repository.repository_name,
@@ -667,23 +705,39 @@ async def node_analyze_repositories_item(state: InitArchState) -> dict[str, typi
             step_id=StepId.ANALYZE_REPOSITORIES,
             repository_name=repository.repository_name,
             diff_severity=classify_diff_severity(repository).value,
-            routed_items="1",
+            routed_items=str(len(item_ids)),
             total_items=str(len(CHECKLIST_ITEM_TO_REFERENCE)),
         )
         llm_result = await _run_step_worker(
             {**state, "session": session},
             StepId.ANALYZE_REPOSITORIES,
             task_kind=LlmTaskKind.REPOSITORY_CHECKLIST_ITEM,
-            checklist_item_id=item_id,
+            checklist_item_ids=item_ids,
             repository_name=repository.repository_name,
         )
-        item_result = await guard_service.complete_repository_item(
-            session,
-            repository_name=repository.repository_name,
-            item_id=item_id,
-            progress_file_path=state["progress_file_path"],
-        )
-        session = item_result.session
+
+        completed_item_ids = [item_id for item_id in item_ids if item_id in llm_result.completed_checklist_items]
+        _require_checklist_progress(repository, requested_item_ids=item_ids, completed_item_ids=completed_item_ids)
+
+        for item_id in completed_item_ids:
+            item_result = await guard_service.complete_repository_item(
+                session,
+                repository_name=repository.repository_name,
+                item_id=item_id,
+                progress_file_path=state["progress_file_path"],
+            )
+            session = item_result.session
+            bridge_output = item_result.bridge_output
+
+        if llm_result.created_artifacts:
+            artifact_result = await knowledge_service.collect_worker_artifacts(
+                session,
+                step_id=StepId.ANALYZE_REPOSITORIES,
+                created_artifacts=llm_result.created_artifacts,
+                arch_repo_dir=state["arch_repo_dir"],
+            )
+            session = artifact_result.session
+
         if llm_result.open_questions_found:
             question_result = await guard_service.register_open_questions(
                 session,
@@ -703,7 +757,7 @@ async def node_analyze_repositories_item(state: InitArchState) -> dict[str, typi
     return _session_update_payload(
         session,
         last_llm_result=llm_result,
-        last_guard_output=item_result.bridge_output,
+        last_guard_output=bridge_output,
     )
 
 

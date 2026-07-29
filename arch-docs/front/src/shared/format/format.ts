@@ -7,6 +7,12 @@ export function formatDateTime(isoString: string): string {
   }).format(date);
 }
 
+export function formatDate(isoDate: string): string {
+  const date = new Date(isoDate);
+  if (Number.isNaN(date.getTime())) return isoDate;
+  return new Intl.DateTimeFormat("ru-RU", { dateStyle: "medium" }).format(date);
+}
+
 const SIZE_UNITS = ["Б", "КБ", "МБ", "ГБ"] as const;
 
 export function formatFileSize(bytes: number): string {

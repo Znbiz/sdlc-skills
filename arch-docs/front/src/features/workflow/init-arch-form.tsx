@@ -8,10 +8,15 @@ import styles from "./init-arch-form.module.css";
 const DEFAULT_TIMEOUT_SECONDS = 900;
 const ANALYSIS_SCOPE_CONSTANT = "full";
 
-// UI-only selection: "external" always runs under codex CLI, but wired to a saved
+// UI-only selection: "external" always runs under codex CLI, wired to a saved
 // OpenAI-compatible connection instead of codex's own auth - see
-// arch-docs/docs/spec/2026-07-24-external-llm-provider.md, section 6.
-type EngineSelection = CliEngine | "external";
+// arch-docs/docs/spec/2026-07-24-external-llm-provider.md, section 6. "langgraph" is a distinct
+// fourth engine - a LangGraph tool-calling agent that talks to the same kind of connection
+// directly over HTTP, without spawning codex/claude at all - see
+// arch-docs/docs/spec/2026-07-25-langgraph-api-agent-runner.md.
+type EngineSelection = CliEngine | "external" | "langgraph";
+
+const ENGINES_REQUIRING_PROVIDER_CONNECTION: ReadonlySet<EngineSelection> = new Set(["external", "langgraph"]);
 
 interface FormState {
   engineSelection: EngineSelection;
@@ -50,7 +55,7 @@ function validate(state: FormState, hasRepositories: boolean): string | null {
   const timeoutSeconds = Number(state.timeoutSeconds);
   if (!Number.isInteger(timeoutSeconds) || timeoutSeconds <= 0) return "Таймаут шага должен быть целым числом больше нуля.";
   if (!state.workspaceDir.trim()) return "Workspace dir не может быть пустым.";
-  if (state.engineSelection === "external" && !state.providerConnectionId) {
+  if (ENGINES_REQUIRING_PROVIDER_CONNECTION.has(state.engineSelection) && !state.providerConnectionId) {
     return "Выберите подключение к внешней LLM (или настройте его в Setup).";
   }
   return null;
@@ -58,6 +63,7 @@ function validate(state: FormState, hasRepositories: boolean): string | null {
 
 function buildInput(state: FormState, productName: string): InitArchInput {
   const { engineSelection } = state;
+  const requiresProviderConnection = ENGINES_REQUIRING_PROVIDER_CONNECTION.has(engineSelection);
   return {
     product_name: productName,
     analysis_scope: ANALYSIS_SCOPE_CONSTANT,
@@ -65,7 +71,7 @@ function buildInput(state: FormState, productName: string): InitArchInput {
     arch_repo_dir: state.archRepoDir.trim(),
     engine_name: engineSelection === "external" ? "codex" : engineSelection,
     timeout_seconds: Number(state.timeoutSeconds),
-    provider_connection_id: engineSelection === "external" ? state.providerConnectionId : undefined,
+    provider_connection_id: requiresProviderConnection ? state.providerConnectionId : undefined,
   };
 }
 
@@ -129,10 +135,11 @@ export function InitArchForm({
           <option value="claude">Claude Code</option>
           <option value="codex">Codex</option>
           <option value="external">Внешняя LLM (через API-токен)</option>
+          <option value="langgraph">LangGraph-агент (прямой API)</option>
         </select>
       </label>
 
-      {state.engineSelection === "external" && (
+      {ENGINES_REQUIRING_PROVIDER_CONNECTION.has(state.engineSelection) && (
         <label>
           Подключение к внешней LLM
           {llmProviderConnections.data && llmProviderConnections.data.length === 0 ? (

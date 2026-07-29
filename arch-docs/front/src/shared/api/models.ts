@@ -1,5 +1,10 @@
 export type CliEngine = "codex" | "claude";
 
+// engine_name accepted by workflow-execution endpoints - a superset of CliEngine, since
+// "langgraph" runs in-process (no CLI auth session, unrelated to CliEngineAuthInfo below). See
+// arch-docs/docs/spec/2026-07-25-langgraph-api-agent-runner.md.
+export type WorkflowEngine = CliEngine | "langgraph";
+
 export interface CliEngineAuthInfo {
   authenticated: boolean;
   auth_status: string;
@@ -71,6 +76,12 @@ export interface LlmProviderConnectionDetailResponse {
   token: string | null;
 }
 
+export interface LlmProviderConnectionTestResponse {
+  success: boolean;
+  status_code: number | null;
+  message: string;
+}
+
 // action_type здесь всегда равен backend-овскому interrupt_type. Известные значения:
 // "user_question", "user_input", "temporal_window_confirmation", "step_failed".
 export interface RequiredActionResponse {
@@ -85,7 +96,7 @@ export interface InitArchInput {
   analysis_scope: string;
   workspace_dir: string;
   arch_repo_dir: string;
-  engine_name: CliEngine;
+  engine_name: WorkflowEngine;
   timeout_seconds: number;
   provider_connection_id?: string | null;
 }
@@ -100,6 +111,14 @@ export interface RepositoryStatusResponse {
   analysis_target_commit_date: string | null;
   analysis_status: string;
   commit_range_status: string;
+  checklist_items_completed: string[];
+  checklist_items_routed: string[];
+  current_checklist_item_id: string | null;
+}
+
+export interface TokenUsage {
+  input_tokens: number;
+  output_tokens: number;
 }
 
 export interface ResponseStatusResponse {
@@ -112,8 +131,12 @@ export interface ResponseStatusResponse {
   workspace_dir: string;
   arch_repo_dir: string;
   completed_steps: string[];
+  token_usage_by_model: Record<string, TokenUsage>;
   required_actions: RequiredActionResponse[];
   repositories: RepositoryStatusResponse[];
+  analysis_window_start: string | null;
+  analysis_window_end: string | null;
+  analysis_window_index: number;
   repository_list_editable: boolean;
   created_at: string;
   updated_at: string;

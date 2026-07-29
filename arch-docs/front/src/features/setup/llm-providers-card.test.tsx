@@ -153,4 +153,36 @@ describe("LlmProvidersCard", () => {
 
     await waitFor(() => expect(screen.queryByText("my-provider")).not.toBeInTheDocument());
   });
+
+  it("показывает успешный результат проверки подключения", async () => {
+    server.use(
+      mockLlmProviderConnections([{ connection_id: CONNECTION_ID, name: "my-provider", model: "my-model" }]),
+      http.post(`/api/rest/llm-providers/${CONNECTION_ID}/test/`, () =>
+        HttpResponse.json({ success: true, status_code: 200, message: "Подключение работает" }),
+      ),
+    );
+
+    const user = userEvent.setup();
+    renderWithProviders(<LlmProvidersCard />);
+
+    await user.click(await screen.findByRole("button", { name: "Проверить" }));
+
+    expect(await screen.findByText("✓ Подключение работает")).toBeInTheDocument();
+  });
+
+  it("показывает сообщение об ошибке при неудачной проверке подключения", async () => {
+    server.use(
+      mockLlmProviderConnections([{ connection_id: CONNECTION_ID, name: "my-provider", model: "my-model" }]),
+      http.post(`/api/rest/llm-providers/${CONNECTION_ID}/test/`, () =>
+        HttpResponse.json({ success: false, status_code: 401, message: "invalid api key" }),
+      ),
+    );
+
+    const user = userEvent.setup();
+    renderWithProviders(<LlmProvidersCard />);
+
+    await user.click(await screen.findByRole("button", { name: "Проверить" }));
+
+    expect(await screen.findByText("✗ invalid api key")).toBeInTheDocument();
+  });
 });

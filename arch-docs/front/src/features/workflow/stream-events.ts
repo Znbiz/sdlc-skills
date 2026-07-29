@@ -10,12 +10,18 @@ export interface StreamLogEntry {
   receivedAt: number;
 }
 
+export interface TokenUsageEntry {
+  inputTokens: number;
+  outputTokens: number;
+}
+
 export interface StreamReducerState {
   entries: StreamLogEntry[];
   isTerminal: boolean;
   currentStepId: string;
   currentStepLabel: string;
   currentRepoName: string;
+  tokenUsageByModel: Record<string, TokenUsageEntry>;
 }
 
 export const INITIAL_STREAM_STATE: StreamReducerState = {
@@ -24,7 +30,26 @@ export const INITIAL_STREAM_STATE: StreamReducerState = {
   currentStepId: "",
   currentStepLabel: "",
   currentRepoName: "",
+  tokenUsageByModel: {},
 };
+
+// `llm_call_completed`/`llm_call_failed` carry the workflow's full cumulative per-model total
+// (not a delta) - see task_runner.py's `increment_workflow_token_usage`. Taking the latest
+// snapshot wholesale (rather than accumulating deltas here) is self-healing across a dropped/
+// reconnected SSE connection: a missed event just means the next one catches the total back up.
+function normalizeTokenUsageByModel(raw: unknown): Record<string, TokenUsageEntry> | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const normalized: Record<string, TokenUsageEntry> = {};
+  for (const [modelName, usage] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof usage !== "object" || usage === null) continue;
+    const { input_tokens, output_tokens } = usage as Record<string, unknown>;
+    normalized[modelName] = {
+      inputTokens: Number(input_tokens ?? 0),
+      outputTokens: Number(output_tokens ?? 0),
+    };
+  }
+  return normalized;
+}
 
 const MAX_ENTRIES = 500;
 
@@ -103,6 +128,7 @@ export function reduceStreamEvent(state: StreamReducerState, rawPayload: Record<
   const isTerminal = state.isTerminal || TERMINAL_EVENT_TYPES.has(entry.eventType);
 
   const isStepStarted = entry.eventType === "step_started";
+  const normalizedTokenUsage = normalizeTokenUsageByModel(rawPayload.token_usage_by_model);
   return {
     entries,
     isTerminal,
@@ -111,5 +137,6 @@ export function reduceStreamEvent(state: StreamReducerState, rawPayload: Record<
       ? String(rawPayload.step_label ?? rawPayload.step_id ?? "")
       : state.currentStepLabel,
     currentRepoName: isStepStarted ? String(rawPayload.repo_name ?? "") : state.currentRepoName,
+    tokenUsageByModel: normalizedTokenUsage ?? state.tokenUsageByModel,
   };
 }

@@ -90,6 +90,11 @@ def setup_agent_pool() -> None:
     init_agent_pool(pool_size=2)
 
 
+@pytest.fixture(autouse=True)
+def isolated_llm_provider_model_catalog_dir(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.services.llm_provider_model_catalog._CATALOG_DIR", tmp_path / "llm-provider-catalogs")
+
+
 @pytest.fixture
 async def async_client() -> httpx.AsyncClient:
     async with httpx.AsyncClient(

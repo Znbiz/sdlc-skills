@@ -28,6 +28,7 @@ class WorkflowRecord:
     workspace_dir: str = ""
     arch_repo_dir: str = ""
     completed_steps: list[str] = dataclasses.field(default_factory=list)
+    token_usage_by_model: dict[str, dict[str, int]] = dataclasses.field(default_factory=dict)
     session: WorkflowSessionRecord | None = None
     pending_interrupt: dict[str, typing.Any] | None = None
     last_cli_output_snippet: str = ""

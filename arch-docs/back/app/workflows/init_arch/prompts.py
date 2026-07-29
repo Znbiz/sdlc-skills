@@ -241,11 +241,13 @@ def _build_release_notes_context_block(state: InitArchState) -> str:
     return "\n".join(lines)
 
 
-def build_step_prompt(
+def build_step_prompt(  # noqa: PLR0913
     step_id: StepId | str,
     state: InitArchState,
     checklist_item_id: str = "",
     *,
+    checklist_item_ids: list[str] | None = None,
+    repository_name: str = "",
     autofix_findings: list[str] | None = None,
 ) -> str:
     step_value = step_id.value if isinstance(step_id, StepId) else step_id
@@ -256,10 +258,32 @@ def build_step_prompt(
 
     reference_text = _load_shared_asset(reference_path_rel) if reference_path_rel else ""
 
+    # Merged-item call (node_analyze_repositories_item processes every pending checklist item of a
+    # repository in one LLM call instead of one call per item - accepted 2026-07-26 trade-off: trades
+    # per-item checkpoint granularity for not re-exploring the same repository from scratch per item,
+    # see 2026-07-26-analyze-repositories-merge-checklist-items.md). Overrides the single-item
+    # reference_text above with one section per item, each carrying its own reference checklist.
+    if step_value == "analyze_repositories" and checklist_item_ids:
+        reference_text = "\n\n".join(
+            f"## Пункт чек-листа `{item_id}`\n\n"
+            f"{_load_shared_asset(CHECKLIST_ITEM_TO_REFERENCE.get(item_id, '')) or '(нет reference для этого пункта)'}"
+            for item_id in checklist_item_ids
+        )
+
     completed = ", ".join(step.value for step in state["session"].completed_steps) or "нет"
-    current_repository = next(
-        (repo for repo in state["session"].repositories if repo.analysis_status == "in_progress"),
-        None,
+    # Prefer the explicit repository_name the caller is actually working on over guessing from
+    # analysis_status=="in_progress": that heuristic silently breaks for any node whose Python loop
+    # processes several repositories in one physical graph node without demoting each one before
+    # moving to the next (e.g. node_assess_scope_and_domains, see 2026-07-27 incident - repos after
+    # the first all got prompted with the *first* repository's context, because start_repository()
+    # never reset the previous repo back off "in_progress", leaving several simultaneously "true" for
+    # this scan and `next()` always returning the earliest one in the list, regardless of which repo
+    # the current LLM call is actually about). Falls back to the old scan only when no repository_name
+    # is supplied (steps that aren't scoped to one repository at all).
+    current_repository = (
+        next((repo for repo in state["session"].repositories if repo.repository_name == repository_name), None)
+        if repository_name
+        else next((repo for repo in state["session"].repositories if repo.analysis_status == "in_progress"), None)
     )
     current_repo = current_repository.repository_name if current_repository is not None else "—"
     temporal_delta_block = _build_temporal_delta_block(
@@ -285,6 +309,16 @@ def build_step_prompt(
         "Не редактируй wiki/index.md и wiki/maps/compile-report.md напрямую — они перезаписываются механически "
         "после твоего вызова, ручная правка потеряется.\n"
         if autofix_findings
+        else ""
+    )
+    checklist_items_instruction = (
+        "Пункты чек-листа для этого вызова перечислены выше, каждый под своим заголовком "
+        "«Пункт чек-листа `...`» — обработай КАЖДЫЙ из них за этот один вызов, ни один не пропускай.\n"
+        "В финальном JSON-отчёте обязательно заполни `completed_checklist_items` — список ID пунктов "
+        '(например ["tech_stack_collection", "configs_and_runtime"]), которые ты реально выполнил и для '
+        "которых записал/обновил артефакты. Не указывай ID пункта, который фактически не обработал — "
+        "это поле сверяется механически с тем, что ты записал на диск, а не принимается декларативно.\n"
+        if step_value == _ANALYZE_REPOSITORIES_STEP_VALUE and checklist_item_ids
         else ""
     )
     open_questions = (
@@ -363,7 +397,7 @@ Raw checkout-слой расположен в {raw_workspace_dir}; исполь�
 Сервис оркестрирует workflow и сам управляет progress state.
 Если нужен progress bridge, его путь: {state["progress_file_path"]}; не используй его как источник решений.
 Разделяй выводы: какие из них опираются на temporal delta (diff), а какие — на итоговое snapshot-состояние.
-{domain_context_instruction}{autofix_instruction}
+{domain_context_instruction}{autofix_instruction}{checklist_items_instruction}
 Выведи краткий структурированный JSON-отчёт о выполненных действиях в формате:
 {{
   "completed_actions": ["..."],
@@ -371,6 +405,9 @@ Raw checkout-слой расположен в {raw_workspace_dir}; исполь�
   "open_questions_found": ["..."],
   "diff_based_findings": ["..."],
   "snapshot_based_findings": ["..."],
+  "completed_checklist_items": ["..."],
   "notes": "..."
 }}
+Финальный ответ должен быть ТОЛЬКО этим JSON-объектом — без пояснений до или после, без markdown
+```-ограждений. Любые пояснения/анализ помести внутрь поля "notes".
 {domain_assessment_instruction}"""

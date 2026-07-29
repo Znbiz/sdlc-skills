@@ -148,9 +148,14 @@ def next_pending_repository(session: WorkflowSessionRecord) -> RepositoryExecuti
     return next((repository for repository in session.repositories if repository.analysis_status != "completed"), None)
 
 
-def next_pending_checklist_item(repository: RepositoryExecution, *, all_checklist_item_ids: list[str]) -> str | None:
+def pending_checklist_items(repository: RepositoryExecution, *, all_checklist_item_ids: list[str]) -> list[str]:
     routed_item_ids = route_checklist_items(repository, all_checklist_item_ids=all_checklist_item_ids)
-    return next((item_id for item_id in routed_item_ids if item_id not in repository.checklist_items_completed), None)
+    return [item_id for item_id in routed_item_ids if item_id not in repository.checklist_items_completed]
+
+
+def next_pending_checklist_item(repository: RepositoryExecution, *, all_checklist_item_ids: list[str]) -> str | None:
+    pending = pending_checklist_items(repository, all_checklist_item_ids=all_checklist_item_ids)
+    return pending[0] if pending else None
 
 
 def set_domain_assessment(

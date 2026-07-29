@@ -606,7 +606,9 @@ async def test_create_response_async_query_validates_required_fields():
 async def test_create_response_async_rejects_unsupported_engine(monkeypatch):
     monkeypatch.setattr("app.services.init_arch_workflow.create_conversation_async", AsyncMock())
 
-    with pytest.raises(workflow_module.WorkflowValidationError, match="engine_name must be 'claude' or 'codex'"):
+    with pytest.raises(
+        workflow_module.WorkflowValidationError, match="engine_name must be 'claude', 'codex' or 'langgraph'"
+    ):
         await workflow_module.create_response_async(
             conversation_id="conv-query",
             workflow_type="query",
@@ -655,6 +657,45 @@ async def test_create_response_async_rejects_provider_connection_id_with_claude_
                 "engine_name": "claude",
                 "provider_connection_id": "conn-1",
             },
+        )
+
+
+async def test_create_response_async_accepts_langgraph_engine_with_provider_connection_id(monkeypatch):
+    monkeypatch.setattr("app.services.init_arch_workflow.create_conversation_async", AsyncMock())
+    captured = {}
+
+    def _fake_enqueue(cli_task: CliTask):
+        captured["task"] = cli_task
+        return cli_task
+
+    monkeypatch.setattr("app.services.init_arch_workflow._enqueue_cli_task", _fake_enqueue)
+
+    await workflow_module.create_response_async(
+        conversation_id="conv-query",
+        workflow_type="query",
+        input_payload={
+            "repo_path": "/repo",
+            "question": "what",
+            "engine_name": "langgraph",
+            "provider_connection_id": "conn-1",
+        },
+    )
+
+    assert captured["task"].engine_name == "langgraph"
+    assert captured["task"].provider_connection_id == "conn-1"
+
+
+async def test_create_response_async_rejects_langgraph_engine_without_provider_connection_id(monkeypatch):
+    monkeypatch.setattr("app.services.init_arch_workflow.create_conversation_async", AsyncMock())
+
+    with pytest.raises(
+        workflow_module.WorkflowValidationError,
+        match="provider_connection_id is required for engine_name='langgraph'",
+    ):
+        await workflow_module.create_response_async(
+            conversation_id="conv-query",
+            workflow_type="query",
+            input_payload={"repo_path": "/repo", "question": "what", "engine_name": "langgraph"},
         )
 
 
@@ -1168,6 +1209,76 @@ async def test_run_workflow_happy_path_persists_node_progress_and_terminal_succe
         ("done", WorkflowStatus.RUNNING),
         ("done", WorkflowStatus.SUCCESS),
     ]
+
+
+async def test_resume_workflow_task_wraps_resume_value_in_command(monkeypatch):
+    # Regression: passing the bare resume_value dict to graph.astream() (instead of
+    # langgraph.types.Command(resume=resume_value)) makes langgraph treat the call as a brand-new
+    # invocation and restart the whole graph from START, instead of resuming the pending
+    # interrupt() in place - silently re-running (and, for clone_repositories, re-cloning) every
+    # upstream step on every single retry/resume. See resume_workflow_task's docstring comment.
+    from langgraph.types import Command
+
+    record = WorkflowRecord(workflow_id="wf-resume", conversation_id="conv-resume")
+    received_inputs: list[object] = []
+
+    class _Graph:
+        async def astream(self, state, *, config):
+            del config
+            received_inputs.append(state)
+            return
+            yield  # pragma: no cover - makes this an async generator
+
+        async def aget_state(self, config):
+            del config
+            return types.SimpleNamespace(values={})
+
+    async def _fake_persist(current: WorkflowRecord) -> None:
+        del current
+
+    monkeypatch.setattr("app.services.init_arch_workflow.get_checkpointer", AsyncMock(return_value="checkpoint"))
+    monkeypatch.setattr("app.services.init_arch_workflow.compile_graph", lambda **_kwargs: _Graph())
+    monkeypatch.setattr("app.services.init_arch_workflow.persist_workflow_record", _fake_persist)
+
+    await workflow_module.resume_workflow_task(record, {"action": "retry"})
+
+    assert len(received_inputs) == 1
+    assert isinstance(received_inputs[0], Command)
+    assert received_inputs[0].resume == {"action": "retry"}
+
+
+async def test_resume_workflow_task_passes_bare_none_for_continue_without_resume_value(monkeypatch):
+    # Regression: continue_init_arch_workflow() always calls resume_workflow_task(record, None) -
+    # a plain PAUSED -> RUNNING continuation with no pending interrupt() to feed, unlike
+    # retry/resume/answer_question/confirm_temporal_window (real interrupts, non-None resume_value).
+    # Wrapping None in Command(resume=None) hits a real langgraph 1.2.7 bug - an UnboundLocalError
+    # on its internal `resume_is_map` when there is no pending interrupt() on the thread (confirmed
+    # via a real e2e run against Postgres before fixing). The correct stream input for "no interrupt,
+    # just carry on from the last checkpoint" is a bare `None`, not a Command.
+    record = WorkflowRecord(workflow_id="wf-resume-none", conversation_id="conv-resume-none")
+    received_inputs: list[object] = []
+
+    class _Graph:
+        async def astream(self, state, *, config):
+            del config
+            received_inputs.append(state)
+            return
+            yield  # pragma: no cover - makes this an async generator
+
+        async def aget_state(self, config):
+            del config
+            return types.SimpleNamespace(values={})
+
+    async def _fake_persist(current: WorkflowRecord) -> None:
+        del current
+
+    monkeypatch.setattr("app.services.init_arch_workflow.get_checkpointer", AsyncMock(return_value="checkpoint"))
+    monkeypatch.setattr("app.services.init_arch_workflow.compile_graph", lambda **_kwargs: _Graph())
+    monkeypatch.setattr("app.services.init_arch_workflow.persist_workflow_record", _fake_persist)
+
+    await workflow_module.resume_workflow_task(record, None)
+
+    assert received_inputs == [None]
 
 
 async def test_run_workflow_interrupt_persists_pending_question(monkeypatch):
@@ -1742,6 +1853,22 @@ async def test_workflow_response_payload_includes_path_metadata():
     assert payload["arch_repo_dir"] == "/workspace/arch"
 
 
+async def test_workflow_response_payload_includes_token_usage_by_model():
+    record = workflow_module.WorkflowRecord(
+        workflow_id="wf-1",
+        conversation_id="conv-1",
+        token_usage_by_model={"claude-sonnet-4-5": {"input_tokens": 100, "output_tokens": 20}},
+    )
+    payload = workflow_module._workflow_response_payload(record, [])
+    assert payload["token_usage_by_model"] == {"claude-sonnet-4-5": {"input_tokens": 100, "output_tokens": 20}}
+
+
+async def test_workflow_response_payload_defaults_token_usage_to_empty_dict():
+    record = workflow_module.WorkflowRecord(workflow_id="wf-1", conversation_id="conv-1")
+    payload = workflow_module._workflow_response_payload(record, [])
+    assert payload["token_usage_by_model"] == {}
+
+
 def _make_snapshot_yaml(*, current_step: StepId, completed_steps: list[StepId]) -> str:
     from app.workflows.init_arch.snapshot import WorkflowSnapshot, dump_snapshot_yaml
 
@@ -1891,3 +2018,67 @@ async def test_resume_init_arch_workflow_from_snapshot_already_done_marks_succes
 
     assert record.workflow_status == WorkflowStatus.SUCCESS
     create_task_mock.assert_not_called()
+
+
+async def test_get_response_async_refreshes_stale_token_usage_from_db(db_session):
+    # Regression: `_persist_token_usage()` (cli_task_support.py) writes usage straight to the DB
+    # and nothing ever updates the in-memory registry copy, so a running workflow's registry hit
+    # (which normally wins over its DB snapshot) would permanently serve the empty
+    # `token_usage_by_model` it was created with, even after real LLM calls accumulated usage in
+    # `workflow_runs`.
+    from app.db.workflow_repo import increment_workflow_token_usage, upsert_workflow_run
+
+    record = WorkflowRecord(
+        workflow_id="wf-token-refresh",
+        conversation_id="conv-token-refresh",
+        workflow_status=WorkflowStatus.RUNNING,
+    )
+    workflow_module.get_workflow_registry()["wf-token-refresh"] = record
+    await upsert_workflow_run(db_session, record)
+    await increment_workflow_token_usage(
+        db_session, workflow_id="wf-token-refresh", model_name="GLM-5.2", input_tokens=600, output_tokens=80
+    )
+
+    assert record.token_usage_by_model == {}
+
+    payload = await workflow_module.get_response_async("wf-token-refresh")
+
+    assert payload["token_usage_by_model"] == {"GLM-5.2": {"input_tokens": 600, "output_tokens": 80}}
+    assert record.token_usage_by_model == {"GLM-5.2": {"input_tokens": 600, "output_tokens": 80}}
+
+
+async def test_list_conversation_responses_async_refreshes_stale_token_usage_from_db(db_session):
+    from app.db.workflow_repo import increment_workflow_token_usage, upsert_workflow_run
+
+    record = WorkflowRecord(
+        workflow_id="wf-token-refresh-list",
+        conversation_id="conv-token-refresh-list",
+        workflow_status=WorkflowStatus.RUNNING,
+    )
+    workflow_module.get_workflow_registry()["wf-token-refresh-list"] = record
+    await upsert_workflow_run(db_session, record)
+    await increment_workflow_token_usage(
+        db_session,
+        workflow_id="wf-token-refresh-list",
+        model_name="GLM-5.2",
+        input_tokens=10,
+        output_tokens=5,
+    )
+
+    payloads = await workflow_module.list_conversation_responses_async("conv-token-refresh-list")
+
+    assert len(payloads) == 1
+    assert payloads[0]["token_usage_by_model"] == {"GLM-5.2": {"input_tokens": 10, "output_tokens": 5}}
+
+
+async def test_refresh_token_usage_from_db_survives_db_error(monkeypatch):
+    record = WorkflowRecord(workflow_id="wf-token-refresh-error")
+
+    def _broken_get_session():
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr("app.services.init_arch_workflow.get_session", _broken_get_session)
+
+    await workflow_module._refresh_token_usage_from_db(record)
+
+    assert record.token_usage_by_model == {}

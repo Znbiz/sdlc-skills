@@ -4,6 +4,7 @@ import uuid
 import httpx
 from fastapi import status
 
+from app.services.llm_provider_connection_check import LlmProviderConnectionTestResult
 from app.services.llm_providers import (
     LlmProviderConnectionAlreadyExistsError,
     LlmProviderConnectionDetail,
@@ -73,7 +74,7 @@ class TestGetLlmProviderConnection:
 
         assert response.status_code == status.HTTP_200_OK
         assert "sk-super-secret" not in response.text
-        assert response.json()["token"] == "********"
+        assert response.json()["token"] == "********"  # noqa: S105
 
     async def test_returns_404_for_unknown_id(
         self, async_client: httpx.AsyncClient, auth_headers: dict[str, str]
@@ -191,6 +192,54 @@ class TestCreateLlmProviderConnection:
             )
 
         assert response.status_code == status.HTTP_409_CONFLICT
+
+
+class TestTestLlmProviderConnection:
+    async def test_returns_success_result(self, async_client: httpx.AsyncClient, auth_headers: dict[str, str]) -> None:
+        connection_id = uuid.uuid4()
+        with unittest.mock.patch(
+            "app.api.rest.llm_providers.check_llm_provider_connection_async",
+            new=unittest.mock.AsyncMock(
+                return_value=LlmProviderConnectionTestResult(
+                    success=True, status_code=200, message="Подключение работает"
+                )
+            ),
+        ):
+            response = await async_client.post(f"/api/rest/llm-providers/{connection_id}/test/", headers=auth_headers)
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json() == {"success": True, "status_code": 200, "message": "Подключение работает"}
+
+    async def test_returns_failure_result_without_error_status(
+        self, async_client: httpx.AsyncClient, auth_headers: dict[str, str]
+    ) -> None:
+        connection_id = uuid.uuid4()
+        with unittest.mock.patch(
+            "app.api.rest.llm_providers.check_llm_provider_connection_async",
+            new=unittest.mock.AsyncMock(
+                return_value=LlmProviderConnectionTestResult(success=False, status_code=401, message="invalid api key")
+            ),
+        ):
+            response = await async_client.post(f"/api/rest/llm-providers/{connection_id}/test/", headers=auth_headers)
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json() == {"success": False, "status_code": 401, "message": "invalid api key"}
+
+    async def test_returns_404_for_unknown_id(
+        self, async_client: httpx.AsyncClient, auth_headers: dict[str, str]
+    ) -> None:
+        connection_id = uuid.uuid4()
+        with unittest.mock.patch(
+            "app.api.rest.llm_providers.check_llm_provider_connection_async",
+            new=unittest.mock.AsyncMock(side_effect=LlmProviderConnectionNotFoundError(connection_id)),
+        ):
+            response = await async_client.post(f"/api/rest/llm-providers/{connection_id}/test/", headers=auth_headers)
+
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+
+    async def test_requires_auth(self, async_client: httpx.AsyncClient) -> None:
+        response = await async_client.post(f"/api/rest/llm-providers/{uuid.uuid4()}/test/")
+        assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
 
 class TestDeleteLlmProviderConnection:

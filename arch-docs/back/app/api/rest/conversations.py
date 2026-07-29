@@ -54,6 +54,9 @@ class RepositoryStatusResponse(pydantic.BaseModel, frozen=True):
     analysis_target_commit_date: str | None = None
     analysis_status: str
     commit_range_status: str
+    checklist_items_completed: list[str] = pydantic.Field(default_factory=list)
+    checklist_items_routed: list[str] = pydantic.Field(default_factory=list)
+    current_checklist_item_id: str | None = None
 
 
 class ResponseStatusResponse(pydantic.BaseModel, frozen=True):
@@ -66,8 +69,12 @@ class ResponseStatusResponse(pydantic.BaseModel, frozen=True):
     workspace_dir: str
     arch_repo_dir: str
     completed_steps: list[str]
+    token_usage_by_model: dict[str, dict[str, int]] = pydantic.Field(default_factory=dict)
     required_actions: list[RequiredActionResponse]
     repositories: list[RepositoryStatusResponse] = pydantic.Field(default_factory=list)
+    analysis_window_start: str | None = None
+    analysis_window_end: str | None = None
+    analysis_window_index: int = 0
     repository_list_editable: bool = False
     created_at: str
     updated_at: str
@@ -168,10 +175,14 @@ def _response_model(payload: dict[str, typing.Any]) -> ResponseStatusResponse:
         workspace_dir=payload["workspace_dir"],
         arch_repo_dir=payload["arch_repo_dir"],
         completed_steps=list(payload["completed_steps"]),
+        token_usage_by_model=payload.get("token_usage_by_model", {}),
         required_actions=[RequiredActionResponse.model_validate(action) for action in payload["required_actions"]],
         repositories=[
             RepositoryStatusResponse.model_validate(repository) for repository in payload.get("repositories", [])
         ],
+        analysis_window_start=payload.get("analysis_window_start"),
+        analysis_window_end=payload.get("analysis_window_end"),
+        analysis_window_index=payload.get("analysis_window_index", 0),
         repository_list_editable=bool(payload.get("repository_list_editable", False)),
         created_at=payload["created_at"],
         updated_at=payload["updated_at"],

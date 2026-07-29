@@ -15,11 +15,29 @@
 
 .item {
   display: flex;
-  align-items: center;
-  gap: 0.6rem;
+  flex-direction: column;
+  gap: 0.3rem;
   padding: 0.4rem 0.6rem;
   background: var(--color-surface-muted);
   border-radius: 6px;
+}
+
+.itemRow {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.testResultOk {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--color-success-text);
+}
+
+.testResultFailed {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--color-danger-text);
 }
 
 .name {
@@ -72,7 +90,8 @@
   color: var(--color-text-muted);
 }
 
-.form input {
+.form input,
+.form select {
   font: inherit;
   padding: 0.4rem 0.6rem;
   border-radius: 6px;

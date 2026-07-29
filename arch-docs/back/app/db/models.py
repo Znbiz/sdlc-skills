@@ -37,6 +37,9 @@ class CliTaskModel(Base):
     stdout_output: orm.Mapped[str | None] = orm.mapped_column(sa.Text, nullable=True)
     stderr_output: orm.Mapped[str | None] = orm.mapped_column(sa.Text, nullable=True)
     exit_code: orm.Mapped[int | None] = orm.mapped_column(sa.Integer, nullable=True)
+    model_name: orm.Mapped[str | None] = orm.mapped_column(sa.Text, nullable=True)
+    input_tokens: orm.Mapped[int] = orm.mapped_column(sa.Integer, nullable=False, default=0)
+    output_tokens: orm.Mapped[int] = orm.mapped_column(sa.Integer, nullable=False, default=0)
     created_at: orm.Mapped[datetime.datetime] = orm.mapped_column(
         sa.DateTime(timezone=True),
         nullable=False,
@@ -80,6 +83,7 @@ class WorkflowRunModel(Base):
     workspace_dir: orm.Mapped[str] = orm.mapped_column(sa.Text, nullable=False, default="")
     arch_repo_dir: orm.Mapped[str] = orm.mapped_column(sa.Text, nullable=False, default="")
     completed_steps: orm.Mapped[list[str]] = orm.mapped_column(sa.JSON, nullable=False, default=list)
+    token_usage_by_model: orm.Mapped[dict] = orm.mapped_column(sa.JSON, nullable=False, default=dict)
     session_payload: orm.Mapped[dict | None] = orm.mapped_column(sa.JSON, nullable=True)
     pending_interrupt_payload: orm.Mapped[dict | None] = orm.mapped_column(sa.JSON, nullable=True)
     last_cli_output_snippet: orm.Mapped[str] = orm.mapped_column(sa.Text, nullable=False, default="")

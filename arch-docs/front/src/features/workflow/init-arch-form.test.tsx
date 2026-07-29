@@ -279,4 +279,57 @@ describe("InitArchForm", () => {
       }),
     );
   });
+
+  it("блокирует сабмит с LangGraph-агентом без выбранного подключения", async () => {
+    server.use(mockLlmProviderConnections([]));
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    render(
+      <InitArchForm
+        isSubmitting={false}
+        onSubmit={onSubmit}
+        defaultWorkspaceDir="/workspace/conv-1"
+        productName="TestProduct"
+        repositoryNames={["svc-a"]}
+      />,
+    );
+
+    await user.selectOptions(screen.getByLabelText("Движок"), "langgraph");
+    expect(await screen.findByText("Нет настроенных подключений — добавьте их в Setup перед запуском.")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Запустить init_arch" }));
+
+    expect(
+      await screen.findByText("Выберите подключение к внешней LLM (или настройте его в Setup)."),
+    ).toBeInTheDocument();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("отправляет engine_name='langgraph' и provider_connection_id при выборе LangGraph-агента", async () => {
+    server.use(mockLlmProviderConnections([{ connection_id: "conn-2", name: "glm", model: "glm-5.2" }]));
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    render(
+      <InitArchForm
+        isSubmitting={false}
+        onSubmit={onSubmit}
+        defaultWorkspaceDir="/workspace/conv-1"
+        productName="TestProduct"
+        repositoryNames={["svc-a"]}
+      />,
+    );
+
+    await user.selectOptions(screen.getByLabelText("Движок"), "langgraph");
+    await screen.findByText("glm (glm-5.2)");
+    await user.selectOptions(screen.getByLabelText("Подключение к внешней LLM"), "conn-2");
+
+    await user.click(screen.getByRole("button", { name: "Запустить init_arch" }));
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        engine_name: "langgraph",
+        provider_connection_id: "conn-2",
+      }),
+    );
+  });
 });

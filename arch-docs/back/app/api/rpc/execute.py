@@ -8,7 +8,7 @@ from fastapi import status
 
 from app.services.agent_pool import get_agent_pool
 from app.services.task_registry import CliTask, TaskStatus, get_registry
-from app.services.task_runner import run_cli_task
+from app.services.task_runner import execute_engine_task
 
 router = fastapi.APIRouter()
 logger = structlog.get_logger()
@@ -30,15 +30,18 @@ class ExecuteRequest(pydantic.BaseModel, frozen=True):
     @pydantic.field_validator("engine")
     @classmethod
     def validate_engine(cls, engine_value: str) -> str:
-        if engine_value not in ("claude", "codex"):
-            msg = "engine must be 'claude' or 'codex'"
+        if engine_value not in ("claude", "codex", "langgraph"):
+            msg = "engine must be 'claude', 'codex' or 'langgraph'"
             raise ValueError(msg)
         return engine_value
 
     @pydantic.model_validator(mode="after")
     def validate_provider_connection_requires_codex(self) -> "ExecuteRequest":
-        if self.provider_connection_id is not None and self.engine != "codex":
-            msg = "provider_connection_id is only supported with engine='codex'"
+        if self.provider_connection_id is not None and self.engine not in ("codex", "langgraph"):
+            msg = "provider_connection_id is only supported with engine='codex' or 'langgraph'"
+            raise ValueError(msg)
+        if self.provider_connection_id is None and self.engine == "langgraph":
+            msg = "provider_connection_id is required for engine='langgraph'"
             raise ValueError(msg)
         return self
 
@@ -66,7 +69,7 @@ async def execute(request: ExecuteRequest) -> ExecuteResponse:
     registry[cli_task.task_id] = cli_task
 
     agent_pool = get_agent_pool()
-    task = asyncio.create_task(run_cli_task(cli_task, agent_pool))
+    task = asyncio.create_task(execute_engine_task(cli_task, agent_pool))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
 

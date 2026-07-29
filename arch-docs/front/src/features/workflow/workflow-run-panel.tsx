@@ -2,11 +2,13 @@ import { useCallback, useEffect, useReducer, useState } from "react";
 import { Button } from "../../shared/ui/button";
 import { Card } from "../../shared/ui/card";
 import { ErrorBanner } from "../../shared/ui/error-banner";
+import { Modal } from "../../shared/ui/modal";
 import { Spinner } from "../../shared/ui/spinner";
 import { StatusBadge } from "../../shared/ui/status-badge";
 import { ApiError } from "../../shared/api/http-client";
 import { useEventSource } from "../../shared/sse/use-event-source";
 import { workflowApi } from "../../shared/api/endpoints";
+import type { TokenUsage } from "../../shared/api/models";
 import { toneFromResponseStatus, responseStatusLabel } from "../../shared/status/status-mapping";
 import { formatDateTime } from "../../shared/format/format";
 import {
@@ -17,7 +19,8 @@ import {
   useResponseItems,
   useSubmitResponseAction,
 } from "./hooks";
-import { INITIAL_STREAM_STATE, reduceStreamEvent } from "./stream-events";
+import { INITIAL_STREAM_STATE, reduceStreamEvent, type TokenUsageEntry } from "./stream-events";
+import { resolveActiveGraphNodeId, WorkflowGraphView } from "./workflow-graph";
 import { Timeline } from "./timeline";
 import { RequiredActionCard } from "./required-action-card";
 import { QueuedQuestionsCard } from "./queued-questions-card";
@@ -27,6 +30,68 @@ import { INIT_ARCH_WORKFLOW_TYPE, WORKFLOW_TYPE_OPTIONS } from "./workflow-types
 import styles from "./workflow-run-panel.module.css";
 
 const ACTIVE_STATUSES = new Set(["running", "paused", "interrupted"]);
+
+export function restTokenUsageToView(usage: Record<string, TokenUsage>): Record<string, TokenUsageEntry> {
+  const view: Record<string, TokenUsageEntry> = {};
+  for (const [modelName, tokens] of Object.entries(usage)) {
+    view[modelName] = { inputTokens: tokens.input_tokens, outputTokens: tokens.output_tokens };
+  }
+  return view;
+}
+
+// Tokens only ever increase within a run, so a per-model max is a safe way to combine the two
+// independent sources: the SSE stream (updates fast but can miss an event across a reconnect gap,
+// since the live bus doesn't replay history - see _stream_live_workflow_events) and the REST poll
+// (always correct since the backend persists usage before publishing the SSE event, but only
+// refetches every 4s). Preferring one source outright risks getting stuck on stale stream data
+// after a missed reconnect event.
+export function mergeTokenUsage(
+  a: Record<string, TokenUsageEntry>,
+  b: Record<string, TokenUsageEntry>,
+): Record<string, TokenUsageEntry> {
+  const merged: Record<string, TokenUsageEntry> = {};
+  for (const modelName of new Set([...Object.keys(a), ...Object.keys(b)])) {
+    merged[modelName] = {
+      inputTokens: Math.max(a[modelName]?.inputTokens ?? 0, b[modelName]?.inputTokens ?? 0),
+      outputTokens: Math.max(a[modelName]?.outputTokens ?? 0, b[modelName]?.outputTokens ?? 0),
+    };
+  }
+  return merged;
+}
+
+export function TokenUsageStatsCard({ tokenUsageByModel }: { tokenUsageByModel: Record<string, TokenUsageEntry> }) {
+  const modelNames = Object.keys(tokenUsageByModel).sort();
+
+  return (
+    <Card title="Статистика">
+      {modelNames.length === 0 ? (
+        <p className={styles.empty}>Данных о расходе токенов пока нет.</p>
+      ) : (
+        <table className={styles.tokenUsageTable}>
+          <thead>
+            <tr>
+              <th>Модель</th>
+              <th>Input</th>
+              <th>Output</th>
+            </tr>
+          </thead>
+          <tbody>
+            {modelNames.map((modelName) => {
+              const usage = tokenUsageByModel[modelName];
+              return (
+                <tr key={modelName}>
+                  <td>{modelName}</td>
+                  <td>{usage.inputTokens.toLocaleString("ru-RU")}</td>
+                  <td>{usage.outputTokens.toLocaleString("ru-RU")}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+    </Card>
+  );
+}
 
 export function WorkflowRunPanel({
   conversationId,
@@ -133,6 +198,7 @@ export function WorkflowRunPanel({
 
       {selectedResponseId && (
         <SelectedRunPanel
+          key={selectedResponseId}
           conversationId={conversationId}
           responseId={selectedResponseId}
           isLive={isLiveSelection}
@@ -158,6 +224,7 @@ function SelectedRunPanel({
   const items = useResponseItems(responseId);
   const submitAction = useSubmitResponseAction(conversationId);
   const [showRestartConfirm, setShowRestartConfirm] = useState(false);
+  const [showGraph, setShowGraph] = useState(false);
   const [streamState, dispatch] = useReducer(reduceStreamEvent, INITIAL_STREAM_STATE);
 
   const activeResponse = response.data ?? null;
@@ -199,8 +266,21 @@ function SelectedRunPanel({
   );
   const actionableActions = activeResponse.required_actions.filter((action) => !queuedQuestions.includes(action));
 
-  return (
+  const tokenUsageByModel = mergeTokenUsage(
+    restTokenUsageToView(activeResponse.token_usage_by_model),
+    streamState.tokenUsageByModel,
+  );
+
+  const activeGraphNodeId = resolveActiveGraphNodeId({
+    hasStepFailedAction: activeResponse.required_actions.some((action) => action.action_type === "step_failed"),
+    responseStatus: activeResponse.response_status,
+    currentStepId: (isStreamable && streamState.currentStepId) || activeResponse.current_step_id,
+  });
+
+  const runContent = (
     <>
+      <TokenUsageStatsCard tokenUsageByModel={tokenUsageByModel} />
+
       <Card title="Текущий статус">
         <div className={styles.statusRow}>
           <StatusBadge
@@ -223,6 +303,9 @@ function SelectedRunPanel({
           )}
           <Button variant="danger" disabled={submitAction.isPending} onClick={() => setShowRestartConfirm(true)}>
             Начать анализ заново
+          </Button>
+          <Button variant="secondary" onClick={() => setShowGraph(true)}>
+            Показать граф
           </Button>
         </div>
         {submitAction.isError && <ErrorBanner error={submitAction.error} />}
@@ -319,6 +402,24 @@ function SelectedRunPanel({
         {items.isError && <ErrorBanner error={items.error} onRetry={() => items.refetch()} />}
         {items.data && <Timeline items={items.data.items} />}
       </Card>
+    </>
+  );
+
+  return (
+    <>
+      {runContent}
+      {showGraph && (
+        <Modal title="Граф workflow" dialogClassName={styles.graphModalDialog} onClose={() => setShowGraph(false)}>
+          <WorkflowGraphView
+            activeNodeId={activeGraphNodeId}
+            repositories={activeResponse.repositories}
+            analysisWindowStart={activeResponse.analysis_window_start}
+            analysisWindowEnd={activeResponse.analysis_window_end}
+            analysisWindowIndex={activeResponse.analysis_window_index}
+          />
+          <div className={styles.graphModalBlocks}>{runContent}</div>
+        </Modal>
+      )}
     </>
   );
 }

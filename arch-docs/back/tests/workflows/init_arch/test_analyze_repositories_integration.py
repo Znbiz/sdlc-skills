@@ -1,10 +1,12 @@
-"""End-to-end coverage for the per-item `analyze_repositories`/`analyze_repositories_item` graph topology.
+"""End-to-end coverage for the `analyze_repositories`/`analyze_repositories_item` graph topology.
 
 Runs the *real* compiled LangGraph (`compile_graph()` + `MemorySaver`), mocking only the external LLM CLI
 call (`LlmWorkerService.run_task`). Everything else — guard/domain operations, checkpoint persistence — is
 real, so these tests prove the actual graph-level behavior described in
-docs/spec/2026-07-21-analyze-repositories-per-item-nodes.md: one LLM call per graph node, a per-item
-checkpoint after every node, and no repeated LLM work after a simulated crash-and-resume.
+docs/spec/2026-07-26-analyze-repositories-merge-checklist-items.md (superseding
+docs/spec/2026-07-21-analyze-repositories-per-item-nodes.md): one LLM call per *repository* (covering every
+routed checklist item in that one call), a per-repository checkpoint, and no repeated LLM work after a
+simulated crash-and-resume - at repository granularity, not item granularity.
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -52,6 +54,12 @@ def _make_llm_service() -> MagicMock:
             task_kind=LlmTaskKind.REPOSITORY_CHECKLIST_ITEM,
             step_id=StepId.ANALYZE_REPOSITORIES,
             notes=f"processed {request.repository_name}",
+            # Every seeded repository has default (NOT_STARTED) commit_range_status -> FULL_REQUIRED
+            # severity -> all of _CHECKLIST_ITEMS routed together in the one merged call per repository.
+            # Reporting all of them back models an agent that genuinely addressed everything it was
+            # asked for in that single call - the honest-completion contract itself (partial/zero
+            # completion) is covered separately in test_nodes.py.
+            completed_checklist_items=list(_CHECKLIST_ITEMS),
         )
     )
     return llm_service
@@ -74,8 +82,8 @@ def _two_repository_session() -> WorkflowSessionRecord:
     )
 
 
-async def test_analyze_repositories_checkpoints_after_every_single_item() -> None:
-    """Per-item LLM call, and the checkpoint after each one already reflects that single item."""
+async def test_analyze_repositories_checkpoints_after_every_repository() -> None:
+    """One merged LLM call per repository, and its checkpoint reflects all of that repo's items at once."""
     session = _two_repository_session()
     checkpointer = MemorySaver()
     config = {"configurable": {"thread_id": session.session_id}}
@@ -105,22 +113,28 @@ async def test_analyze_repositories_checkpoints_after_every_single_item() -> Non
             if final_session.current_step is StepId.INTERVIEW_USER:
                 break
 
-    # 3 items x 2 repos = 6 LLM calls, one per graph node — not one call for the whole step.
-    assert llm_service.run_task.await_count == 6
+    # 1 merged call x 2 repos = 2 LLM calls total — not one per checklist item.
+    assert llm_service.run_task.await_count == 2
     assert final_session.current_step is StepId.INTERVIEW_USER
     for repository in final_session.repositories:
         assert repository.analysis_status == "completed"
         assert set(repository.checklist_items_completed) == set(_CHECKLIST_ITEMS)
 
-    # svc-a is processed before svc-b (repository order), so the first 3 `analyze_repositories_item`
-    # checkpoints are svc-a's own — its checklist must grow 1, 2, 3, one item at a time, proving the
-    # checkpoint after each node already carries that single item's progress, not just the whole step's
-    # progress once it's fully done.
-    assert item_node_checklist_lengths[:3] == [1, 2, 3]
+    # svc-a's own `analyze_repositories_item` checkpoint (there's exactly one, since it's a single merged
+    # call) already carries all 3 of its items at once, not 1/2/3 building up across three separate calls —
+    # the accepted trade-off from the per-item design (2026-07-21) this change reverses.
+    assert item_node_checklist_lengths[:1] == [3]
 
 
-async def test_analyze_repositories_resume_after_crash_does_not_repeat_completed_items() -> None:
-    """Stopping mid-stream (simulated crash) and resuming from the same checkpoint must not redo LLM work."""
+async def test_analyze_repositories_resume_after_crash_does_not_repeat_completed_repository() -> None:
+    """Stopping mid-stream (simulated crash) and resuming from the same checkpoint must not redo LLM work.
+
+    Granularity is now per-repository, not per-item (accepted trade-off, see
+    2026-07-26-analyze-repositories-merge-checklist-items.md): a crash after svc-a's one merged call has
+    checkpointed must not resend svc-a to the LLM on resume, but a crash *during* svc-a's call (not
+    modeled here - the mocked LLM call is a single atomic await) would redo svc-a's whole checklist, not
+    just its remaining items.
+    """
     session = _two_repository_session()
     checkpointer = MemorySaver()
     config = {"configurable": {"thread_id": session.session_id}}
@@ -133,22 +147,21 @@ async def test_analyze_repositories_resume_after_crash_does_not_repeat_completed
         graph = compile_graph(checkpointer=checkpointer)
         await graph.aupdate_state(config, dict(_seed_state(session)), as_node="assess_scope_and_domains")
 
-        # Simulate a process crash: stop consuming the stream after 2 of svc-a's 3 items have gone through
-        # their own `analyze_repositories_item` node (and therefore their own checkpoint) — deliberately mid
-        # repository, not at a clean repo boundary.
+        # Simulate a process crash: stop consuming the stream right after svc-a's one merged
+        # `analyze_repositories_item` call has gone through (and therefore been checkpointed).
         processed_item_nodes = 0
         async for event in graph.astream(None, config=config):
             if "analyze_repositories_item" in event:
                 processed_item_nodes += 1
-            if processed_item_nodes == 2:
+            if processed_item_nodes == 1:
                 break
 
-        assert llm_service.run_task.await_count == 2
+        assert llm_service.run_task.await_count == 1
         mid_crash_state = await graph.aget_state(config)
         svc_a_after_crash = next(
             repo for repo in mid_crash_state.values["session"].repositories if repo.repository_name == "svc-a"
         )
-        assert len(svc_a_after_crash.checklist_items_completed) == 2
+        assert set(svc_a_after_crash.checklist_items_completed) == set(_CHECKLIST_ITEMS)
 
         # "Restart": a fresh call into the same checkpointer/thread_id, exactly like a new process picking up
         # `run_workflow()` after a crash (see `_drive_graph_stream`/`run_workflow` in init_arch_workflow.py).
@@ -162,11 +175,11 @@ async def test_analyze_repositories_resume_after_crash_does_not_repeat_completed
             if final_session.current_step is StepId.INTERVIEW_USER:
                 break
 
-    # Exactly 6 total LLM calls across both runs (2 before the simulated crash + 4 after) — the 2 items
-    # already completed before the crash are not re-sent to the LLM.
-    assert llm_service.run_task.await_count == 6
+    # Exactly 2 total LLM calls across both runs (1 before the simulated crash + 1 after) — svc-a, already
+    # completed before the crash, is not re-sent to the LLM.
+    assert llm_service.run_task.await_count == 2
     repository_names_per_call = [call.args[0].repository_name for call in llm_service.run_task.await_args_list]
-    assert repository_names_per_call == ["svc-a", "svc-a", "svc-a", "svc-b", "svc-b", "svc-b"]
+    assert repository_names_per_call == ["svc-a", "svc-b"]
     for repository in final_session.repositories:
         assert repository.analysis_status == "completed"
         assert set(repository.checklist_items_completed) == set(_CHECKLIST_ITEMS)

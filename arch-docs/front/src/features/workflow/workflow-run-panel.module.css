@@ -97,3 +97,32 @@
 .actor-user {
   border-left-color: var(--color-warning-text, #d97706);
 }
+
+.tokenUsageTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.tokenUsageTable th,
+.tokenUsageTable td {
+  text-align: left;
+  padding: 0.3rem 0.6rem 0.3rem 0;
+  border-bottom: 1px solid var(--color-border, #e5e7eb);
+}
+
+.tokenUsageTable th {
+  color: var(--color-text-muted);
+  font-weight: 500;
+}
+
+.graphModalDialog {
+  max-width: 66vw;
+  width: 66vw;
+}
+
+.graphModalBlocks {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}

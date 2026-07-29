@@ -24,6 +24,7 @@ class CliTask:
     prompt_text: str
     provider_connection_id: str | None = None
     workspace_dir: str
+    extra_allowed_roots: list[str] = dataclasses.field(default_factory=list)
     conversation_id: str | None = None
     response_type: str | None = None
     workflow_id: str | None = None
@@ -36,9 +37,13 @@ class CliTask:
     timeout_seconds: int = 300
     task_status: TaskStatus = TaskStatus.PENDING
     subprocess_handle: asyncio.subprocess.Process | None = None
+    async_task_handle: asyncio.Task | None = None
     stdout_lines: list[str] = dataclasses.field(default_factory=list)
     stderr_lines: list[str] = dataclasses.field(default_factory=list)
     exit_code: int | None = None
+    model_name: str | None = None
+    input_tokens: int = 0
+    output_tokens: int = 0
     task_result: str | None = None
     task_error: str | None = None
     created_at: datetime.datetime = dataclasses.field(

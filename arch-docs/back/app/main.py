@@ -9,7 +9,7 @@ from app.api import setup_routers
 from app.container import AppContainer
 from app.db.session import get_session, init_engine
 from app.db.task_repo import mark_running_tasks_failed
-from app.db.workflow_repo import mark_running_workflows_failed
+from app.db.workflow_repo import mark_running_workflows_paused
 from app.mcp_server import mcp_server
 from app.middleware.bearer_auth import BearerAuthMiddleware
 from app.services.agent_pool import init_agent_pool
@@ -26,12 +26,12 @@ async def _init_db(database_url: str) -> None:
     async with get_session() as session:
         failed_tasks_count: int = await mark_running_tasks_failed(session)
     async with get_session() as session:
-        failed_workflows_count: int = await mark_running_workflows_failed(session)
+        paused_workflows_count: int = await mark_running_workflows_paused(session)
     set_db_enabled(True)
     logger.info(
         "ai_cli_gateway.db_connected",
         failed_tasks_reset=failed_tasks_count,
-        failed_workflows_reset=failed_workflows_count,
+        paused_workflows_reset=paused_workflows_count,
     )
 
 

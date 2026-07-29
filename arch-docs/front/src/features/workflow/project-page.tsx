@@ -21,8 +21,9 @@ export function ProjectPage() {
 
   const activePath = searchParams.get("path");
   const selectedResponseId = searchParams.get("run");
+  const isWorkflowRunning = conversation.data?.active_response?.response_status === "running";
 
-  const file = useConversationWorkspaceFile(conversationId, activePath ?? undefined);
+  const file = useConversationWorkspaceFile(conversationId, activePath ?? undefined, isWorkflowRunning);
   const selectedResponse = useResponse(selectedResponseId ?? undefined);
 
   if (!conversationId) return <ErrorBanner error={new Error("conversationId не указан")} />;
@@ -72,6 +73,7 @@ export function ProjectPage() {
             <ProjectWorkspaceTree
               conversationId={conversationId}
               activePath={activePath}
+              isRunning={isWorkflowRunning}
               onSelect={selectPath}
               onDeleted={handlePathDeleted}
             />

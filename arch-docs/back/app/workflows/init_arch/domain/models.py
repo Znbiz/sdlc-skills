@@ -200,6 +200,7 @@ class LlmTaskRequest(pydantic.BaseModel):
     step_id: StepId
     prompt_text: str
     workspace_dir: str
+    extra_allowed_roots: list[str] = pydantic.Field(default_factory=list)
     timeout_seconds: int
     expected_schema_name: str
     repository_name: str = ""
@@ -212,6 +213,11 @@ class LlmTaskResult(pydantic.BaseModel):
     completed_actions: list[str] = pydantic.Field(default_factory=list)
     created_artifacts: list[str] = pydantic.Field(default_factory=list)
     open_questions_found: list[str] = pydantic.Field(default_factory=list)
+    # Only meaningful when a single call covers several checklist items at once (analyze_repositories'
+    # merged-item call, see node_analyze_repositories_item) - the model self-reports which item IDs it
+    # actually addressed, so the caller marks *only those* complete instead of trusting that a call
+    # covering N items necessarily finished all N. Empty for every other task kind/step.
+    completed_checklist_items: list[str] = pydantic.Field(default_factory=list)
     diff_based_findings: list[str] = pydantic.Field(default_factory=list)
     snapshot_based_findings: list[str] = pydantic.Field(default_factory=list)
     domain_assessment: RepositoryDomainAssessment | None = None

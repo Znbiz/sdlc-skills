@@ -86,6 +86,57 @@ def test_build_step_prompt_analyze_repositories_uses_checklist_item(tmp_path):
     assert "CLASSIFICATION REFERENCE" in result
 
 
+def test_build_step_prompt_analyze_repositories_merges_multiple_checklist_items(tmp_path):
+    references_dir = tmp_path / "init_arch" / "references"
+    references_dir.mkdir(parents=True)
+    (references_dir / "checklist-repository-classification.md").write_text("CLASSIFICATION REFERENCE")
+    (references_dir / "checklist-tech-stack.md").write_text("TECH STACK REFERENCE")
+    (tmp_path / "init_arch" / "SKILL.md").write_text("SKILL")
+
+    with patch.object(
+        prompts_module, "get_workflow_asset_loader", return_value=WorkflowAssetLoader(tmp_path), create=True
+    ):
+        result = build_step_prompt(
+            "analyze_repositories",
+            _make_state(),
+            checklist_item_ids=["repository_classification", "tech_stack_collection"],
+        )
+
+    assert "CLASSIFICATION REFERENCE" in result
+    assert "TECH STACK REFERENCE" in result
+    assert "completed_checklist_items" in result
+    assert "обработай КАЖДЫЙ из них" in result
+
+
+def test_build_step_prompt_uses_explicit_repository_name_over_in_progress_scan():
+    # Regression: node_assess_scope_and_domains processes every repository in one Python loop inside a
+    # single physical graph node, calling start_repository() (sets analysis_status="in_progress") for
+    # each one in turn without ever demoting the previous repo back off "in_progress" (that only
+    # happens later, in analyze_repositories's complete_repository()). By the second repository in the
+    # loop, *two* repos are simultaneously "in_progress", and the old `next(repo for repo in ... if
+    # analysis_status == "in_progress")` scan always returned the *first* one ever set - every call
+    # after the first got prompted with the wrong repository's context (confirmed on a real run: the
+    # LLM's response for repo "back-server" was actually analyzing "mobile-app", because the prompt's
+    # own "Текущий репозиторий" line said so). Passing repository_name explicitly bypasses the
+    # ambiguous status scan entirely.
+    session = WorkflowSessionRecord(
+        session_id="wf-1",
+        product_name="MyProduct",
+        analysis_scope="full",
+        repositories=[
+            RepositoryExecution(repository_name="mobile-app", analysis_status="in_progress"),
+            RepositoryExecution(repository_name="back-server", analysis_status="in_progress"),
+        ],
+    )
+    state = _make_state(session=session)
+
+    with patch.object(prompts_module, "_load_skill_md", return_value="SKILL"):
+        result = build_step_prompt("assess_scope_and_domains", state, repository_name="back-server")
+
+    assert "Текущий репозиторий: back-server" in result
+    assert "Текущий репозиторий: mobile-app" not in result
+
+
 def test_build_step_prompt_no_reference_fallback():
     with patch.object(prompts_module, "_load_skill_md", return_value="SKILL"):
         result = build_step_prompt("define_scope", _make_state())

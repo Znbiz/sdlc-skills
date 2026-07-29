@@ -4,11 +4,13 @@ import { Card } from "../../shared/ui/card";
 import { ErrorBanner } from "../../shared/ui/error-banner";
 import { Modal } from "../../shared/ui/modal";
 import { Spinner } from "../../shared/ui/spinner";
+import type { LlmProviderConnectionSummaryResponse, LlmProviderConnectionTestResponse } from "../../shared/api/models";
 import {
   useCreateLlmProviderConnection,
   useDeleteLlmProviderConnection,
   useLlmProviderConnection,
   useLlmProviderConnections,
+  useTestLlmProviderConnection,
   useUpdateLlmProviderConnection,
 } from "./hooks";
 import styles from "./llm-providers-card.module.css";
@@ -17,7 +19,6 @@ type ModalState = { mode: "create" } | { mode: "edit"; connectionId: string; nam
 
 export function LlmProvidersCard() {
   const connections = useLlmProviderConnections();
-  const deleteConnection = useDeleteLlmProviderConnection();
   const [modalState, setModalState] = useState<ModalState | null>(null);
 
   return (
@@ -29,36 +30,14 @@ export function LlmProvidersCard() {
         <ul className={styles.list}>
           {connections.data.length === 0 && <li className={styles.empty}>Пока нет подключённых внешних LLM</li>}
           {connections.data.map((connection) => (
-            <li key={connection.connection_id} className={styles.item}>
-              <span className={styles.name}>{connection.name}</span>
-              <span className={styles.model}>{connection.model}</span>
-              <div className={styles.itemActions}>
-                <button
-                  type="button"
-                  className={styles.iconButton}
-                  aria-label={`Редактировать ${connection.name}`}
-                  onClick={() =>
-                    setModalState({ mode: "edit", connectionId: connection.connection_id, name: connection.name })
-                  }
-                >
-                  ✎
-                </button>
-                <button
-                  type="button"
-                  className={styles.iconButton}
-                  aria-label={`Удалить ${connection.name}`}
-                  disabled={deleteConnection.isPending}
-                  onClick={() => deleteConnection.mutate(connection.connection_id)}
-                >
-                  ×
-                </button>
-              </div>
-            </li>
+            <LlmProviderConnectionRow
+              key={connection.connection_id}
+              connection={connection}
+              onEdit={() => setModalState({ mode: "edit", connectionId: connection.connection_id, name: connection.name })}
+            />
           ))}
         </ul>
       )}
-
-      {deleteConnection.isError && <ErrorBanner error={deleteConnection.error} onRetry={() => {}} />}
 
       <Button variant="primary" onClick={() => setModalState({ mode: "create" })}>
         Новое подключение
@@ -66,6 +45,61 @@ export function LlmProvidersCard() {
 
       {modalState && <LlmProviderConnectionModal state={modalState} onClose={() => setModalState(null)} />}
     </Card>
+  );
+}
+
+function LlmProviderConnectionRow({
+  connection,
+  onEdit,
+}: {
+  connection: LlmProviderConnectionSummaryResponse;
+  onEdit: () => void;
+}) {
+  const deleteConnection = useDeleteLlmProviderConnection();
+  const testConnection = useTestLlmProviderConnection();
+  const [testResult, setTestResult] = useState<LlmProviderConnectionTestResponse | null>(null);
+
+  return (
+    <li className={styles.item}>
+      <div className={styles.itemRow}>
+        <span className={styles.name}>{connection.name}</span>
+        <span className={styles.model}>{connection.model}</span>
+        <div className={styles.itemActions}>
+          <button
+            type="button"
+            className={styles.iconButton}
+            disabled={testConnection.isPending}
+            onClick={() => {
+              setTestResult(null);
+              testConnection.mutate(connection.connection_id, { onSuccess: setTestResult });
+            }}
+          >
+            {testConnection.isPending ? "Проверка…" : "Проверить"}
+          </button>
+          <button type="button" className={styles.iconButton} aria-label={`Редактировать ${connection.name}`} onClick={onEdit}>
+            ✎
+          </button>
+          <button
+            type="button"
+            className={styles.iconButton}
+            aria-label={`Удалить ${connection.name}`}
+            disabled={deleteConnection.isPending}
+            onClick={() => deleteConnection.mutate(connection.connection_id)}
+          >
+            ×
+          </button>
+        </div>
+      </div>
+
+      {testConnection.isError && <ErrorBanner error={testConnection.error} onRetry={() => {}} />}
+      {deleteConnection.isError && <ErrorBanner error={deleteConnection.error} onRetry={() => {}} />}
+      {testResult && (
+        <p className={testResult.success ? styles.testResultOk : styles.testResultFailed}>
+          {testResult.success ? "✓ " : "✗ "}
+          {testResult.message}
+        </p>
+      )}
+    </li>
   );
 }
 
@@ -80,6 +114,7 @@ function LlmProviderConnectionModal({ state, onClose }: { state: ModalState; onC
   const [baseUrl, setBaseUrl] = useState("");
   const [model, setModel] = useState("");
   const [token, setToken] = useState("");
+  const [wireApi, setWireApi] = useState<"chat" | "responses">("responses");
   const [prefilled, setPrefilled] = useState(!isEdit);
 
   useEffect(() => {
@@ -87,6 +122,7 @@ function LlmProviderConnectionModal({ state, onClose }: { state: ModalState; onC
       setName(detail.data.name);
       setBaseUrl(detail.data.base_url);
       setModel(detail.data.model);
+      setWireApi(detail.data.wire_api === "chat" ? "chat" : "responses");
       setPrefilled(true);
     }
   }, [isEdit, detail.data, prefilled]);
@@ -105,6 +141,7 @@ function LlmProviderConnectionModal({ state, onClose }: { state: ModalState; onC
       baseUrl: trimmedBaseUrl,
       model: trimmedModel,
       token: token.trim() || undefined,
+      wireApi,
     };
 
     if (isEdit) {
@@ -152,6 +189,13 @@ function LlmProviderConnectionModal({ state, onClose }: { state: ModalState; onC
               placeholder="sk-…"
               autoComplete="off"
             />
+          </label>
+          <label>
+            Wire API
+            <select value={wireApi} onChange={(event) => setWireApi(event.target.value as "chat" | "responses")}>
+              <option value="responses">responses</option>
+              <option value="chat">chat (устаревший, не поддерживается codex)</option>
+            </select>
           </label>
 
           <Button type="submit" variant="primary" disabled={mutation.isPending}>

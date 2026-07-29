@@ -4,6 +4,7 @@ import fastapi
 import pydantic
 from fastapi import status
 
+from app.services.llm_provider_connection_check import check_llm_provider_connection_async
 from app.services.llm_providers import (
     LlmProviderConnectionAlreadyExistsError,
     LlmProviderConnectionNotFoundError,
@@ -56,6 +57,12 @@ class UpdateLlmProviderConnectionRequest(pydantic.BaseModel, frozen=True):
     requires_openai_auth: bool = False
 
 
+class TestLlmProviderConnectionResponse(pydantic.BaseModel, frozen=True):
+    success: bool
+    status_code: int | None
+    message: str
+
+
 def _summary_response(summary: LlmProviderConnectionSummary) -> LlmProviderConnectionSummaryResponse:
     return LlmProviderConnectionSummaryResponse(
         connection_id=summary.connection_id,
@@ -88,6 +95,17 @@ async def get_llm_provider_connection(connection_id: uuid.UUID) -> LlmProviderCo
         wire_api=detail.wire_api,
         requires_openai_auth=detail.requires_openai_auth,
         token="********" if detail.token else None,
+    )
+
+
+@router.post("/llm-providers/{connection_id}/test/")
+async def test_llm_provider_connection(connection_id: uuid.UUID) -> TestLlmProviderConnectionResponse:
+    try:
+        result = await check_llm_provider_connection_async(connection_id)
+    except LlmProviderConnectionNotFoundError as exc:
+        raise fastapi.HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    return TestLlmProviderConnectionResponse(
+        success=result.success, status_code=result.status_code, message=result.message
     )
 
 

@@ -179,19 +179,21 @@ export function useDeleteConversation() {
   });
 }
 
-export function useConversationWorkspaceTree(conversationId: string | undefined) {
+export function useConversationWorkspaceTree(conversationId: string | undefined, isRunning = false) {
   return useQuery({
     queryKey: workflowQueryKeys.workspaceTree(conversationId ?? "none"),
     queryFn: () => workspaceApi.getTree(conversationId!),
     enabled: conversationId !== undefined,
+    refetchInterval: isRunning ? 4000 : false,
   });
 }
 
-export function useConversationWorkspaceFile(conversationId: string | undefined, path: string | undefined) {
+export function useConversationWorkspaceFile(conversationId: string | undefined, path: string | undefined, isRunning = false) {
   return useQuery({
     queryKey: workflowQueryKeys.workspaceFile(conversationId ?? "none", path ?? "none"),
     queryFn: () => workspaceApi.getFile(conversationId!, path!),
     enabled: conversationId !== undefined && path !== undefined,
+    refetchInterval: isRunning ? 4000 : false,
   });
 }
 

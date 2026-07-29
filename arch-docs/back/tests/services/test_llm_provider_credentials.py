@@ -25,36 +25,36 @@ class TestEnsureLlmProviderSecretsStore:
 
 
 class TestSetLlmProviderToken:
-    def test_writes_token_file(self, isolated_llm_provider_secrets_store):
+    def test_writes_token_file(self):
         connection_id = uuid.uuid4()
         set_llm_provider_token(connection_id, "sk-abc123")
 
-        assert get_llm_provider_token(connection_id) == "sk-abc123"  # noqa: S105
+        assert get_llm_provider_token(connection_id) == "sk-abc123"
 
-    def test_overwrites_existing_token(self, isolated_llm_provider_secrets_store):
+    def test_overwrites_existing_token(self):
         connection_id = uuid.uuid4()
         set_llm_provider_token(connection_id, "old-token")
         set_llm_provider_token(connection_id, "new-token")
 
-        assert get_llm_provider_token(connection_id) == "new-token"  # noqa: S105
+        assert get_llm_provider_token(connection_id) == "new-token"
 
-    def test_keeps_tokens_for_different_connections_isolated(self, isolated_llm_provider_secrets_store):
+    def test_keeps_tokens_for_different_connections_isolated(self):
         connection_a = uuid.uuid4()
         connection_b = uuid.uuid4()
         set_llm_provider_token(connection_a, "token-a")
         set_llm_provider_token(connection_b, "token-b")
 
-        assert get_llm_provider_token(connection_a) == "token-a"  # noqa: S105
-        assert get_llm_provider_token(connection_b) == "token-b"  # noqa: S105
+        assert get_llm_provider_token(connection_a) == "token-a"
+        assert get_llm_provider_token(connection_b) == "token-b"
 
 
 class TestGetLlmProviderToken:
-    def test_returns_none_when_not_configured(self, isolated_llm_provider_secrets_store):
+    def test_returns_none_when_not_configured(self):
         assert get_llm_provider_token(uuid.uuid4()) is None
 
 
 class TestDeleteLlmProviderToken:
-    def test_removes_existing_token(self, isolated_llm_provider_secrets_store):
+    def test_removes_existing_token(self):
         connection_id = uuid.uuid4()
         set_llm_provider_token(connection_id, "token")
 
@@ -63,5 +63,5 @@ class TestDeleteLlmProviderToken:
         assert removed is True
         assert get_llm_provider_token(connection_id) is None
 
-    def test_returns_false_when_not_configured(self, isolated_llm_provider_secrets_store):
+    def test_returns_false_when_not_configured(self):
         assert delete_llm_provider_token(uuid.uuid4()) is False

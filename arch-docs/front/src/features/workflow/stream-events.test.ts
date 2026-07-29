@@ -107,4 +107,58 @@ describe("reduceStreamEvent", () => {
     const state = reduceStreamEvent(INITIAL_STREAM_STATE, { event_type: "artifact_written" });
     expect(state.entries[0].actor).toBe("workflow");
   });
+
+  it("заполняет tokenUsageByModel из llm_call_completed", () => {
+    const state = reduceStreamEvent(INITIAL_STREAM_STATE, {
+      event_type: "llm_call_completed",
+      actor: "llm",
+      token_usage_by_model: {
+        "claude-sonnet-4-5": { input_tokens: 100, output_tokens: 20 },
+      },
+    });
+    expect(state.tokenUsageByModel).toEqual({
+      "claude-sonnet-4-5": { inputTokens: 100, outputTokens: 20 },
+    });
+  });
+
+  it("заменяет tokenUsageByModel новым кумулятивным снимком, а не суммирует дельты", () => {
+    const first = reduceStreamEvent(INITIAL_STREAM_STATE, {
+      event_type: "llm_call_completed",
+      actor: "llm",
+      token_usage_by_model: { "claude-sonnet-4-5": { input_tokens: 100, output_tokens: 20 } },
+    });
+    const second = reduceStreamEvent(first, {
+      event_type: "llm_call_failed",
+      actor: "llm",
+      token_usage_by_model: {
+        "claude-sonnet-4-5": { input_tokens: 150, output_tokens: 30 },
+        "gpt-4o-mini": { input_tokens: 10, output_tokens: 2 },
+      },
+    });
+    expect(second.tokenUsageByModel).toEqual({
+      "claude-sonnet-4-5": { inputTokens: 150, outputTokens: 30 },
+      "gpt-4o-mini": { inputTokens: 10, outputTokens: 2 },
+    });
+  });
+
+  it("сохраняет предыдущий tokenUsageByModel, если событие его не содержит", () => {
+    const withUsage = reduceStreamEvent(INITIAL_STREAM_STATE, {
+      event_type: "llm_call_completed",
+      actor: "llm",
+      token_usage_by_model: { "claude-sonnet-4-5": { input_tokens: 100, output_tokens: 20 } },
+    });
+    const afterUnrelatedEvent = reduceStreamEvent(withUsage, { event_type: "llm_message", actor: "llm", text: "hi" });
+    expect(afterUnrelatedEvent.tokenUsageByModel).toEqual({
+      "claude-sonnet-4-5": { inputTokens: 100, outputTokens: 20 },
+    });
+  });
+
+  it("не падает на некорректном значении token_usage_by_model", () => {
+    const state = reduceStreamEvent(INITIAL_STREAM_STATE, {
+      event_type: "llm_call_completed",
+      actor: "llm",
+      token_usage_by_model: "not-an-object",
+    });
+    expect(state.tokenUsageByModel).toEqual({});
+  });
 });

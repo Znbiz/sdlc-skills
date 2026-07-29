@@ -8,15 +8,17 @@ import { useConversationWorkspaceTree, useDeleteConversationWorkspacePath } from
 export function ProjectWorkspaceTree({
   conversationId,
   activePath,
+  isRunning,
   onSelect,
   onDeleted,
 }: {
   conversationId: string;
   activePath: string | null;
+  isRunning: boolean;
   onSelect: (path: string) => void;
   onDeleted: (deletedPath: string) => void;
 }) {
-  const tree = useConversationWorkspaceTree(conversationId);
+  const tree = useConversationWorkspaceTree(conversationId, isRunning);
   const deletePath = useDeleteConversationWorkspacePath(conversationId);
 
   const handleDelete = (node: DocsTreeNode) => {

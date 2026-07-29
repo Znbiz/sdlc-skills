@@ -143,3 +143,9 @@ export function useDeleteLlmProviderConnection() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: setupQueryKeys.llmProviderConnections }),
   });
 }
+
+export function useTestLlmProviderConnection() {
+  return useMutation({
+    mutationFn: (connectionId: string) => llmProvidersApi.test(connectionId),
+  });
+}

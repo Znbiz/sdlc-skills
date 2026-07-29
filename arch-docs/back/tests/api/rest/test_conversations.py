@@ -622,6 +622,8 @@ async def test_get_response_includes_repositories_with_commit_info(async_client,
     assert resp.status_code == 200
     data = resp.json()
     assert data["repository_list_editable"] is True
+    from app.workflows.init_arch.prompts import CHECKLIST_ITEM_TO_REFERENCE
+
     assert data["repositories"] == [
         {
             "repository_name": "repo-a",
@@ -633,8 +635,78 @@ async def test_get_response_includes_repositories_with_commit_info(async_client,
             "analysis_target_commit_date": None,
             "analysis_status": "pending",
             "commit_range_status": "not_started",
+            "checklist_items_completed": [],
+            "checklist_items_routed": list(CHECKLIST_ITEM_TO_REFERENCE),
+            "current_checklist_item_id": None,
         }
     ]
+
+
+async def test_get_response_reports_current_checklist_item_for_active_repository(async_client, auth_headers, tmp_path):
+    from app.workflows.init_arch.domain import RepositoryExecution, StepId, WorkflowSessionRecord
+    from app.workflows.init_arch.prompts import CHECKLIST_ITEM_TO_REFERENCE
+
+    all_item_ids = list(CHECKLIST_ITEM_TO_REFERENCE)
+    session = WorkflowSessionRecord(
+        session_id="wf-response-current-item",
+        product_name="Arch Docs Gateway",
+        analysis_scope="full",
+        current_step=StepId.ANALYZE_REPOSITORIES,
+        repositories=[
+            RepositoryExecution(
+                repository_name="repo-a",
+                checklist_items_completed=[all_item_ids[0]],
+            )
+        ],
+    )
+    get_workflow_registry()["wf-response-current-item"] = WorkflowRecord(
+        workflow_id="wf-response-current-item",
+        conversation_id="conv-response-current-item",
+        workspace_dir=str(tmp_path),
+        workflow_status=WorkflowStatus.RUNNING,
+        current_repo_name="repo-a",
+        session=session,
+    )
+
+    resp = await async_client.get("/api/rest/responses/wf-response-current-item/", headers=auth_headers)
+
+    assert resp.status_code == 200
+    repository = resp.json()["repositories"][0]
+    assert repository["checklist_items_completed"] == [all_item_ids[0]]
+    assert repository["current_checklist_item_id"] == all_item_ids[1]
+
+
+async def test_get_response_includes_analysis_window(async_client, auth_headers, tmp_path):
+    import datetime as dt
+
+    from app.workflows.init_arch.domain import HistoricalAnalysisState, StepId, WorkflowSessionRecord
+
+    session = WorkflowSessionRecord(
+        session_id="wf-response-window",
+        product_name="Arch Docs Gateway",
+        analysis_scope="full",
+        current_step=StepId.ANALYZE_REPOSITORIES,
+        historical_analysis=HistoricalAnalysisState(
+            previous_snapshot_at=dt.date(2026, 1, 1),
+            current_snapshot_at=dt.date(2026, 7, 1),
+            window_index=2,
+        ),
+    )
+    get_workflow_registry()["wf-response-window"] = WorkflowRecord(
+        workflow_id="wf-response-window",
+        conversation_id="conv-response-window",
+        workspace_dir=str(tmp_path),
+        workflow_status=WorkflowStatus.RUNNING,
+        session=session,
+    )
+
+    resp = await async_client.get("/api/rest/responses/wf-response-window/", headers=auth_headers)
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["analysis_window_start"] == "2026-01-01"
+    assert data["analysis_window_end"] == "2026-07-01"
+    assert data["analysis_window_index"] == 2
 
 
 async def test_get_response_repository_list_not_editable_when_running(async_client, auth_headers, tmp_path):
@@ -1094,6 +1166,57 @@ async def test_get_response_includes_path_metadata(async_client, auth_headers, m
     assert response.status_code == 200
     assert response.json()["workspace_dir"] == "/workspace"
     assert response.json()["arch_repo_dir"] == "/workspace/arch"
+
+
+async def test_get_response_includes_token_usage_by_model(async_client, auth_headers, monkeypatch):
+    payload = {
+        "response_id": "wf-1",
+        "conversation_id": "conv-1",
+        "workflow_type": "init_arch",
+        "response_status": "running",
+        "current_step_id": "define_scope",
+        "current_repo_name": "",
+        "completed_steps": [],
+        "required_actions": [],
+        "created_at": "2026-07-14T00:00:00+00:00",
+        "updated_at": "2026-07-14T00:00:00+00:00",
+        "error_message": None,
+        "terminal_result": None,
+        "workspace_dir": "/workspace",
+        "arch_repo_dir": "/workspace/arch",
+        "token_usage_by_model": {"claude-sonnet-4-5": {"input_tokens": 100, "output_tokens": 20}},
+    }
+    monkeypatch.setattr("app.api.rest.conversations.get_response_async", AsyncMock(return_value=payload))
+
+    response = await async_client.get("/api/rest/responses/wf-1/", headers=auth_headers)
+
+    assert response.status_code == 200
+    assert response.json()["token_usage_by_model"] == {"claude-sonnet-4-5": {"input_tokens": 100, "output_tokens": 20}}
+
+
+async def test_get_response_defaults_token_usage_by_model_to_empty_dict(async_client, auth_headers, monkeypatch):
+    payload = {
+        "response_id": "wf-1",
+        "conversation_id": "conv-1",
+        "workflow_type": "init_arch",
+        "response_status": "running",
+        "current_step_id": "define_scope",
+        "current_repo_name": "",
+        "completed_steps": [],
+        "required_actions": [],
+        "created_at": "2026-07-14T00:00:00+00:00",
+        "updated_at": "2026-07-14T00:00:00+00:00",
+        "error_message": None,
+        "terminal_result": None,
+        "workspace_dir": "/workspace",
+        "arch_repo_dir": "/workspace/arch",
+    }
+    monkeypatch.setattr("app.api.rest.conversations.get_response_async", AsyncMock(return_value=payload))
+
+    response = await async_client.get("/api/rest/responses/wf-1/", headers=auth_headers)
+
+    assert response.status_code == 200
+    assert response.json()["token_usage_by_model"] == {}
 
 
 async def test_legacy_rpc_workflow_endpoints_removed(async_client, auth_headers):

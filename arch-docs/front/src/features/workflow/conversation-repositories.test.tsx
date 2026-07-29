@@ -34,6 +34,9 @@ function makeCommit(overrides: Partial<RepositoryStatusResponse> = {}): Reposito
     analysis_target_commit_date: "2026-07-01",
     analysis_status: "pending",
     commit_range_status: "not_started",
+    checklist_items_completed: [],
+    checklist_items_routed: [],
+    current_checklist_item_id: null,
     ...overrides,
   };
 }

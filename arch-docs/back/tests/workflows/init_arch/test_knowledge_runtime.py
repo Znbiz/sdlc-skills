@@ -90,6 +90,35 @@ confidence: medium
     assert result.documents_with_frontmatter >= 2
 
 
+def test_compile_knowledge_graph_ignores_links_to_non_markdown_artifacts(tmp_path: Path) -> None:
+    # Regression: a markdown document linking to a real, existing non-markdown file (a *.yml
+    # contract/schema under architecture/contracts/ or architecture/storage/, as
+    # node_analyze_repositories_item's LLM calls generate) used to raise a bare KeyError from
+    # `incoming_edges[resolved_path]` - `_resolve_document_reference()`'s filesystem-existence branch
+    # resolved the link, but the target was never added to `documents`/`incoming_edges` because only
+    # *.md files are collected as KnowledgeDocuments.
+    arch_repo = tmp_path / "arch"
+    _write(
+        arch_repo / "architecture" / "integrations" / "codegraph.md",
+        """---
+title: CodeGraph integration
+type: integration
+---
+# CodeGraph integration
+[Sync contract](../contracts/CodeGraph-sync.yml)
+""",
+    )
+    _write(arch_repo / "architecture" / "contracts" / "CodeGraph-sync.yml", "source: CodeGraph\n")
+    _write(arch_repo / "wiki" / "index.md", "# Existing index\n")
+    _write(arch_repo / "wiki" / "log.md", "# Log\n")
+
+    result = runtime.compile_knowledge_graph(arch_repo)
+
+    assert "architecture/integrations/codegraph.md -> architecture/contracts/CodeGraph-sync.yml" not in (
+        result.unresolved_references
+    )
+
+
 def test_lint_feature_index_reports_missing_and_unindexed_files(tmp_path: Path) -> None:
     features_index = tmp_path / "features-index.md"
     features_index.write_text("[Auth](features/auth.md)\n[Ghost](features/ghost.md)\n", encoding="utf-8")

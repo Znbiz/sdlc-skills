@@ -1,11 +1,13 @@
 import asyncio
 import json
 import os
+import pathlib
 import unittest.mock
 import uuid
 
 import pytest
 
+from app.services import cli_task_support as cli_task_support_module
 from app.services import task_runner as task_runner_module
 from app.services.agent_pool import AgentPool
 from app.services.llm_provider_credentials import EXTERNAL_LLM_API_KEY_ENV_VAR
@@ -19,6 +21,7 @@ from app.services.task_runner import (
     _is_auth_error,
     _is_limit_error,
     cancel_cli_task,
+    execute_engine_task,
     run_cli_task,
     set_db_enabled,
 )
@@ -38,7 +41,7 @@ def _clean_workflow_event_bus():
     reset_workflow_event_bus()
 
 
-def _make_task(
+def _make_task(  # noqa: PLR0913
     engine_name: str = "claude",
     prompt_text: str = "hello",
     task_status: TaskStatus = TaskStatus.PENDING,
@@ -141,6 +144,30 @@ class TestBuildCmd:
         assert "resume" not in cmd
         assert "--skip-git-repo-check" in cmd
 
+    def test_oversized_prompt_is_written_to_file_instead_of_argv(self, monkeypatch, tmp_path) -> None:
+        # Regression: an oversized prompt_text (e.g. analyze_repositories' expanded diff/changed-
+        # file context) passed straight through as a CLI argument can exceed the OS's argv size
+        # limit - `OSError: [Errno 7] Argument list too long` - and burns all 3 retries identically
+        # since the prompt is the same every time. See _resolve_cli_prompt's docstring.
+        monkeypatch.setattr("app.services.cli_task_support._MAX_INLINE_PROMPT_CHARS", 10)
+        monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+        huge_prompt = "x" * 1000
+        cli_task = _make_task(engine_name="codex", prompt_text=huge_prompt)
+
+        cmd = _build_cmd(cli_task)
+
+        assert huge_prompt not in cmd
+        prompt_arg = cmd[-1]
+        assert cli_task.task_id in prompt_arg
+        written_files = list((tmp_path / "arch-docs-prompt-overflow").iterdir())
+        assert len(written_files) == 1
+        assert written_files[0].read_text(encoding="utf-8") == huge_prompt
+
+    def test_small_prompt_is_passed_through_unchanged(self) -> None:
+        cli_task = _make_task(engine_name="codex", prompt_text="short prompt")
+        cmd = _build_cmd(cli_task)
+        assert "short prompt" in cmd
+
     def test_codex_cmd_without_provider_connection_has_no_overrides(self) -> None:
         cli_task = _make_task(engine_name="codex")
         cmd = _build_cmd(cli_task, None)
@@ -155,7 +182,7 @@ class TestBuildCmd:
             model="my-model",
             wire_api="chat",
             requires_openai_auth=False,
-            token="sk-abc",  # noqa: S106
+            token="sk-abc",
         )
 
         cmd = _build_cmd(cli_task, connection)
@@ -168,6 +195,32 @@ class TestBuildCmd:
         assert "model_providers.external.wire_api=chat" in overrides
         assert "model_providers.external.requires_openai_auth=false" in overrides
         assert "model=my-model" in overrides
+        assert any(override.startswith("model_catalog_json=") for override in overrides)
+        disabled_features = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "--disable"]
+        assert disabled_features == ["multi_agent", "apps"]
+
+    def test_codex_cmd_with_provider_connection_writes_model_catalog_file(self) -> None:
+        cli_task = _make_task(engine_name="codex")
+        connection = LlmProviderConnectionDetail(
+            connection_id=uuid.uuid4(),
+            name="external",
+            base_url="https://api.example.com/v1",
+            model="my-model",
+            wire_api="responses",
+            requires_openai_auth=False,
+            token="sk-abc",
+        )
+
+        cmd = _build_cmd(cli_task, connection)
+
+        overrides = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "-c"]
+        catalog_override = next(override for override in overrides if override.startswith("model_catalog_json="))
+        catalog_path = pathlib.Path(catalog_override.removeprefix("model_catalog_json="))
+        catalog = json.loads(catalog_path.read_text())
+        model_entry = catalog["models"][0]
+        assert model_entry["slug"] == "my-model"
+        assert model_entry["apply_patch_tool_type"] == "freeform"
+        assert model_entry["shell_type"] == "shell_command"
 
     def test_codex_cmd_with_provider_connection_overrides_come_before_prompt(self) -> None:
         cli_task = _make_task(engine_name="codex", prompt_text="do the thing")
@@ -178,13 +231,43 @@ class TestBuildCmd:
             model="my-model",
             wire_api="chat",
             requires_openai_auth=True,
-            token="sk-abc",  # noqa: S106
+            token="sk-abc",
         )
 
         cmd = _build_cmd(cli_task, connection)
 
         assert cmd[-1] == "do the thing"
         assert "model_providers.external.requires_openai_auth=true" in cmd
+
+
+class TestExtractJsonObject:
+    def test_parses_plain_json(self) -> None:
+        assert task_runner_module._extract_json_object('{"completed_actions": ["a"]}') == {"completed_actions": ["a"]}
+
+    def test_extracts_json_from_fenced_code_block_with_prose_before_it(self) -> None:
+        text = (
+            "Все данные собраны. Анализ завершён.\n\n"
+            "**Итог:** репозиторий небольшой, per_module.\n\n"
+            "```json\n"
+            '{"completed_actions": ["done"], "domain_assessment": {"volume_class": "small", '
+            '"strategy": "per_module", "domains": []}}\n'
+            "```\n"
+        )
+        result = task_runner_module._extract_json_object(text)
+        assert result is not None
+        assert result["completed_actions"] == ["done"]
+        assert result["domain_assessment"]["strategy"] == "per_module"
+
+    def test_extracts_json_from_unfenced_prose(self) -> None:
+        text = 'Пояснение перед ответом. {"completed_actions": ["done"]} Пояснение после.'
+        assert task_runner_module._extract_json_object(text) == {"completed_actions": ["done"]}
+
+    def test_uses_last_fenced_block_when_multiple_present(self) -> None:
+        text = '```json\n{"notes": "first"}\n```\nещё текст\n```json\n{"notes": "second"}\n```'
+        assert task_runner_module._extract_json_object(text) == {"notes": "second"}
+
+    def test_returns_none_when_no_json_object_present(self) -> None:
+        assert task_runner_module._extract_json_object("просто текст без json") is None
 
 
 class TestExtractResultText:
@@ -219,6 +302,75 @@ class TestExtractResultText:
     def test_unknown_engine_falls_back_to_joined_lines(self) -> None:
         lines = ["line1", "line2"]
         assert _extract_result_text("other", lines) == "line1\nline2"
+
+
+class TestExtractUsage:
+    def test_codex_reads_last_turn_completed_usage(self) -> None:
+        lines = [
+            '{"type":"thread.started"}',
+            '{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":10}}',
+        ]
+        assert task_runner_module._extract_codex_usage(lines) == (100, 10)
+
+    def test_codex_returns_none_without_turn_completed(self) -> None:
+        lines = ['{"type":"thread.started"}']
+        assert task_runner_module._extract_codex_usage(lines) is None
+
+    def test_codex_defaults_missing_usage_fields_to_zero(self) -> None:
+        lines = ['{"type":"turn.completed"}']
+        assert task_runner_module._extract_codex_usage(lines) == (0, 0)
+
+    def test_claude_sums_cache_fields_into_input_tokens(self) -> None:
+        lines = [
+            '{"type":"system","subtype":"init"}',
+            (
+                '{"type":"result","usage":{"input_tokens":50,"cache_creation_input_tokens":20,'
+                '"cache_read_input_tokens":30,"output_tokens":15}}'
+            ),
+        ]
+        assert task_runner_module._extract_claude_usage(lines) == (100, 15)
+
+    def test_claude_returns_none_without_result_event(self) -> None:
+        lines = ['{"type":"system","subtype":"init"}']
+        assert task_runner_module._extract_claude_usage(lines) is None
+
+    def test_extract_usage_dispatches_by_engine(self) -> None:
+        codex_lines = ['{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":2}}']
+        claude_lines = ['{"type":"result","usage":{"input_tokens":3,"output_tokens":4}}']
+        assert task_runner_module._extract_usage("codex", codex_lines) == (1, 2)
+        assert task_runner_module._extract_usage("claude", claude_lines) == (3, 4)
+        assert task_runner_module._extract_usage("other", claude_lines) is None
+
+
+class TestExtractModel:
+    def test_claude_reads_model_from_system_init_event(self) -> None:
+        lines = [
+            '{"type":"system","subtype":"init","model":"claude-sonnet-4-5"}',
+            '{"type":"result","result":"ok"}',
+        ]
+        assert task_runner_module._extract_claude_model(lines) == "claude-sonnet-4-5"
+
+    def test_claude_returns_none_without_init_event(self) -> None:
+        assert task_runner_module._extract_claude_model(['{"type":"result","result":"ok"}']) is None
+
+    def test_resolve_model_name_prefers_claude_reported_model(self) -> None:
+        lines = ['{"type":"system","subtype":"init","model":"claude-sonnet-4-5"}']
+        assert task_runner_module._resolve_model_name("claude", lines, None) == "claude-sonnet-4-5"
+
+    def test_resolve_model_name_uses_provider_connection_for_codex(self) -> None:
+        connection = LlmProviderConnectionDetail(
+            connection_id=uuid.uuid4(),
+            name="gateway",
+            base_url="https://example.test",
+            model="gpt-4o-mini",
+            wire_api="chat",
+            requires_openai_auth=False,
+            token="secret",
+        )
+        assert task_runner_module._resolve_model_name("codex", [], connection) == "gpt-4o-mini"
+
+    def test_resolve_model_name_falls_back_to_engine_default(self) -> None:
+        assert task_runner_module._resolve_model_name("codex", [], None) == "codex:default"
 
 
 class TestIsAuthError:
@@ -296,6 +448,41 @@ class TestRunCliTask:
 
         assert cli_task.task_status == TaskStatus.SUCCESS
         assert cli_task.task_result == "all good"
+
+    async def test_success_extracts_usage_and_model_for_claude(self) -> None:
+        cli_task = _make_task(engine_name="claude")
+        pool = _make_pool()
+        stdout = (
+            b'{"type":"system","subtype":"init","model":"claude-sonnet-4-5"}\n'
+            b'{"type":"result","subtype":"success","is_error":false,"result":"all good",'
+            b'"usage":{"input_tokens":50,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,'
+            b'"output_tokens":12}}'
+        )
+        mock_proc = _make_mock_process(returncode=0, stdout=stdout, stderr=b"")
+
+        with unittest.mock.patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            await run_cli_task(cli_task, pool)
+
+        assert cli_task.model_name == "claude-sonnet-4-5"
+        assert cli_task.input_tokens == 50
+        assert cli_task.output_tokens == 12
+
+    async def test_success_extracts_usage_for_codex_and_falls_back_model_name(self) -> None:
+        cli_task = _make_task(engine_name="codex")
+        pool = _make_pool()
+        stdout = (
+            b'{"type":"thread.started"}\n'
+            b'{"type":"item.completed","item":{"type":"agent_message","text":"all good"}}\n'
+            b'{"type":"turn.completed","usage":{"input_tokens":200,"output_tokens":30}}'
+        )
+        mock_proc = _make_mock_process(returncode=0, stdout=stdout, stderr=b"")
+
+        with unittest.mock.patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            await run_cli_task(cli_task, pool)
+
+        assert cli_task.model_name == "codex:default"
+        assert cli_task.input_tokens == 200
+        assert cli_task.output_tokens == 30
 
     async def test_nonzero_exit_sets_failed_status(self) -> None:
         cli_task = _make_task(engine_name="codex")
@@ -655,6 +842,34 @@ class TestCancelCliTask:
         assert cli_task.task_status == TaskStatus.CANCELLED
         mock_proc.kill.assert_called_once()
 
+    async def test_cancels_running_langgraph_task_with_no_subprocess(self) -> None:
+        # LangGraph tasks never have a subprocess_handle - cancellation has to go through
+        # async_task_handle instead. See
+        # arch-docs/docs/spec/2026-07-25-langgraph-api-agent-runner.md, section 7, "Пробел №2".
+        cli_task = _make_task(engine_name="langgraph", task_status=TaskStatus.RUNNING)
+        cli_task.async_task_handle = asyncio.create_task(asyncio.sleep(10))
+        registry = {cli_task.task_id: cli_task}
+
+        await cancel_cli_task(cli_task.task_id, registry)
+
+        assert cli_task.task_status == TaskStatus.CANCELLED
+        assert cli_task.async_task_handle.cancelled()
+        assert cli_task.finished_at is not None
+
+    async def test_noop_for_already_done_async_task_handle(self) -> None:
+        cli_task = _make_task(engine_name="langgraph", task_status=TaskStatus.RUNNING)
+
+        async def _noop() -> None:
+            return None
+
+        cli_task.async_task_handle = asyncio.create_task(_noop())
+        await cli_task.async_task_handle
+        registry = {cli_task.task_id: cli_task}
+
+        await cancel_cli_task(cli_task.task_id, registry)
+
+        assert cli_task.task_status == TaskStatus.RUNNING
+
 
 class TestDbPersistence:
     def setup_method(self) -> None:
@@ -665,9 +880,9 @@ class TestDbPersistence:
 
     def test_set_db_enabled_toggles(self) -> None:
         set_db_enabled(True)
-        assert task_runner_module._db_enabled is True  # type: ignore[attr-defined]
+        assert cli_task_support_module._db_enabled is True  # type: ignore[attr-defined]
         set_db_enabled(False)
-        assert task_runner_module._db_enabled is False  # type: ignore[attr-defined]
+        assert cli_task_support_module._db_enabled is False  # type: ignore[attr-defined]
 
     async def test_run_cli_task_calls_upsert_when_db_enabled(self) -> None:
         set_db_enabled(True)
@@ -681,9 +896,9 @@ class TestDbPersistence:
 
         with (
             unittest.mock.patch("asyncio.create_subprocess_exec", return_value=mock_proc),
-            unittest.mock.patch("app.services.task_runner.get_session", return_value=mock_session_ctx),
+            unittest.mock.patch("app.services.cli_task_support.get_session", return_value=mock_session_ctx),
             unittest.mock.patch(
-                "app.services.task_runner.upsert_cli_task", new_callable=unittest.mock.AsyncMock
+                "app.services.cli_task_support.upsert_cli_task", new_callable=unittest.mock.AsyncMock
             ) as mock_upsert,
         ):
             await run_cli_task(cli_task, pool)
@@ -699,7 +914,7 @@ class TestDbPersistence:
         with (
             unittest.mock.patch("asyncio.create_subprocess_exec", return_value=mock_proc),
             unittest.mock.patch(
-                "app.services.task_runner.upsert_cli_task", new_callable=unittest.mock.AsyncMock
+                "app.services.cli_task_support.upsert_cli_task", new_callable=unittest.mock.AsyncMock
             ) as mock_upsert,
         ):
             await run_cli_task(cli_task, pool)
@@ -718,7 +933,7 @@ class TestDbPersistence:
 
         with (
             unittest.mock.patch("asyncio.create_subprocess_exec", return_value=mock_proc),
-            unittest.mock.patch("app.services.task_runner.get_session", return_value=mock_session_ctx),
+            unittest.mock.patch("app.services.cli_task_support.get_session", return_value=mock_session_ctx),
         ):
             await run_cli_task(cli_task, pool)  # не должно бросить
 
@@ -793,6 +1008,42 @@ class TestLlmCliService:
         ]
         assert all(event.actor is AuditActor.LLM_WORKER for event in recorded_events)
         assert all(event.payload["llm_call_id"] == cli_task.task_id for event in recorded_events)
+
+    async def test_run_task_parses_structured_result_wrapped_in_prose_and_json_fence(self) -> None:
+        # Regression: codex's final agent_message sometimes wraps the required JSON report in
+        # explanatory prose plus a ```json fence instead of returning raw JSON. A naive
+        # json.loads() on the whole text used to throw and silently fall back to an empty result,
+        # dropping fields like `domain_assessment` even though the LLM produced them (observed on
+        # a real `assess_scope_and_domains` run - see _extract_json_object's docstring).
+        audit_service = unittest.mock.MagicMock()
+        service = LlmCliService(audit_service=audit_service)
+        request = LlmTaskRequest(
+            task_kind=LlmTaskKind.STEP_EXECUTION,
+            step_id=StepId.ASSESS_SCOPE_AND_DOMAINS,
+            prompt_text="assess",
+            workspace_dir="/workspace",
+            timeout_seconds=30,
+            expected_schema_name="init_arch_v1",
+            session_id="wf-1",
+        )
+        cli_task = _make_task(engine_name="codex")
+        cli_task.task_status = TaskStatus.SUCCESS
+        cli_task.task_result = (
+            "Все данные собраны. Анализ завершён.\n\n"
+            "**Итог оценки:** репозиторий небольшой, per_module.\n\n"
+            "```json\n"
+            '{"completed_actions": ["assessed"], "domain_assessment": '
+            '{"volume_class": "small", "strategy": "per_module", "domains": []}}\n'
+            "```\n"
+        )
+
+        with unittest.mock.patch.object(service, "_build_cli_task", return_value=cli_task):
+            with unittest.mock.patch.object(service, "_run_cli_task", new=unittest.mock.AsyncMock()):
+                result = await service.run_task(request, engine_name="codex")
+
+        assert result.completed_actions == ["assessed"]
+        assert result.domain_assessment is not None
+        assert result.domain_assessment.strategy.value == "per_module"
 
     async def test_run_task_raises_when_cli_task_fails(self) -> None:
         audit_service = unittest.mock.MagicMock()
@@ -917,3 +1168,146 @@ class TestLlmCliService:
             with unittest.mock.patch.object(service, "_run_cli_task", new=unittest.mock.AsyncMock()):
                 with pytest.raises(LlmTaskExecutionError, match="limit_exhausted"):
                     await service.run_task(request, engine_name="claude")
+
+
+class TestLlmCliServiceTokenUsage:
+    def _make_request(self, **overrides: object) -> LlmTaskRequest:
+        defaults: dict[str, object] = dict(
+            task_kind=LlmTaskKind.STEP_EXECUTION,
+            step_id=StepId.DEFINE_SCOPE,
+            prompt_text="do work",
+            workspace_dir="/workspace",
+            timeout_seconds=30,
+            expected_schema_name="init_arch_v1",
+            session_id="wf-usage",
+        )
+        defaults.update(overrides)
+        return LlmTaskRequest(**defaults)  # type: ignore[arg-type]
+
+    async def test_persists_and_publishes_usage_on_success(self) -> None:
+        service = LlmCliService(audit_service=unittest.mock.MagicMock())
+        request = self._make_request()
+        cli_task = _make_task(engine_name="claude")
+        cli_task.task_status = TaskStatus.SUCCESS
+        cli_task.task_result = json.dumps({"notes": "ok"})
+        cli_task.model_name = "claude-sonnet-4-5"
+        cli_task.input_tokens = 50
+        cli_task.output_tokens = 12
+        cumulative = {"claude-sonnet-4-5": {"input_tokens": 150, "output_tokens": 40}}
+
+        subscription = get_workflow_event_bus().subscribe("wf-usage")
+        with (
+            unittest.mock.patch.object(service, "_build_cli_task", return_value=cli_task),
+            unittest.mock.patch.object(service, "_run_cli_task", new=unittest.mock.AsyncMock()),
+            unittest.mock.patch(
+                "app.services.task_runner._persist_token_usage",
+                new=unittest.mock.AsyncMock(return_value=cumulative),
+            ) as mock_persist,
+        ):
+            await service.run_task(request, engine_name="claude")
+
+        mock_persist.assert_awaited_once_with(
+            "wf-usage", model_name="claude-sonnet-4-5", input_tokens=50, output_tokens=12
+        )
+        published = [subscription.get_nowait() for _ in range(subscription.qsize())]
+        completed_event = next(event for event in published if event["event_type"] == "llm_call_completed")
+        assert completed_event["model_name"] == "claude-sonnet-4-5"
+        assert completed_event["input_tokens"] == 50
+        assert completed_event["output_tokens"] == 12
+        assert completed_event["token_usage_by_model"] == cumulative
+
+    async def test_persists_and_publishes_usage_on_failure(self) -> None:
+        service = LlmCliService(audit_service=unittest.mock.MagicMock())
+        request = self._make_request()
+        cli_task = _make_task(engine_name="codex")
+        cli_task.task_status = TaskStatus.FAILED
+        cli_task.task_error = "boom"
+        cli_task.model_name = "codex:default"
+        cli_task.input_tokens = 20
+        cli_task.output_tokens = 5
+
+        subscription = get_workflow_event_bus().subscribe("wf-usage")
+        with (
+            unittest.mock.patch.object(service, "_build_cli_task", return_value=cli_task),
+            unittest.mock.patch.object(service, "_run_cli_task", new=unittest.mock.AsyncMock()),
+            unittest.mock.patch(
+                "app.services.task_runner._persist_token_usage",
+                new=unittest.mock.AsyncMock(return_value=None),
+            ) as mock_persist,
+        ):
+            with pytest.raises(RuntimeError):
+                await service.run_task(request, engine_name="codex")
+
+        mock_persist.assert_awaited_once_with("wf-usage", model_name="codex:default", input_tokens=20, output_tokens=5)
+        published = [subscription.get_nowait() for _ in range(subscription.qsize())]
+        failed_event = next(event for event in published if event["event_type"] == "llm_call_failed")
+        assert failed_event["model_name"] == "codex:default"
+        assert failed_event["input_tokens"] == 20
+        assert failed_event["output_tokens"] == 5
+
+    async def test_records_audit_events_with_usage_scalars(self) -> None:
+        audit_service = unittest.mock.MagicMock()
+        service = LlmCliService(audit_service=audit_service)
+        request = self._make_request()
+        cli_task = _make_task(engine_name="claude")
+        cli_task.task_status = TaskStatus.SUCCESS
+        cli_task.task_result = json.dumps({"notes": "ok"})
+        cli_task.model_name = "claude-sonnet-4-5"
+        cli_task.input_tokens = 7
+        cli_task.output_tokens = 3
+
+        with (
+            unittest.mock.patch.object(service, "_build_cli_task", return_value=cli_task),
+            unittest.mock.patch.object(service, "_run_cli_task", new=unittest.mock.AsyncMock()),
+            unittest.mock.patch(
+                "app.services.task_runner._persist_token_usage",
+                new=unittest.mock.AsyncMock(return_value=None),
+            ),
+        ):
+            await service.run_task(request, engine_name="claude")
+
+        completed_event = next(
+            call.args[0]
+            for call in audit_service.record.call_args_list
+            if call.args[0].event_type == EventType.LLM_TASK_COMPLETED
+        )
+        assert completed_event.payload["model_name"] == "claude-sonnet-4-5"
+        assert completed_event.payload["input_tokens"] == 7
+        assert completed_event.payload["output_tokens"] == 3
+
+
+class TestExecuteEngineTask:
+    async def test_langgraph_engine_dispatches_to_run_langgraph_task(self) -> None:
+        cli_task = _make_task(engine_name="langgraph")
+        pool = _make_pool()
+
+        with (
+            unittest.mock.patch(
+                "app.services.task_runner.run_langgraph_task", new=unittest.mock.AsyncMock()
+            ) as mock_run_langgraph_task,
+            unittest.mock.patch(
+                "app.services.task_runner.run_cli_task", new=unittest.mock.AsyncMock()
+            ) as mock_run_cli_task,
+        ):
+            await execute_engine_task(cli_task, pool)
+
+        mock_run_langgraph_task.assert_awaited_once_with(cli_task, pool)
+        mock_run_cli_task.assert_not_called()
+
+    @pytest.mark.parametrize("engine_name", ["claude", "codex"])
+    async def test_cli_engines_dispatch_to_run_cli_task(self, engine_name: str) -> None:
+        cli_task = _make_task(engine_name=engine_name)
+        pool = _make_pool()
+
+        with (
+            unittest.mock.patch(
+                "app.services.task_runner.run_langgraph_task", new=unittest.mock.AsyncMock()
+            ) as mock_run_langgraph_task,
+            unittest.mock.patch(
+                "app.services.task_runner.run_cli_task", new=unittest.mock.AsyncMock()
+            ) as mock_run_cli_task,
+        ):
+            await execute_engine_task(cli_task, pool)
+
+        mock_run_cli_task.assert_awaited_once_with(cli_task, pool)
+        mock_run_langgraph_task.assert_not_called()

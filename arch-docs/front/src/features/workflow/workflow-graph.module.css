@@ -1,0 +1,99 @@
+.canvas {
+  width: 100%;
+  height: 420px;
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 8px;
+  background: var(--color-surface-muted);
+}
+
+.node {
+  font-size: 0.75rem;
+  text-align: center;
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.activeNode {
+  composes: node;
+  border: 2px solid var(--color-accent, #6366f1);
+  background: var(--color-accent-muted, rgb(99 102 241 / 12%));
+  font-weight: 600;
+  box-shadow: 0 0 0 3px rgb(99 102 241 / 20%);
+}
+
+.analysisWindow {
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.repositoryChecklists {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.repositoryCard {
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 8px;
+  padding: 0.6rem 0.75rem;
+  background: var(--color-surface);
+}
+
+.repositoryCardHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 0.4rem;
+}
+
+.repositoryCardName {
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.repositoryCardStatus {
+  font-size: 0.7rem;
+  color: var(--color-text-muted, #6b7280);
+}
+
+.checklist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.checklistItem {
+  display: flex;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+  color: var(--color-text-muted, #6b7280);
+}
+
+.checklistItemCompleted {
+  composes: checklistItem;
+  color: var(--color-text);
+}
+
+.checklistItemCurrent {
+  composes: checklistItem;
+  color: var(--color-accent, #6366f1);
+  font-weight: 600;
+}
+
+.checklistItemNotRouted {
+  composes: checklistItem;
+  opacity: 0.5;
+}
+
+.checklistItemMark {
+  min-width: 1.1rem;
+}

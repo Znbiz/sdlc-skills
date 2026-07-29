@@ -80,6 +80,9 @@ def _workflow_record_from_model(model: WorkflowRunModel) -> WorkflowRecord:
         workspace_dir=model.workspace_dir,
         arch_repo_dir=model.arch_repo_dir,
         completed_steps=list(model.completed_steps or []),
+        token_usage_by_model={
+            model_name: dict(usage) for model_name, usage in (model.token_usage_by_model or {}).items()
+        },
         session=session,
         pending_interrupt=dict(model.pending_interrupt_payload) if model.pending_interrupt_payload else None,
         last_cli_output_snippet=model.last_cli_output_snippet,
@@ -297,6 +300,34 @@ async def append_workflow_event(session: async_sa.AsyncSession, event: WorkflowE
     await session.commit()
 
 
+async def increment_workflow_token_usage(
+    session: async_sa.AsyncSession,
+    *,
+    workflow_id: str,
+    model_name: str,
+    input_tokens: int,
+    output_tokens: int,
+) -> dict[str, dict[str, int]]:
+    """Add one LLM call's usage to the workflow's running per-model total.
+
+    Deliberately separate from `upsert_workflow_run()` - that call is driven by the workflow
+    graph engine on step transitions and doesn't know about individual LLM calls, which come from
+    `LlmCliService` (a lower layer) instead. Read-modify-write on the JSON column, reassigning the
+    whole dict (not mutating in place) so SQLAlchemy's change tracking picks it up.
+    """
+    workflow = await session.get(WorkflowRunModel, workflow_id)
+    if workflow is None:
+        return {}
+
+    usage = {name: dict(bucket) for name, bucket in (workflow.token_usage_by_model or {}).items()}
+    bucket = usage.setdefault(model_name, {"input_tokens": 0, "output_tokens": 0})
+    bucket["input_tokens"] = bucket.get("input_tokens", 0) + input_tokens
+    bucket["output_tokens"] = bucket.get("output_tokens", 0) + output_tokens
+    workflow.token_usage_by_model = usage
+    await session.commit()
+    return usage
+
+
 async def get_workflow_run(session: async_sa.AsyncSession, workflow_id: str) -> WorkflowRecord | None:
     model = await session.get(WorkflowRunModel, workflow_id)
     if model is None:
@@ -459,14 +490,23 @@ async def list_conversation_items(
     return list(result.scalars())
 
 
-async def mark_running_workflows_failed(session: async_sa.AsyncSession) -> int:
+async def mark_running_workflows_paused(session: async_sa.AsyncSession) -> int:
+    """Recover `RUNNING` workflows left behind by an unclean shutdown (crash/restart mid-step).
+
+    Marks them `PAUSED`, not `FAILED`: the LangGraph checkpoint for a `RUNNING` workflow is exactly
+    as durable as for one stopped by `pause_init_arch_workflow()` (same checkpointer, same
+    thread_id=workflow_id, same "at worst the current node re-runs" guarantee - see
+    `pause_init_arch_workflow()`'s docstring). `FAILED` used to be a dead end here: nothing
+    resumable is attached to it, so the only recovery was `restart_init_arch_workflow()`, which
+    discards all progress and re-clones every repository, even though the checkpoint was intact
+    the whole time. `PAUSED` lets `continue_init_arch_workflow()` pick it back up unchanged.
+    """
     now = datetime.datetime.now(datetime.timezone.utc)
     result = await session.execute(
         sa.update(WorkflowRunModel)
         .where(WorkflowRunModel.workflow_status == str(WorkflowStatus.RUNNING))
         .values(
-            workflow_status=str(WorkflowStatus.FAILED),
-            error_message="Service restarted",
+            workflow_status=str(WorkflowStatus.PAUSED),
             updated_at=now,
         )
         .returning(WorkflowRunModel.workflow_id, WorkflowRunModel.conversation_id, WorkflowRunModel.current_step_id)
@@ -482,8 +522,8 @@ async def mark_running_workflows_failed(session: async_sa.AsyncSession) -> int:
                 step_id=current_step_id,
                 payload_json={
                     "previous_status": str(WorkflowStatus.RUNNING),
-                    "workflow_status": str(WorkflowStatus.FAILED),
-                    "error_message": "Service restarted",
+                    "workflow_status": str(WorkflowStatus.PAUSED),
+                    "error_message": "Service restarted while this step was running; paused, ready to continue",
                 },
                 created_at=now,
             )

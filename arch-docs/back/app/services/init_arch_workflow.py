@@ -11,6 +11,7 @@ import typing
 import uuid
 
 import structlog
+from langgraph.types import Command
 
 from app.db.session import get_session
 from app.db.task_repo import (
@@ -38,14 +39,22 @@ from app.services.docs_browser import build_docs_tree, delete_docs_path, read_do
 from app.services.repository_url import canonicalize_repo_path, normalize_repository_url
 from app.services.task_registry import CliTask, TaskStatus
 from app.services.task_registry import get_registry as get_task_registry
-from app.services.task_runner import cancel_cli_task, run_cli_task
+from app.services.task_runner import cancel_cli_task, execute_engine_task
 from app.services.workflow_event_bus import get_workflow_event_bus
 from app.services.workflow_registry import WorkflowRecord, WorkflowStatus, get_workflow_registry
 from app.settings import GatewaySettings, get_gateway_settings
 from app.workflows.init_arch.checkpointer import get_checkpointer
-from app.workflows.init_arch.domain import RepositoryExecution, StepId, WorkflowSessionRecord, step_label_ru
+from app.workflows.init_arch.domain import (
+    RepositoryExecution,
+    StepId,
+    WorkflowSessionRecord,
+    next_pending_checklist_item,
+    route_checklist_items,
+    step_label_ru,
+)
 from app.workflows.init_arch.graph import compile_graph
 from app.workflows.init_arch.historical import get_historical_prep_service
+from app.workflows.init_arch.prompts import CHECKLIST_ITEM_TO_REFERENCE
 from app.workflows.init_arch.snapshot import parse_snapshot_yaml, write_snapshot_file
 from app.workflows.init_arch.state import InitArchState
 
@@ -311,6 +320,7 @@ def _build_repository_statuses(record: WorkflowRecord) -> list[dict[str, typing.
     # cloned yet, or whose stored hash no longer resolves, just reports `None` dates rather than
     # failing the whole status response.
     commit_dates = get_historical_prep_service().get_commit_dates(session, workspace_dir=record.workspace_dir)
+    all_checklist_item_ids = list(CHECKLIST_ITEM_TO_REFERENCE)
     return [
         {
             "repository_name": repository.repository_name,
@@ -326,15 +336,34 @@ def _build_repository_statuses(record: WorkflowRecord) -> list[dict[str, typing.
             ),
             "analysis_status": repository.analysis_status,
             "commit_range_status": str(repository.commit_range_status.value),
+            "checklist_items_completed": list(repository.checklist_items_completed),
+            "checklist_items_routed": route_checklist_items(
+                repository, all_checklist_item_ids=all_checklist_item_ids
+            ),
+            "current_checklist_item_id": (
+                next_pending_checklist_item(repository, all_checklist_item_ids=all_checklist_item_ids)
+                if repository.repository_name == record.current_repo_name
+                else None
+            ),
         }
         for repository in session.repositories
     ]
+
+
+def _analysis_window(record: WorkflowRecord) -> tuple[str | None, str | None, int]:
+    session = record.session
+    if session is None:
+        return None, None, 0
+    historical = session.historical_analysis
+    window_start = historical.previous_snapshot_at or historical.anchor_created_at
+    return _iso_date(window_start), _iso_date(historical.current_snapshot_at), historical.window_index
 
 
 def _workflow_response_payload(
     record: WorkflowRecord,
     required_actions: list[dict[str, typing.Any]],
 ) -> dict[str, typing.Any]:
+    analysis_window_start, analysis_window_end, analysis_window_index = _analysis_window(record)
     return {
         "response_id": record.workflow_id,
         "conversation_id": record.conversation_id or record.workflow_id,
@@ -345,8 +374,12 @@ def _workflow_response_payload(
         "workspace_dir": record.workspace_dir,
         "arch_repo_dir": record.arch_repo_dir,
         "completed_steps": list(record.completed_steps),
+        "token_usage_by_model": {model_name: dict(usage) for model_name, usage in record.token_usage_by_model.items()},
         "required_actions": _serialize_required_actions(required_actions),
         "repositories": _build_repository_statuses(record),
+        "analysis_window_start": analysis_window_start,
+        "analysis_window_end": analysis_window_end,
+        "analysis_window_index": analysis_window_index,
         "repository_list_editable": (
             record.workflow_status in {WorkflowStatus.PAUSED, WorkflowStatus.INTERRUPTED}
             and record.session is not None
@@ -382,6 +415,24 @@ def _task_response_payload(task: CliTask) -> dict[str, typing.Any]:
     }
 
 
+async def _refresh_token_usage_from_db(record: WorkflowRecord) -> None:
+    """Refresh `record.token_usage_by_model` from `workflow_runs` before serializing a response.
+
+    `_persist_token_usage()` (`cli_task_support.py`) writes usage straight to the DB - nothing ever
+    updates the in-memory `WorkflowRecord` copy held in `get_workflow_registry()` while a workflow
+    is running, so the "registry hit always wins over its DB snapshot" rule elsewhere in this file
+    would otherwise permanently serve a stale, empty `token_usage_by_model` for any active run.
+    """
+    try:
+        async with get_session() as session:
+            db_record = await get_workflow_run(session, record.workflow_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("workflow.token_usage_refresh_failed", workflow_id=record.workflow_id, error=str(exc))
+        return
+    if db_record is not None:
+        record.token_usage_by_model = db_record.token_usage_by_model
+
+
 async def get_response_async(response_id: str) -> dict[str, typing.Any]:
     try:
         record = await get_workflow_record_async(response_id)
@@ -389,6 +440,7 @@ async def get_response_async(response_id: str) -> dict[str, typing.Any]:
         task = await get_cli_task_async(response_id)
         return _task_response_payload(task)
 
+    await _refresh_token_usage_from_db(record)
     required_actions = await list_workflow_required_actions_async(response_id)
     if not required_actions:
         required_actions = _fallback_required_actions(record)
@@ -663,8 +715,14 @@ async def list_conversation_responses_async(conversation_id: str) -> list[dict[s
 
     registry = get_workflow_registry()
     records_by_id = {record.workflow_id: record for record in db_records}
+    # token_usage_by_model is only ever updated in the DB (see `_refresh_token_usage_from_db`) - a
+    # registry hit is used for everything else, but its `token_usage_by_model` is patched in from
+    # the DB snapshot we already fetched above, instead of trusting the stale in-memory value.
+    db_token_usage_by_id = {record.workflow_id: record.token_usage_by_model for record in db_records}
     for record in registry.values():
         if (record.conversation_id or record.workflow_id) == conversation_id:
+            if record.workflow_id in db_token_usage_by_id:
+                record.token_usage_by_model = db_token_usage_by_id[record.workflow_id]
             records_by_id[record.workflow_id] = record
 
     ordered_records = sorted(records_by_id.values(), key=lambda record: record.updated_at, reverse=True)
@@ -787,7 +845,7 @@ def _task_conversation_items(task: CliTask) -> list[dict[str, typing.Any]]:
 def _enqueue_cli_task(cli_task: CliTask) -> CliTask:
     registry = get_task_registry()
     registry[cli_task.task_id] = cli_task
-    task = asyncio.create_task(run_cli_task(cli_task, get_agent_pool()))
+    task = asyncio.create_task(execute_engine_task(cli_task, get_agent_pool()))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
     return cli_task
@@ -802,17 +860,22 @@ def _build_query_prompt(question: str) -> str:
 
 
 def _validate_engine_name(engine_name: str) -> str:
-    if engine_name not in {"claude", "codex"}:
-        raise WorkflowValidationError("engine_name must be 'claude' or 'codex'")
+    if engine_name not in {"claude", "codex", "langgraph"}:
+        raise WorkflowValidationError("engine_name must be 'claude', 'codex' or 'langgraph'")
     return engine_name
 
 
 def _validate_provider_connection_id(engine_name: str, provider_connection_id: str | None) -> str | None:
-    # An external LLM connection always runs under codex (see
+    # An external LLM connection under `codex` always runs under codex (see
     # arch-docs/docs/spec/2026-07-24-external-llm-provider.md, section 3) - claude does not go
-    # through this mechanism.
-    if provider_connection_id is not None and engine_name != "codex":
-        raise WorkflowValidationError("provider_connection_id is only supported with engine_name='codex'")
+    # through this mechanism. `langgraph` is the inverse case: it *only* talks to an external
+    # connection (there is no built-in auth to fall back on), so a connection is mandatory - see
+    # arch-docs/docs/spec/2026-07-25-langgraph-api-agent-runner.md, section 1.
+    if provider_connection_id is not None and engine_name not in ("codex", "langgraph"):
+        msg = "provider_connection_id is only supported with engine_name='codex' or 'langgraph'"
+        raise WorkflowValidationError(msg)
+    if provider_connection_id is None and engine_name == "langgraph":
+        raise WorkflowValidationError("provider_connection_id is required for engine_name='langgraph'")
     return provider_connection_id
 
 
@@ -1312,7 +1375,23 @@ async def resume_workflow_task(record: WorkflowRecord, resume_value: typing.Any)
         graph = compile_graph(checkpointer=checkpointer)
         config = {"configurable": {"thread_id": record.workflow_id}}
 
-        failed = await _drive_graph_stream(record, graph, config, resume_value)
+        # Must be `Command(resume=...)`, not the bare resume_value dict: langgraph only resumes
+        # the pending `interrupt()` call in place (e.g. staying inside `assess_scope_and_domains`)
+        # when the input is a Command. A plain dict input is instead treated as a brand-new
+        # invocation and restarts the whole graph from START - re-running (and, per
+        # node_clone_repositories, re-cloning) every upstream step on every single resume/retry.
+        # Confirmed against a real langgraph MemorySaver run before fixing.
+        #
+        # `resume_value is None` (continue_init_arch_workflow: PAUSED -> RUNNING with nothing to
+        # feed a pending interrupt(), because a pause is a plain cancellation, not an interrupt())
+        # is a distinct case that must NOT go through Command: `Command(resume=None)` against a
+        # thread with no pending interrupt() hits a real langgraph bug - an UnboundLocalError on its
+        # internal `resume_is_map` (langgraph 1.2.7, `pregel/_loop.py`, confirmed via a real e2e run
+        # against Postgres before fixing). langgraph's own contract for "no interrupt, just carry on
+        # from the last checkpoint" is a bare `None` stream input - the same one `run_workflow()`'s
+        # `as_node`-resume path already uses.
+        stream_input = Command(resume=resume_value) if resume_value is not None else None
+        failed = await _drive_graph_stream(record, graph, config, stream_input)
         if record.workflow_status == WorkflowStatus.INTERRUPTED:
             return
 

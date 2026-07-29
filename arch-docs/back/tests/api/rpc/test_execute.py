@@ -162,6 +162,38 @@ class TestExecuteResponse:
         task_id = response.json()["task_id"]
         assert get_registry()[task_id].provider_connection_id == "conn-1"
 
+    async def test_langgraph_engine_without_provider_connection_id_returns_422(
+        self,
+        async_client: httpx.AsyncClient,
+        auth_headers: dict[str, str],
+    ) -> None:
+        response = await async_client.post(
+            "/api/rpc/execute/",
+            json={"engine": "langgraph", "prompt": "hello"},
+            headers=auth_headers,
+        )
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
+    async def test_langgraph_engine_with_provider_connection_id_dispatches_to_langgraph_runner(
+        self,
+        async_client: httpx.AsyncClient,
+        auth_headers: dict[str, str],
+    ) -> None:
+        with unittest.mock.patch(
+            "app.services.task_runner.run_langgraph_task", new=unittest.mock.AsyncMock()
+        ) as mock_run_langgraph_task:
+            response = await async_client.post(
+                "/api/rpc/execute/",
+                json={"engine": "langgraph", "prompt": "hello", "provider_connection_id": "conn-1"},
+                headers=auth_headers,
+            )
+            task_id = response.json()["task_id"]
+            await asyncio.sleep(0.05)
+
+        assert response.status_code == status.HTTP_202_ACCEPTED
+        assert get_registry()[task_id].provider_connection_id == "conn-1"
+        mock_run_langgraph_task.assert_awaited_once()
+
     async def test_background_task_completes_success(
         self,
         async_client: httpx.AsyncClient,

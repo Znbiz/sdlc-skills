@@ -14,6 +14,7 @@ import type {
   InitAuthResponse,
   LlmProviderConnectionDetailResponse,
   LlmProviderConnectionSummaryResponse,
+  LlmProviderConnectionTestResponse,
   ResponseStatusResponse,
 } from "./models";
 
@@ -73,7 +74,7 @@ export const llmProvidersApi = {
       base_url: params.baseUrl,
       model: params.model,
       token: params.token,
-      wire_api: params.wireApi ?? "chat",
+      wire_api: params.wireApi ?? "responses",
       requires_openai_auth: params.requiresOpenaiAuth ?? false,
     }),
   update: (connectionId: string, params: LlmProviderConnectionParams) =>
@@ -82,10 +83,12 @@ export const llmProvidersApi = {
       base_url: params.baseUrl,
       model: params.model,
       token: params.token,
-      wire_api: params.wireApi ?? "chat",
+      wire_api: params.wireApi ?? "responses",
       requires_openai_auth: params.requiresOpenaiAuth ?? false,
     }),
   delete: (connectionId: string) => httpClient.delete<void>(`/rest/llm-providers/${encodeURIComponent(connectionId)}/`),
+  test: (connectionId: string) =>
+    httpClient.post<LlmProviderConnectionTestResponse>(`/rest/llm-providers/${encodeURIComponent(connectionId)}/test/`),
 };
 
 export const workflowApi = {

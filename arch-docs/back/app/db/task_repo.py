@@ -49,6 +49,9 @@ async def upsert_cli_task(session: async_sa.AsyncSession, cli_task: CliTask) -> 
             stdout_output=stdout_text,
             stderr_output=stderr_text,
             exit_code=cli_task.exit_code,
+            model_name=cli_task.model_name,
+            input_tokens=cli_task.input_tokens,
+            output_tokens=cli_task.output_tokens,
             created_at=cli_task.created_at,
             started_at=cli_task.started_at,
             finished_at=cli_task.finished_at,
@@ -70,6 +73,9 @@ async def upsert_cli_task(session: async_sa.AsyncSession, cli_task: CliTask) -> 
         existing.stdout_output = stdout_text
         existing.stderr_output = stderr_text
         existing.exit_code = cli_task.exit_code
+        existing.model_name = cli_task.model_name
+        existing.input_tokens = cli_task.input_tokens
+        existing.output_tokens = cli_task.output_tokens
         existing.started_at = cli_task.started_at
         existing.finished_at = cli_task.finished_at
 
@@ -97,6 +103,9 @@ def _task_from_model(model: CliTaskModel) -> CliTask:
         stdout_lines=(model.stdout_output.splitlines() if model.stdout_output else []),
         stderr_lines=(model.stderr_output.splitlines() if model.stderr_output else []),
         exit_code=model.exit_code,
+        model_name=model.model_name,
+        input_tokens=model.input_tokens,
+        output_tokens=model.output_tokens,
         created_at=model.created_at or datetime.datetime.now(datetime.timezone.utc),
         started_at=model.started_at,
         finished_at=model.finished_at,

@@ -477,6 +477,17 @@ def compile_knowledge_graph(arch_repo_path: Path) -> CompileResult:
             if resolved_path is None:
                 unresolved_references.append(f"{document.relative_path} -> {reference}")
                 continue
+            if resolved_path not in document_by_path:
+                # Reference points to a real file on disk (e.g. `_resolve_document_reference()`'s
+                # `candidate_path.exists()` branch matched a non-markdown artifact under
+                # `architecture/contracts/`|`architecture/storage/`, a *.yml contract/schema, not a
+                # KnowledgeDocument) - a legitimate link, not a broken one, so it must not be counted
+                # as unresolved. But `resolved_edges`/`incoming_edges` are keyed by KnowledgeDocument
+                # relative_path only (line ~464-465) - indexing `incoming_edges[resolved_path]` for a
+                # path that was never a dict key raised a bare KeyError here (confirmed on a real
+                # `build_navigation_index` run where a markdown doc linked to a generated
+                # `architecture/contracts/<repo>-sync.yml`).
+                continue
             resolved_edges[document.relative_path].add(resolved_path)
             incoming_edges[resolved_path].add(document.relative_path)
 

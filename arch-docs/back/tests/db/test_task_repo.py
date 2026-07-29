@@ -80,6 +80,58 @@ async def test_upsert_includes_stdout(mock_session):
     assert added.expected_schema_name == "init_arch_v1"
 
 
+async def test_upsert_persists_model_name_and_token_usage(mock_session):
+    cli_task = _make_cli_task(workflow_id="wf-1")
+    cli_task.model_name = "claude-sonnet-4-5"
+    cli_task.input_tokens = 123
+    cli_task.output_tokens = 45
+    await upsert_cli_task(mock_session, cli_task)
+    added = mock_session.add.call_args[0][0]
+    assert added.model_name == "claude-sonnet-4-5"
+    assert added.input_tokens == 123
+    assert added.output_tokens == 45
+
+
+async def test_upsert_updates_model_name_and_token_usage_on_existing_record(mock_session):
+    from app.db.models import CliTaskModel
+
+    existing = CliTaskModel(
+        task_id=uuid.uuid4(),
+        engine_name="codex",
+        task_status="running",
+        prompt_text="p",
+        workspace_dir="/w",
+        model_name=None,
+        input_tokens=0,
+        output_tokens=0,
+    )
+    mock_session.get = AsyncMock(return_value=existing)
+    cli_task = _make_cli_task(task_id=str(existing.task_id))
+    cli_task.model_name = "codex:default"
+    cli_task.input_tokens = 200
+    cli_task.output_tokens = 30
+    await upsert_cli_task(mock_session, cli_task)
+
+    assert existing.model_name == "codex:default"
+    assert existing.input_tokens == 200
+    assert existing.output_tokens == 30
+
+
+async def test_round_trip_preserves_token_usage(db_session):
+    cli_task = _make_cli_task(workflow_id="wf-round-trip")
+    cli_task.model_name = "gpt-4o-mini"
+    cli_task.input_tokens = 77
+    cli_task.output_tokens = 8
+    await upsert_cli_task(db_session, cli_task)
+
+    reloaded = await get_cli_task(db_session, cli_task.task_id)
+
+    assert reloaded is not None
+    assert reloaded.model_name == "gpt-4o-mini"
+    assert reloaded.input_tokens == 77
+    assert reloaded.output_tokens == 8
+
+
 async def test_upsert_empty_stdout_is_none(mock_session):
     cli_task = _make_cli_task()
     cli_task.stdout_lines = []

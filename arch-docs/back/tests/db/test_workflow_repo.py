@@ -14,8 +14,9 @@ from app.db.workflow_repo import (
     delete_workflow_run,
     get_conversation,
     get_workflow_run,
+    increment_workflow_token_usage,
     list_conversation_items,
-    mark_running_workflows_failed,
+    mark_running_workflows_paused,
     upsert_workflow_run,
 )
 from app.services.workflow_registry import WorkflowRecord, WorkflowStatus
@@ -126,6 +127,7 @@ async def test_get_workflow_run_deserializes_session(mock_session):
         workspace_dir = ""
         arch_repo_dir = ""
         completed_steps = ["define_scope"]
+        token_usage_by_model = {"claude-sonnet-4-5": {"input_tokens": 10, "output_tokens": 2}}
         session_payload = {
             "session_id": "wf-1",
             "product_name": "arch-docs",
@@ -159,14 +161,15 @@ async def test_get_workflow_run_deserializes_session(mock_session):
     assert record.conversation_id == "conv-1"
     assert record.session is not None
     assert record.session.current_step is StepId.INTERVIEW_USER
+    assert record.token_usage_by_model == {"claude-sonnet-4-5": {"input_tokens": 10, "output_tokens": 2}}
 
 
-async def test_mark_running_workflows_failed_returns_count(mock_session):
+async def test_mark_running_workflows_paused_returns_count(mock_session):
     result = MagicMock()
     result.fetchall.return_value = [("wf-1", "conv-1", "define_scope"), ("wf-2", "conv-2", "interview_user")]
     mock_session.execute = AsyncMock(return_value=result)
 
-    count = await mark_running_workflows_failed(mock_session)
+    count = await mark_running_workflows_paused(mock_session)
 
     assert count == 2
     mock_session.commit.assert_called_once()
@@ -247,6 +250,40 @@ async def test_list_conversation_items_returns_empty_without_filters(mock_sessio
     items = await list_conversation_items(mock_session)
 
     assert items == []
+
+
+async def test_increment_workflow_token_usage_returns_empty_for_missing_workflow(mock_session):
+    result = await increment_workflow_token_usage(
+        mock_session, workflow_id="missing", model_name="claude-sonnet-4-5", input_tokens=10, output_tokens=2
+    )
+    assert result == {}
+    mock_session.commit.assert_not_called()
+
+
+async def test_increment_workflow_token_usage_accumulates_across_calls(db_session):
+    record = WorkflowRecord(workflow_id="wf-usage", conversation_id="conv-usage", current_step_id="define_scope")
+    await upsert_workflow_run(db_session, record)
+
+    first = await increment_workflow_token_usage(
+        db_session, workflow_id="wf-usage", model_name="claude-sonnet-4-5", input_tokens=50, output_tokens=10
+    )
+    second = await increment_workflow_token_usage(
+        db_session, workflow_id="wf-usage", model_name="claude-sonnet-4-5", input_tokens=25, output_tokens=5
+    )
+    third = await increment_workflow_token_usage(
+        db_session, workflow_id="wf-usage", model_name="gpt-4o-mini", input_tokens=100, output_tokens=20
+    )
+
+    assert first == {"claude-sonnet-4-5": {"input_tokens": 50, "output_tokens": 10}}
+    assert second == {"claude-sonnet-4-5": {"input_tokens": 75, "output_tokens": 15}}
+    assert third == {
+        "claude-sonnet-4-5": {"input_tokens": 75, "output_tokens": 15},
+        "gpt-4o-mini": {"input_tokens": 100, "output_tokens": 20},
+    }
+
+    reloaded = await get_workflow_run(db_session, "wf-usage")
+    assert reloaded is not None
+    assert reloaded.token_usage_by_model == third
 
 
 async def test_upsert_and_get_workflow_run_round_trips_path_metadata(db_session):
